@@ -112,7 +112,7 @@ SRR_LIST_PRJNA328564=(
 	#SRR3884653	# Fruits_Flesh_Stage_2 (mid fruit development)
 	#SRR3884664	# Fruits_Calyx_Stage_2 (mid fruit development)
 	#SRR3884680	# Fruits_Skin_Stage_3 (late fruit development)
-	#RR3884681	# Fruits_Flesh_Stage_3 (late fruit development)
+	#SRR3884681	# Fruits_Flesh_Stage_3 (late fruit development)
 	#SRR3884678	# Fruits_peduncle (fruit attachment)
 )
 
