@@ -5,8 +5,8 @@
 # ==============================================================================
 
 # Runtime Configuration
-THREADS=32                              # Threads for parallel operations
-JOBS=4									# Parallel jobs for GNU Parallel
+THREADS=64                              # Threads for parallel operations
+JOBS=8									# Parallel jobs for GNU Parallel
 USE_GNU_PARALLEL="TRUE"                 # TRUE/FALSE for GNU Parallel
 keep_bam_global="n"                     # y=keep BAM files, n=delete after
 
@@ -19,17 +19,17 @@ PIPELINE_STAGES=(
 	#"TRIM_SRR"
 	
 	# Option B: Combined download+trim+cleanup (auto-deletes raw after trim)
-	#"DOWNLOAD_TRIM_and_DELETE_RAW_SRR"
+	"DOWNLOAD_TRIM_and_DELETE_RAW_SRR"
 	
-	#"GZIP_TRIMMED_FILES"
-	#"QUALITY_CONTROL"
+	"GZIP_TRIMMED_FILES"
+	"QUALITY_CONTROL"
 
-	#"DELETE_RAW_SRR"				# Manually delete raw SRR files
+	"DELETE_RAW_SRR"				# Manually delete raw SRR files
 	#"DELETE_TRIMMED_FASTQ_FILES"	# Manually delete trimmed files
 
 	#"METHOD_1_HISAT2_REF_GUIDED"
 	#"METHOD_2_HISAT2_DE_NOVO"
-	"METHOD_3_STAR_ALIGNMENT"
+	#"METHOD_3_STAR_ALIGNMENT"
 	#"METHOD_4_SALMON_SAF"
 	#"METHOD_5_BOWTIE2_RSEM"
 
@@ -113,10 +113,10 @@ SRR_LIST_PRJNA328564=(
 	SRR3884608	# Fruits_1cm (early fruit development)
 	SRR3884620	# Fruits_Stage_1 (early fruit stage)
 	SRR3884631	# Fruits_6cm (fruit enlargement)
-	SRR3884642	# Fruits_Skin_Stage_2 (mid fruit development)
-	SRR3884653	# Fruits_Flesh_Stage_2 (mid fruit development)
-	SRR3884664	# Fruits_Calyx_Stage_2 (mid fruit development)
-	SRR3884680	# Fruits_Skin_Stage_3 (late fruit development)
+	#SRR3884642	# Fruits_Skin_Stage_2 (mid fruit development)
+	#SRR3884653	# Fruits_Flesh_Stage_2 (mid fruit development)
+	#SRR3884664	# Fruits_Calyx_Stage_2 (mid fruit development)
+	#SRR3884680	# Fruits_Skin_Stage_3 (late fruit development)
 	SRR3884681	# Fruits_Flesh_Stage_3 (late fruit development)
 	SRR3884678	# Fruits_peduncle (fruit attachment)
 )
@@ -194,11 +194,11 @@ OTHER_SRR_LIST=(
 )
 
 SRR_COMBINED_LIST=(
-	#"${SRR_LIST_PRJNA328564[@]}"	# Main Dataset for GEA. 
-	#"${SRR_LIST_SAMN28540077[@]}"	# Chinese Dataset for replicability. 
-	#"${SRR_LIST_SAMN28540068[@]}"	# Chinese Dataset for replicability. 
-	"${SRR_LIST_PRJNA865018[@]}"	# SET_1: Good Dataset for SmelDMP GEA.
-	"${SRR_LIST_PRJNA941250[@]}"	# SET_2: Good Dataset for SmelDMP GEA.
+	"${SRR_LIST_PRJNA328564[@]}"	# Main Dataset for GEA. 
+	"${SRR_LIST_SAMN28540077[@]}"	# Chinese Dataset for replicability. 
+	"${SRR_LIST_SAMN28540068[@]}"	# Chinese Dataset for replicability. 
+	#"${SRR_LIST_PRJNA865018[@]}"	# SET_1: Good Dataset for SmelDMP GEA.
+	#"${SRR_LIST_PRJNA941250[@]}"	# SET_2: Good Dataset for SmelDMP GEA.
 )
 
 # ==============================================================================
