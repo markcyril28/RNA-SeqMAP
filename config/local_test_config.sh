@@ -65,25 +65,25 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 # ==============================================================================
 
 # Legacy GTF and FASTA references (commented out)
-#All_SmelGIF_GTF_FILE="0_INPUT_FASTAs/All_SmelDMP_Head_Gene_Name_v4.gtf"
-Eggplant_V4_1_transcripts_function_FASTA_FILE="0_INPUT_FASTAs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
-ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="0_INPUT_FASTAs/gtf/reference/All_Smel_Genes_Full_Name_reformatted.gtf"
-decoy="0_INPUT_FASTAs/fasta/experimental/TEST.fasta"
+#All_SmelGIF_GTF_FILE="0_INPUTS/All_SmelDMP_Head_Gene_Name_v4.gtf"
+Eggplant_V4_1_transcripts_function_FASTA_FILE="0_INPUTS/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
+ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="0_INPUTS/gtf/reference/All_Smel_Genes_Full_Name_reformatted.gtf"
+decoy="0_INPUTS/fasta/experimental/TEST.fasta"
 gtf_file="${ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE}"
 
 # FASTA Files for Analysis
 ALL_FASTA_FILES=(
 	# List of FASTA files to process
-	#"0_INPUT_FASTAs/fasta/reference_genomes/All_Smel_Genes.fasta"
-	"0_INPUT_FASTAs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
-	#"0_INPUT_FASTAs/fasta/experimental/TEST.fasta"
-	#"0_INPUT_FASTAs/fasta/experimental/SmelGIF_with_Cell_Cycle_Control_genes.fasta"
-	#"0_INPUT_FASTAs/fasta/experimental/SmelDMP_CDS_Control_Best.fasta"
-	#"0_INPUT_FASTAs/fasta/experimental/SmelGIF_with_Best_Control_Cyclo.fasta"
-	#"0_INPUT_FASTAs/fasta/experimental/SmelGRF_with_Best_Control_Cyclo.fasta"
-	#"0_INPUT_FASTAs/fasta/experimental/SmelGRF-GIF_with_Best_Control_Cyclo.fasta"
-	#"0_INPUT_FASTAs/fasta/control_genes/Control_Genes_Puta.fasta"
-	#"0_INPUT_FASTAs/fasta/experimental/SmelGRF_with_Cell_Cycle_Control_genes.fasta"
+	#"0_INPUTS/fasta/reference_genomes/All_Smel_Genes.fasta"
+	"0_INPUTS/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
+	#"0_INPUTS/fasta/experimental/TEST.fasta"
+	#"0_INPUTS/fasta/experimental/SmelGIF_with_Cell_Cycle_Control_genes.fasta"
+	#"0_INPUTS/fasta/experimental/SmelDMP_CDS_Control_Best.fasta"
+	#"0_INPUTS/fasta/experimental/SmelGIF_with_Best_Control_Cyclo.fasta"
+	#"0_INPUTS/fasta/experimental/SmelGRF_with_Best_Control_Cyclo.fasta"
+	#"0_INPUTS/fasta/experimental/SmelGRF-GIF_with_Best_Control_Cyclo.fasta"
+	#"0_INPUTS/fasta/control_genes/Control_Genes_Puta.fasta"
+	#"0_INPUTS/fasta/experimental/SmelGRF_with_Cell_Cycle_Control_genes.fasta"
 )
 
 # ==============================================================================
