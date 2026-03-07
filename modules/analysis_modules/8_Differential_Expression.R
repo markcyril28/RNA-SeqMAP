@@ -1,0 +1,296 @@
+#!/usr/bin/env Rscript
+
+# ===============================================
+# DIFFERENTIAL EXPRESSION ANALYSIS MODULE
+# ===============================================
+# DESeq2-based differential expression analysis
+
+suppressPackageStartupMessages({
+  library(DESeq2)
+  library(ggplot2)
+  library(ggrepel)
+  library(pheatmap)
+  library(RColorBrewer)
+})
+
+SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", ".")
+source(file.path(SCRIPT_DIR, "0_shared_config.R"))
+source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
+
+# ===============================================
+# CONFIGURATION
+# ===============================================
+
+DEA_OUT_DIR <- file.path(CONSOLIDATED_BASE_DIR, OUTPUT_SUBDIRS$DEA)
+
+# DESeq2 parameters
+# Note: padj threshold of 0.05 and LFC of 1.0 are standard stringent cutoffs
+# apeglm shrinkage (Zhu et al. 2019) provides better LFC estimates than normal
+PADJ_THRESHOLD <- 0.05
+LFC_THRESHOLD <- 1.0
+SHRINKAGE_TYPE <- "apeglm"  # Options: "apeglm" (recommended), "ashr", "normal"
+MIN_COUNT_FILTER <- 10      # Min reads in >= 2 samples (pre-filtering)
+INDEPENDENT_FILTERING <- TRUE  # DESeq2's automatic low-count filtering
+
+# Tissue groups for comparisons
+# IMPORTANT: Values must match 'Organ' column in SRR_csv/*.csv files exactly
+TISSUE_GROUPS <- list(
+  "Vegetative" = c("Roots", "Stems", "Leaves", "Senescent_leaves"),
+  "Reproductive" = c("Buds_0.7cm", "Opened_Buds", "Flowers", "Pistils"),
+  "Fruit" = c("Fruits_1cm", "Fruits_Stage_1", "Fruits_6cm", "Fruits_Skin_Stage_2", 
+              "Fruits_Flesh_Stage_2", "Fruits_Calyx_Stage_2", "Fruits_Skin_Stage_3",
+              "Fruits_Flesh_Stage_3", "Fruits_peduncle"),
+  "Seedling" = c("Radicles", "Cotyledons")
+)
+
+# Figure toggles
+GENERATE_DEA_FIGURES <- list(
+  volcano_plot = TRUE,
+  ma_plot = TRUE,
+  top_genes_heatmap = TRUE,
+  pvalue_histogram = FALSE
+)
+
+# ===============================================
+# DEA CORE FUNCTIONS
+# ===============================================
+
+prepare_deseq_dataset <- function(count_matrix, sample_info) {
+  # DESeq2 requires raw integer counts - round expected_count from Salmon/RSEM
+  count_matrix <- round(count_matrix)
+  storage.mode(count_matrix) <- "integer"
+  
+  # Validate minimum samples per condition (need >= 2 for variance estimation)
+  condition_counts <- table(sample_info$condition)
+  if (any(condition_counts < 2)) {
+    cat("  Warning: Some conditions have < 2 replicates (unreliable statistics)\n")
+  }
+  if (ncol(count_matrix) < 4) {
+    cat("  Too few samples for reliable DEA (need >= 4 total)\n")
+    return(NULL)
+  }
+  
+  # Remove genes with zero counts across all samples (uninformative)
+  count_matrix <- count_matrix[rowSums(count_matrix) > 0, , drop = FALSE]
+  
+  # Apply minimum count filter: require MIN_COUNT_FILTER in at least 2 samples
+  # This pre-filtering reduces multiple testing burden and improves power
+  keep <- rowSums(count_matrix >= MIN_COUNT_FILTER) >= 2
+  count_matrix <- count_matrix[keep, , drop = FALSE]
+  
+  if (nrow(count_matrix) < MIN_GENES_DEA) {
+    cat("  Too few genes after filtering (need >=", MIN_GENES_DEA, ")\n")
+    return(NULL)
+  }
+  
+  dds <- DESeqDataSetFromMatrix(
+    countData = count_matrix,
+    colData = sample_info,
+    design = ~ condition
+  )
+  
+  return(dds)
+}
+
+run_deseq2 <- function(dds, contrast_name, output_dir) {
+  dds <- DESeq(dds, quiet = TRUE)
+  
+  res <- tryCatch({
+    if (SHRINKAGE_TYPE == "apeglm") {
+      coef_name <- resultsNames(dds)[2]
+      lfcShrink(dds, coef = coef_name, type = "apeglm", quiet = TRUE)
+    } else {
+      results(dds, alpha = PADJ_THRESHOLD)
+    }
+  }, error = function(e) {
+    results(dds, alpha = PADJ_THRESHOLD)
+  })
+  
+  res_df <- as.data.frame(res)
+  res_df$gene <- rownames(res_df)
+  res_df <- res_df[, c("gene", setdiff(names(res_df), "gene"))]
+  
+  res_df$significance <- "NS"
+  res_df$significance[res_df$padj < PADJ_THRESHOLD & res_df$log2FoldChange > LFC_THRESHOLD] <- "Up"
+  res_df$significance[res_df$padj < PADJ_THRESHOLD & res_df$log2FoldChange < -LFC_THRESHOLD] <- "Down"
+  res_df$significance <- factor(res_df$significance, levels = c("Down", "NS", "Up"))
+  
+  res_df <- res_df[order(res_df$padj), ]
+  
+  return(list(dds = dds, results = res_df))
+}
+
+create_volcano_plot <- function(res_df, contrast_name, output_dir) {
+  if (!GENERATE_DEA_FIGURES$volcano_plot) return(NULL)
+  
+  plot_data <- res_df[!is.na(res_df$padj), ]
+  plot_data$neglog10p <- -log10(plot_data$padj)
+  plot_data$neglog10p[is.infinite(plot_data$neglog10p)] <- 
+    max(plot_data$neglog10p[is.finite(plot_data$neglog10p)]) + 10
+  
+  n_label <- min(10, sum(plot_data$significance != "NS"))
+  top_genes <- head(plot_data[plot_data$significance != "NS", ], n_label)
+  
+  n_up <- sum(plot_data$significance == "Up", na.rm = TRUE)
+  n_down <- sum(plot_data$significance == "Down", na.rm = TRUE)
+  
+  p <- ggplot(plot_data, aes(x = log2FoldChange, y = neglog10p, color = significance)) +
+    geom_point(alpha = 0.6, size = 1.5) +
+    scale_color_manual(values = c("Down" = "#2166AC", "NS" = "grey60", "Up" = "#B2182B"),
+                       labels = c(paste0("Down (", n_down, ")"), "NS", paste0("Up (", n_up, ")"))) +
+    geom_vline(xintercept = c(-LFC_THRESHOLD, LFC_THRESHOLD), linetype = "dashed", color = "grey40") +
+    geom_hline(yintercept = -log10(PADJ_THRESHOLD), linetype = "dashed", color = "grey40") +
+    labs(title = paste0("Volcano: ", contrast_name),
+         x = "Log2 Fold Change", y = "-Log10 Adj P-value") +
+    theme_minimal() +
+    theme(legend.position = "bottom", plot.title = element_text(hjust = 0.5, face = "bold"))
+  
+  if (nrow(top_genes) > 0) {
+    p <- p + geom_text_repel(data = top_genes, aes(label = gene),
+                              size = 2.5, max.overlaps = 15)
+  }
+  
+  ggsave(file.path(output_dir, paste0(contrast_name, "_volcano.png")),
+         p, width = 10, height = 8, dpi = 150)
+  
+  return(p)
+}
+
+create_ma_plot <- function(res_df, contrast_name, output_dir) {
+  if (!GENERATE_DEA_FIGURES$ma_plot) return(NULL)
+  
+  plot_data <- res_df[!is.na(res_df$baseMean) & !is.na(res_df$log2FoldChange), ]
+  plot_data$log_baseMean <- log10(plot_data$baseMean + 1)
+  
+  p <- ggplot(plot_data, aes(x = log_baseMean, y = log2FoldChange, color = significance)) +
+    geom_point(alpha = 0.5, size = 1.2) +
+    scale_color_manual(values = c("Down" = "#2166AC", "NS" = "grey60", "Up" = "#B2182B")) +
+    geom_hline(yintercept = 0, linetype = "solid", color = "black") +
+    geom_hline(yintercept = c(-LFC_THRESHOLD, LFC_THRESHOLD), linetype = "dashed", color = "grey40") +
+    labs(title = paste0("MA Plot: ", contrast_name),
+         x = "Log10 Mean Expression", y = "Log2 Fold Change") +
+    theme_minimal() +
+    theme(legend.position = "bottom", plot.title = element_text(hjust = 0.5, face = "bold"))
+  
+  ggsave(file.path(output_dir, paste0(contrast_name, "_MA.png")),
+         p, width = 10, height = 8, dpi = 150)
+  
+  return(p)
+}
+
+create_de_heatmap <- function(dds, res_df, contrast_name, output_dir, n_top = 50) {
+  if (!GENERATE_DEA_FIGURES$top_genes_heatmap) return(NULL)
+  
+  vst_data <- tryCatch({
+    assay(vst(dds, blind = FALSE))
+  }, error = function(e) {
+    log2(counts(dds, normalized = TRUE) + 1)
+  })
+  
+  sig_genes <- res_df[res_df$significance != "NS", "gene"]
+  if (length(sig_genes) == 0) return(NULL)
+  
+  top_genes <- head(sig_genes, n_top)
+  hm_data <- vst_data[top_genes, , drop = FALSE]
+  
+  png(file.path(output_dir, paste0(contrast_name, "_top_DE_heatmap.png")),
+      width = 1000, height = 800, res = 100)
+  pheatmap(hm_data, scale = "row", cluster_rows = TRUE, cluster_cols = TRUE,
+           show_rownames = nrow(hm_data) <= 30,
+           main = paste0("Top DE Genes: ", contrast_name))
+  dev.off()
+}
+
+# ===============================================
+# MAIN DEA FUNCTION
+# ===============================================
+
+run_differential_expression <- function(config = NULL, matrices_dir = NULL) {
+  if (is.null(config)) config <- load_runtime_config()
+  ensure_output_dir(DEA_OUT_DIR)
+  
+  print_config_summary("DIFFERENTIAL EXPRESSION ANALYSIS", config)
+  
+  successful <- 0
+  total <- 0
+  
+  for (gene_group in config$gene_groups) {
+    cat("Processing:", gene_group, "\n")
+    
+    output_dir <- file.path(DEA_OUT_DIR, gene_group)
+    ensure_output_dir(output_dir)
+    
+    input_file <- build_input_path(gene_group, PROCESSING_LEVELS[1],
+                                   COUNT_TYPES[1], "geneID",
+                                   matrices_dir, config$master_reference)
+    
+    validation <- validate_and_read_matrix(input_file, MIN_GENES_DEA)
+    if (!validation$success) {
+      cat("  Skipped:", validation$reason, "\n")
+      next
+    }
+    
+    # Create sample info with tissue groups
+    sample_ids <- colnames(validation$data)
+    sample_tissues <- SAMPLE_LABELS[sample_ids]
+    
+    # Run pairwise comparisons between tissue groups
+    group_names <- names(TISSUE_GROUPS)
+    for (i in 1:(length(group_names) - 1)) {
+      for (j in (i + 1):length(group_names)) {
+        total <- total + 1
+        
+        group1 <- group_names[i]
+        group2 <- group_names[j]
+        
+        # Identify samples in each group
+        samples_g1 <- sample_ids[sample_tissues %in% TISSUE_GROUPS[[group1]]]
+        samples_g2 <- sample_ids[sample_tissues %in% TISSUE_GROUPS[[group2]]]
+        
+        if (length(samples_g1) < 2 || length(samples_g2) < 2) {
+          cat("  Skipped", group1, "vs", group2, ": insufficient samples\n")
+          next
+        }
+        
+        # Prepare subset
+        all_samples <- c(samples_g1, samples_g2)
+        count_subset <- validation$data[, all_samples, drop = FALSE]
+        
+        sample_info <- data.frame(
+          row.names = all_samples,
+          condition = factor(c(rep(group1, length(samples_g1)), 
+                               rep(group2, length(samples_g2))))
+        )
+        
+        contrast_name <- paste0(gene_group, "_", group1, "_vs_", group2)
+        cat("  Running:", contrast_name, "\n")
+        
+        dds <- prepare_deseq_dataset(count_subset, sample_info)
+        if (is.null(dds)) next
+        
+        result <- run_deseq2(dds, contrast_name, output_dir)
+        
+        # Save results
+        write.table(result$results,
+                    file.path(output_dir, paste0(contrast_name, "_results.tsv")),
+                    sep = "\t", row.names = FALSE, quote = FALSE)
+        
+        # Create plots
+        create_volcano_plot(result$results, contrast_name, output_dir)
+        create_ma_plot(result$results, contrast_name, output_dir)
+        create_de_heatmap(result$dds, result$results, contrast_name, output_dir)
+        
+        n_sig <- sum(result$results$significance != "NS", na.rm = TRUE)
+        cat("    Found", n_sig, "significant genes\n")
+        
+        successful <- successful + 1
+      }
+    }
+  }
+  
+  print_summary(successful, total)
+}
+
+if (!interactive() && identical(environment(), globalenv())) {
+  run_differential_expression()
+}

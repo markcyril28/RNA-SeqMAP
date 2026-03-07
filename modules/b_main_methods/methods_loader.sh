@@ -103,7 +103,7 @@ normalize_expression_data() {
 # THIS MUST BE CUSTOMIZED for differential expression analysis!
 # 
 # Option 1: Edit the sample_conditions.txt file at:
-#   0_INPUT_FASTAs/sample_conditions.txt
+#   0_INPUTS/sample_conditions.txt
 #   Format (tab-separated):
 #     SRR_ID	condition	batch
 #     SRR3884597	Flowers	1
@@ -115,4 +115,4 @@ normalize_expression_data() {
 # ==============================================================================
 
 log_info "[METHODS] All GEA analysis methods loaded successfully"
-log_info "[METHODS] Sample conditions file: ${SAMPLE_CONDITIONS_FILE:-0_INPUT_FASTAs/sample_conditions.txt}"
+log_info "[METHODS] Sample conditions file: ${SAMPLE_CONDITIONS_FILE:-0_INPUTS/sample_conditions.txt}"

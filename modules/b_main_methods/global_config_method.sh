@@ -55,7 +55,7 @@ unset _POST_PROC_DEFAULT
 # ==============================================================================
 # Path to the sample conditions file (tab-separated: SRR_ID condition batch)
 # Convert to absolute path if relative (same pattern as POST_PROCESSING_ROOT)
-_SAMPLE_COND_DEFAULT="${SAMPLE_CONDITIONS_FILE:-0_INPUT_FASTAs/sample_conditions.txt}"
+_SAMPLE_COND_DEFAULT="${SAMPLE_CONDITIONS_FILE:-0_INPUTS/sample_conditions.txt}"
 if [[ "$_SAMPLE_COND_DEFAULT" != /* ]]; then
 	SAMPLE_CONDITIONS_FILE="$(pwd)/$_SAMPLE_COND_DEFAULT"
 else

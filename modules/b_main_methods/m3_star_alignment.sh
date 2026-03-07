@@ -31,7 +31,7 @@ STAR_STRAND_SPECIFIC="${STAR_STRAND_SPECIFIC:-intronMotif}"
 STAR_DELETE_TRANSIENT="${STAR_DELETE_TRANSIENT:-true}"
 
 # GTF annotation file for splice junction detection (required for --sjdbOverhang)
-STAR_GTF_FILE="${STAR_GTF_FILE:-0_INPUT_FASTAs/gtf/reference/Eggplant_V4.1_function_IPR_final_formatted_v3.gtf}"
+STAR_GTF_FILE="${STAR_GTF_FILE:-0_INPUTS/gtf/reference/Eggplant_V4.1_function_IPR_final_formatted_v3.gtf}"
 
 # STAR temp directory configuration
 # Set to "system" to use /tmp, "local" to use output dir, "cwd" for current directory, "none" to let STAR manage, or a specific path

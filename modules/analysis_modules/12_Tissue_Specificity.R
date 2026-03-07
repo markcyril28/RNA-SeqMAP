@@ -1,0 +1,243 @@
+#!/usr/bin/env Rscript
+
+# ===============================================
+# TISSUE SPECIFICITY MODULE
+# ===============================================
+# Calculates tissue specificity indices (Tau, Z-score)
+
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(dplyr)
+  library(tidyr)
+  library(pheatmap)
+  library(RColorBrewer)
+})
+
+SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", ".")
+source(file.path(SCRIPT_DIR, "0_shared_config.R"))
+source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
+
+# ===============================================
+# CONFIGURATION
+# ===============================================
+
+TISSUE_SPEC_OUT_DIR <- file.path(CONSOLIDATED_BASE_DIR, OUTPUT_SUBDIRS$TISSUE_SPEC)
+
+# Tau threshold for tissue-specific genes
+TAU_THRESHOLD <- 0.8
+MIN_EXPRESSION <- 1  # Minimum expression to consider
+
+# Figure toggles
+GENERATE_TISSUE_FIGURES <- list(
+  tau_distribution = TRUE,
+  specificity_heatmap = TRUE,
+  top_specific_genes = TRUE,
+  tissue_barplot = TRUE
+)
+
+# ===============================================
+# TISSUE SPECIFICITY CALCULATIONS
+# ===============================================
+
+# Calculate Tau index (0 = ubiquitous, 1 = tissue-specific)
+# Reference: Yanai et al., 2005 - Genome-wide midrange transcription profiles
+# Tau = sum(1 - x_i/x_max) / (n - 1) where x_i is expression in tissue i
+calculate_tau <- function(expression_vector) {
+  x <- as.numeric(expression_vector)
+  x[x < 0 | is.na(x)] <- 0  # Handle negative and NA values
+  x_max <- max(x, na.rm = TRUE)
+  
+  if (x_max == 0 || is.na(x_max) || !is.finite(x_max)) return(NA)
+  
+  # Normalize to max expression
+  x_norm <- x / x_max
+  n <- length(x)
+  
+  # Need at least 2 tissues for meaningful Tau
+  if (n < 2) return(NA)
+  
+  tau <- sum(1 - x_norm, na.rm = TRUE) / (n - 1)
+  
+  # Tau should be between 0 and 1
+  tau <- max(0, min(1, tau))
+  
+  return(tau)
+}
+
+# Calculate tissue specificity for all genes
+calculate_tissue_specificity <- function(data_matrix) {
+  tau_values <- apply(data_matrix, 1, calculate_tau)
+  
+  # Find tissue with max expression
+  max_tissue <- apply(data_matrix, 1, function(x) {
+    if (all(is.na(x)) || max(x, na.rm = TRUE) == 0) return(NA)
+    colnames(data_matrix)[which.max(x)]
+  })
+  
+  # Calculate max expression
+  max_expr <- apply(data_matrix, 1, max, na.rm = TRUE)
+  
+  result <- data.frame(
+    Gene = rownames(data_matrix),
+    Tau = tau_values,
+    MaxTissue = max_tissue,
+    MaxExpression = max_expr,
+    IsSpecific = tau_values >= TAU_THRESHOLD,
+    stringsAsFactors = FALSE
+  )
+  
+  result <- result[order(-result$Tau), ]
+  return(result)
+}
+
+# ===============================================
+# VISUALIZATION FUNCTIONS
+# ===============================================
+
+create_tau_distribution <- function(specificity_df, output_path, title) {
+  if (!GENERATE_TISSUE_FIGURES$tau_distribution) return(NULL)
+  
+  p <- ggplot(specificity_df, aes(x = Tau)) +
+    geom_histogram(bins = 50, fill = "#6C3483", color = "white", alpha = 0.8) +
+    geom_vline(xintercept = TAU_THRESHOLD, linetype = "dashed", color = "red", linewidth = 1) +
+    annotate("text", x = TAU_THRESHOLD + 0.05, y = Inf, label = paste0("Tau >= ", TAU_THRESHOLD),
+             hjust = 0, vjust = 2, color = "red") +
+    labs(title = title, x = "Tau (Tissue Specificity Index)", 
+         y = "Number of Genes",
+         subtitle = paste0("N = ", nrow(specificity_df), " genes")) +
+    theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+  
+  ggsave(output_path, p, width = 10, height = 6, dpi = 150)
+  return(p)
+}
+
+create_tissue_specificity_heatmap <- function(data_matrix, specificity_df, output_path, 
+                                               title, n_top = 50) {
+  if (!GENERATE_TISSUE_FIGURES$specificity_heatmap) return(NULL)
+  
+  # Filter to specific genes
+  specific_genes <- specificity_df$Gene[specificity_df$IsSpecific]
+  specific_genes <- head(specific_genes, n_top)
+  
+  if (length(specific_genes) == 0) {
+    cat("    No tissue-specific genes found\n")
+    return(NULL)
+  }
+  
+  hm_data <- data_matrix[specific_genes, , drop = FALSE]
+  
+  # Row-scale for visualization
+  hm_scaled <- t(scale(t(hm_data)))
+  hm_scaled[is.na(hm_scaled)] <- 0
+  
+  png(output_path, width = 1000, height = 800, res = 100)
+  pheatmap(
+    hm_scaled,
+    main = title,
+    cluster_rows = TRUE,
+    cluster_cols = TRUE,
+    show_rownames = nrow(hm_scaled) <= 30,
+    color = colorRampPalette(c("#2166AC", "#F7F7F7", "#B2182B"))(100),
+    border_color = NA
+  )
+  dev.off()
+  
+  return(TRUE)
+}
+
+create_tissue_gene_counts <- function(specificity_df, output_path, title) {
+  if (!GENERATE_TISSUE_FIGURES$tissue_barplot) return(NULL)
+  
+  specific_df <- specificity_df[specificity_df$IsSpecific, ]
+  if (nrow(specific_df) == 0) return(NULL)
+  
+  tissue_counts <- specific_df %>%
+    group_by(MaxTissue) %>%
+    summarise(Count = n(), .groups = "drop") %>%
+    arrange(desc(Count))
+  
+  p <- ggplot(tissue_counts, aes(x = reorder(MaxTissue, Count), y = Count, fill = MaxTissue)) +
+    geom_bar(stat = "identity") +
+    coord_flip() +
+    labs(title = title, x = "Tissue", y = "Number of Specific Genes") +
+    theme_minimal() +
+    theme(legend.position = "none",
+          plot.title = element_text(hjust = 0.5, face = "bold")) +
+    scale_fill_brewer(palette = "Set2")
+  
+  ggsave(output_path, p, width = 10, height = 6, dpi = 150)
+  return(p)
+}
+
+# ===============================================
+# MAIN FUNCTION
+# ===============================================
+
+run_tissue_specificity <- function(config = NULL, matrices_dir = NULL) {
+  if (is.null(config)) config <- load_runtime_config()
+  ensure_output_dir(TISSUE_SPEC_OUT_DIR)
+  
+  print_config_summary("TISSUE SPECIFICITY ANALYSIS", config)
+  
+  successful <- 0
+  total <- 0
+  
+  for (gene_group in config$gene_groups) {
+    cat("Processing:", gene_group, "\n")
+    total <- total + 1
+    
+    output_dir <- file.path(TISSUE_SPEC_OUT_DIR, gene_group)
+    ensure_output_dir(output_dir)
+    
+    input_file <- build_input_path(gene_group, PROCESSING_LEVELS[1],
+                                   COUNT_TYPES[1], GENE_TYPES[1],
+                                   matrices_dir, config$master_reference)
+    
+    validation <- validate_and_read_matrix(input_file, 5)
+    if (!validation$success) {
+      cat("  Skipped:", validation$reason, "\n")
+      next
+    }
+    
+    data_matrix <- apply_normalization(validation$data, NORM_SCHEMES[1], COUNT_TYPES[1])
+    
+    # Calculate tissue specificity
+    specificity <- calculate_tissue_specificity(data_matrix)
+    
+    # Save results
+    write.table(specificity, file.path(output_dir, paste0(gene_group, "_tissue_specificity.tsv")),
+                sep = "\t", row.names = FALSE, quote = FALSE)
+    
+    n_specific <- sum(specificity$IsSpecific, na.rm = TRUE)
+    cat("  Found", n_specific, "tissue-specific genes (Tau >=", TAU_THRESHOLD, ")\n")
+    
+    # Generate figures
+    create_tau_distribution(
+      specificity,
+      file.path(output_dir, paste0(gene_group, "_tau_distribution.png")),
+      paste0(gene_group, " - Tau Distribution")
+    )
+    
+    create_tissue_specificity_heatmap(
+      data_matrix, specificity,
+      file.path(output_dir, paste0(gene_group, "_specific_genes_heatmap.png")),
+      paste0(gene_group, " - Tissue-Specific Genes")
+    )
+    
+    create_tissue_gene_counts(
+      specificity,
+      file.path(output_dir, paste0(gene_group, "_tissue_gene_counts.png")),
+      paste0(gene_group, " - Genes per Tissue")
+    )
+    
+    successful <- successful + 1
+    cat("  Complete\n")
+  }
+  
+  print_summary(successful, total)
+}
+
+if (!interactive() && identical(environment(), globalenv())) {
+  run_tissue_specificity()
+}
