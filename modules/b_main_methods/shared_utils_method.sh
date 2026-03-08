@@ -234,7 +234,7 @@ compare_methods_summary() {
 	# Check each method's output
 	local methods=(
 		"Method 1 (HISAT2 Ref-Guided):$STRINGTIE_HISAT2_REF_GUIDED_ROOT/$fasta_tag/deseq2_input/gene_count_matrix.csv"
-		"Method 3 (STAR):$STAR_ALIGN_ROOT/$fasta_tag/6_matrices_from_stringtie/gene_counts_tximport.tsv"
+		"Method 3 (STAR):$STAR_ALIGN_ROOT/$fasta_tag/count_matrices_from_STAR/gene_counts_tximport.tsv"
 		"Method 4 (Salmon SAF):$SALMON_SAF_MATRIX_ROOT/$fasta_tag/deseq2_input/gene_count_matrix.csv"
 		"Method 5 (Bowtie2+RSEM):$RSEM_MATRIX_ROOT/$fasta_tag/deseq2_input/gene_count_matrix.csv"
 	)

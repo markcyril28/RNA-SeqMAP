@@ -55,14 +55,14 @@ GPU_BACKEND <- "cpu"  # "cpu", "cuda", or "torch"
 #   M1/M2 (HISAT2+StringTie): 5_stringtie_WD/
 #   M4 (Salmon): 5_Salmon_Quant_WD/
 #   M5 (RSEM): 5_RSEM_Quant_WD/
-MATRICES_DIR <- "6_matrices"
-CONSOLIDATED_BASE_DIR <- "7_Figures_Outputs"
+MATRICES_DIR <- "count_matrices"
+CONSOLIDATED_BASE_DIR <- "Figure_Outputs"
 
 # Gene groups directory - use environment variable if set, otherwise compute from script location
 GENE_GROUPS_DIR <- Sys.getenv("GENE_GROUPS_DIR", unset = "")
 if (GENE_GROUPS_DIR == "") {
   ANALYSIS_MODULES_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", unset = ".")
-  GENE_GROUPS_DIR <- file.path(dirname(ANALYSIS_MODULES_DIR), "gene_groups_csv")
+  GENE_GROUPS_DIR <- file.path(dirname(ANALYSIS_MODULES_DIR), "gene_groups")
 }
 
 # SRR CSV directory for sample labels
@@ -78,7 +78,7 @@ OUTPUT_SUBDIRS <- list(
   BASIC_HEATMAP = "I_Basic_Heatmap",
   CV_HEATMAP = "II_Heatmap_with_CV",
   BAR_GRAPH = "III_Bar_Graphs",
-  WGCNA = "IV_Coexpression_WGCNA",
+  WGCNA = "III_Coexpression_WGCNA",
   DEA = "V_Differential_Expression",
   GSEA = "VI_Gene_Set_Enrichment",
   DIM_REDUCTION = "VII_Dimensionality_Reduction",
@@ -274,11 +274,11 @@ get_method_type <- function(method = CURRENT_METHOD) {
 get_quant_dir <- function(method = CURRENT_METHOD) {
   method_type <- get_method_type(method)
   switch(method_type,
-    "stringtie" = "5_stringtie_WD",
-    "salmon" = "5_Salmon_Quant_WD",
-    "rsem" = "5_RSEM_Quant_WD",
-    "star" = "5_STAR_WD",
-    "5_quant_WD"  # default
+    "stringtie" = "stringtie_WD",
+    "salmon" = "Salmon_Quant",
+    "rsem" = "RSEM_Quant_WD",
+    "star" = "STAR_alignment_WD",
+    "quant_WD"  # default
   )
 }
 
@@ -338,11 +338,11 @@ is_valid_norm_for_count <- function(count_type, norm_scheme) {
 get_matrices_dir <- function(method = CURRENT_METHOD) {
   method_type <- get_method_type(method)
   switch(method_type,
-    "stringtie" = "5_stringtie_WD/b_Method_2_COUNT_MATRICES",
-    "salmon" = "6_matrices",
-    "rsem" = "6_matrices",
-    "star" = "6_matrices",
-    "6_matrices"  # default
+    "stringtie" = "stringtie_WD/b_Method_2_COUNT_MATRICES",
+    "salmon" = "count_matrices",
+    "rsem" = "count_matrices",
+    "star" = "count_matrices",
+    "count_matrices"  # default
   )
 }
 

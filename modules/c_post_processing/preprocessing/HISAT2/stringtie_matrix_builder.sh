@@ -59,7 +59,7 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] Master reference: $MASTER_REFERENCE"
 # SRR_CSV_DIR is exported by run_all_post_processing.sh
 # Fallback to 0_INPUTS/SRR_csv relative to the project root
 
-SRR_CSV_DIR="${SRR_CSV_DIR:-$SCRIPT_DIR/../../../0_INPUTS/SRR_csv}"
+SRR_CSV_DIR="${SRR_CSV_DIR:-$SCRIPT_DIR/../../../0_INPUTs/SRR_csv}"
 
 # Parse CSV and build arrays (reuse function from pipeline_utils.sh if available)
 load_samples_from_csv() {
@@ -267,7 +267,7 @@ merge_group_counts() {
 # Centralized gene groups CSV directory
 # Use GENE_GROUPS_DIR from environment (set by run_all_post_processing.sh)
 # Fallback to 0_INPUTS/gene_groups_csv relative to the project root
-GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-$SCRIPT_DIR/../../../0_INPUTS/gene_groups_csv}}"
+GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-$SCRIPT_DIR/../../../0_INPUTs/gene_groups}}"
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gene groups CSV directory: $GENE_GROUPS_CSV_DIR"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting count matrix generation for ${#GENE_GROUPS[@]} gene groups"

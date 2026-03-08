@@ -49,7 +49,7 @@ get_analysis_script() {
 # Returns the full path to the script that converts raw quant output to count matrices
 get_preprocessing_script() {
     local method=$1
-    local PREPROCESSING_DIR="${BASE_DIR}/modules/preprocessing"
+    local PREPROCESSING_DIR="${BASE_DIR}/modules/c_post_processing/preprocessing"
     
     case "$method" in
         "M1_HISAT2_RefGuided"|"M2_HISAT2_DeNovo")
@@ -80,7 +80,7 @@ get_preprocessing_script() {
 # Usage: run_method_analysis "method_name" "master_reference"
 run_method_analysis() {
     local method=$1 master_ref=$2
-    local method_dir="$BASE_DIR/4_POST_PROC/$method"
+    local method_dir="$BASE_DIR/3_POST_PROC/$method"
     
     [[ ! -d "$method_dir" ]] && { log_error "Method directory not found: $method_dir"; return 1; }
     
@@ -90,7 +90,7 @@ run_method_analysis() {
     export CURRENT_METHOD="$method" MASTER_REFERENCE="$master_ref"
     
     # Export GENE_GROUPS_DIR as absolute path for R scripts
-    export GENE_GROUPS_DIR="$BASE_DIR/0_INPUTS/gene_groups_csv"
+    export GENE_GROUPS_DIR="$BASE_DIR/0_INPUTs/gene_groups"
     
     # Setup temp config files for R scripts
     local modules_dir="B_${method#4}_modules"

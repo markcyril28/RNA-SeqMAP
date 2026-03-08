@@ -50,7 +50,7 @@ compare_methods_summary() {
 	fi
 	
 	# Method 3: STAR Alignment
-	local m3_matrix="$STAR_ALIGN_ROOT/$fasta_tag/6_matrices_from_stringtie/gene_counts_tximport.tsv"
+	local m3_matrix="$STAR_ALIGN_ROOT/$fasta_tag/count_matrices_from_STAR/gene_counts_tximport.tsv"
 	if [[ -f "$m3_matrix" ]]; then
 		local m3_genes=$(tail -n +2 "$m3_matrix" | wc -l)
 		local m3_samples=$(head -n1 "$m3_matrix" | tr '\t' '\n' | tail -n +2 | wc -l)
@@ -115,4 +115,4 @@ normalize_expression_data() {
 # ==============================================================================
 
 log_info "[METHODS] All GEA analysis methods loaded successfully"
-log_info "[METHODS] Sample conditions file: ${SAMPLE_CONDITIONS_FILE:-0_INPUTS/sample_conditions.txt}"
+log_info "[METHODS] Sample conditions file: ${SAMPLE_CONDITIONS_FILE:-0_INPUTs/sample_conditions.txt}"

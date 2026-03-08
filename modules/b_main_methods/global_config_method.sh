@@ -42,7 +42,7 @@ STAR_STRAND_SPECIFIC="${STAR_STRAND_SPECIFIC:-intronMotif}"
 # POST PROCESSING ROOT
 # ==============================================================================
 # Convert to absolute path if relative (prevents STAR/tool output file errors)
-_POST_PROC_DEFAULT="${POST_PROCESSING_ROOT:-4_POST_PROC}"
+_POST_PROC_DEFAULT="${POST_PROCESSING_ROOT:-3_POST_PROC}"
 if [[ "$_POST_PROC_DEFAULT" != /* ]]; then
 	POST_PROCESSING_ROOT="$(pwd)/$_POST_PROC_DEFAULT"
 else
@@ -51,11 +51,23 @@ fi
 unset _POST_PROC_DEFAULT
 
 # ==============================================================================
+# ALIGNMENT RESULTS ROOT
+# ==============================================================================
+# Alignment outputs live separately from post-processing
+_ALIGN_DEFAULT="${ALIGNMENT_RESULTS_ROOT:-2_ALIGNMENT_RESULTs}"
+if [[ "$_ALIGN_DEFAULT" != /* ]]; then
+	ALIGNMENT_RESULTS_ROOT="$(pwd)/$_ALIGN_DEFAULT"
+else
+	ALIGNMENT_RESULTS_ROOT="$_ALIGN_DEFAULT"
+fi
+unset _ALIGN_DEFAULT
+
+# ==============================================================================
 # SAMPLE METADATA CONFIGURATION
 # ==============================================================================
 # Path to the sample conditions file (tab-separated: SRR_ID condition batch)
 # Convert to absolute path if relative (same pattern as POST_PROCESSING_ROOT)
-_SAMPLE_COND_DEFAULT="${SAMPLE_CONDITIONS_FILE:-0_INPUTS/sample_conditions.txt}"
+_SAMPLE_COND_DEFAULT="${SAMPLE_CONDITIONS_FILE:-0_INPUTs/sample_conditions.txt}"
 if [[ "$_SAMPLE_COND_DEFAULT" != /* ]]; then
 	SAMPLE_CONDITIONS_FILE="$(pwd)/$_SAMPLE_COND_DEFAULT"
 else
@@ -66,42 +78,42 @@ unset _SAMPLE_COND_DEFAULT
 # ==============================================================================
 # METHOD 1: HISAT2 REFERENCE GUIDED DIRECTORIES
 # ==============================================================================
-HISAT2_REF_GUIDED_ROOT="$POST_PROCESSING_ROOT/M1_HISAT2_RefGuided/4_HISAT2_WD"
+HISAT2_REF_GUIDED_ROOT="$ALIGNMENT_RESULTS_ROOT/M1_HISAT2_RefGuided/HISAT2_WD"
 HISAT2_REF_GUIDED_INDEX_DIR="$HISAT2_REF_GUIDED_ROOT/index"
-STRINGTIE_HISAT2_REF_GUIDED_ROOT="$POST_PROCESSING_ROOT/M1_HISAT2_RefGuided/5_stringtie_WD"
-HISAT2_REF_GUIDED_MATRIX_ROOT="$POST_PROCESSING_ROOT/M1_HISAT2_RefGuided/6_matrices"
+STRINGTIE_HISAT2_REF_GUIDED_ROOT="$ALIGNMENT_RESULTS_ROOT/M1_HISAT2_RefGuided/stringtie_WD"
+HISAT2_REF_GUIDED_MATRIX_ROOT="$POST_PROCESSING_ROOT/M1_HISAT2_RefGuided/count_matrices_from_stringtie"
 
 # ==============================================================================
 # METHOD 2: HISAT2 DE NOVO DIRECTORIES
 # ==============================================================================
-HISAT2_DE_NOVO_ROOT="$POST_PROCESSING_ROOT/M2_HISAT2_DeNovo/4_HISAT2_WD"
+HISAT2_DE_NOVO_ROOT="$ALIGNMENT_RESULTS_ROOT/M2_HISAT2_DeNovo/HISAT2_WD"
 HISAT2_DE_NOVO_INDEX_DIR="$HISAT2_DE_NOVO_ROOT/index"
-STRINGTIE_HISAT2_DE_NOVO_ROOT="$POST_PROCESSING_ROOT/M2_HISAT2_DeNovo/5_stringtie_WD"
-HISAT2_DE_NOVO_MATRIX_ROOT="$POST_PROCESSING_ROOT/M2_HISAT2_DeNovo/6_matrices"
+STRINGTIE_HISAT2_DE_NOVO_ROOT="$ALIGNMENT_RESULTS_ROOT/M2_HISAT2_DeNovo/stringtie_WD"
+HISAT2_DE_NOVO_MATRIX_ROOT="$POST_PROCESSING_ROOT/M2_HISAT2_DeNovo/count_matrices_from_stringtie"
 
 # ==============================================================================
 # METHOD 3: STAR ALIGNMENT DIRECTORIES
 # ==============================================================================
-STAR_ALIGN_ROOT="$POST_PROCESSING_ROOT/M3_STAR_Align"
-STAR_INDEX_ROOT="$STAR_ALIGN_ROOT/star_index"
-STAR_GENOME_DIR="$STAR_ALIGN_ROOT/alignments"
+STAR_ALIGN_ROOT="$ALIGNMENT_RESULTS_ROOT/M3_STAR_Align"
+STAR_INDEX_ROOT="$STAR_ALIGN_ROOT/STAR_index"
+STAR_GENOME_DIR="$STAR_ALIGN_ROOT/STAR_alignment_WD"
 
 # ==============================================================================
 # METHOD 4: SALMON SAF DIRECTORIES
 # ==============================================================================
-SALMON_SAF_ROOT="$POST_PROCESSING_ROOT/M4_Salmon_Saf"
-SALMON_INDEX_ROOT="$SALMON_SAF_ROOT/4_Salmon_WD/index"
-SALMON_QUANT_ROOT="$SALMON_SAF_ROOT/5_Salmon_Quant_WD"
-SALMON_SAF_MATRIX_ROOT="$SALMON_SAF_ROOT/6_matrices_from_Salmon"
+SALMON_SAF_ROOT="$ALIGNMENT_RESULTS_ROOT/M4_Salmon_Saf"
+SALMON_INDEX_ROOT="$SALMON_SAF_ROOT/Salmon_WD/index"
+SALMON_QUANT_ROOT="$SALMON_SAF_ROOT/Salmon_Quant"
+SALMON_SAF_MATRIX_ROOT="$POST_PROCESSING_ROOT/M4_Salmon_Saf/count_matrices_from_Salmon_Quant"
 SALMON_MATRIX_ROOT="${SALMON_MATRIX_ROOT:-$SALMON_SAF_MATRIX_ROOT}"
 
 # ==============================================================================
 # METHOD 5: BOWTIE2 + RSEM DIRECTORIES
 # ==============================================================================
-BOWTIE2_RSEM_ROOT="$POST_PROCESSING_ROOT/M5_RSEM_Bowtie2"
-RSEM_INDEX_ROOT="$BOWTIE2_RSEM_ROOT/4_Bowtie2_WD/index"
-RSEM_QUANT_ROOT="$BOWTIE2_RSEM_ROOT/5_RSEM_Quant_WD"
-RSEM_MATRIX_ROOT="$BOWTIE2_RSEM_ROOT/6_matrices_from_RSEM"
+BOWTIE2_RSEM_ROOT="$ALIGNMENT_RESULTS_ROOT/M5_RSEM_Bowtie2"
+RSEM_INDEX_ROOT="$BOWTIE2_RSEM_ROOT/Bowtie2_WD/index"
+RSEM_QUANT_ROOT="$BOWTIE2_RSEM_ROOT/RSEM_Quant_WD"
+RSEM_MATRIX_ROOT="$POST_PROCESSING_ROOT/M5_RSEM_Bowtie2/count_matrices_from_RSEM_Quant"
 
 # ==============================================================================
 # SRR SAMPLE ARRAYS (initialize if not set)
@@ -114,11 +126,15 @@ fi
 # INITIALIZE ALL METHOD DIRECTORIES
 # ==============================================================================
 init_method_directories() {
+	# Alignment directories
 	mkdir -p "$HISAT2_REF_GUIDED_ROOT" "$HISAT2_REF_GUIDED_INDEX_DIR" "$STRINGTIE_HISAT2_REF_GUIDED_ROOT" \
 		"$HISAT2_DE_NOVO_ROOT" "$HISAT2_DE_NOVO_INDEX_DIR" "$STRINGTIE_HISAT2_DE_NOVO_ROOT" \
 		"$STAR_ALIGN_ROOT" "$STAR_INDEX_ROOT" "$STAR_GENOME_DIR" \
-		"$SALMON_INDEX_ROOT" "$SALMON_QUANT_ROOT" "$SALMON_SAF_MATRIX_ROOT" \
-		"$RSEM_INDEX_ROOT" "$RSEM_QUANT_ROOT" "$RSEM_MATRIX_ROOT"
+		"$SALMON_INDEX_ROOT" "$SALMON_QUANT_ROOT" \
+		"$RSEM_INDEX_ROOT" "$RSEM_QUANT_ROOT"
+	# Post-processing matrix directories
+	mkdir -p "$HISAT2_REF_GUIDED_MATRIX_ROOT" "$HISAT2_DE_NOVO_MATRIX_ROOT" \
+		"$SALMON_SAF_MATRIX_ROOT" "$RSEM_MATRIX_ROOT"
 }
 
 # ==============================================================================

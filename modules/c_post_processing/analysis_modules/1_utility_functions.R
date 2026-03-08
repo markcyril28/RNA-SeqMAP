@@ -485,9 +485,9 @@ load_gene_name_mapping <- function(gene_group, gene_groups_dir = GENE_GROUPS_DIR
     if (input_fastas_dir == "") {
       # Try to find it relative to workspace
       potential_paths <- c(
-        file.path(dirname(dirname(dirname(gene_groups_dir))), "0_INPUTS"),
-        file.path(dirname(dirname(gene_groups_dir)), "0_INPUTS"),
-        "../../../../0_INPUTS"
+        file.path(dirname(dirname(dirname(gene_groups_dir))), "0_INPUTs"),
+        file.path(dirname(dirname(gene_groups_dir)), "0_INPUTs"),
+        "../../../../0_INPUTs"
       )
       for (path in potential_paths) {
         if (dir.exists(path)) {
@@ -499,7 +499,7 @@ load_gene_name_mapping <- function(gene_group, gene_groups_dir = GENE_GROUPS_DIR
     
     if (input_fastas_dir != "") {
       # Look for gene_info.csv matching the gene_group name
-      gene_info_file <- file.path(input_fastas_dir, "mappings", paste0(gene_group, ".gene_info.csv"))
+      gene_info_file <- file.path(input_fastas_dir, "mapping", paste0(gene_group, ".gene_info.csv"))
       if (file.exists(gene_info_file)) {
         csv_file <- gene_info_file
       }

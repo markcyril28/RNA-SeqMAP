@@ -15,17 +15,17 @@ SCRIPT_DIR="${SCRIPT_DIR:-$BASE_DIR}"
 MASTER_REFERENCE="${MASTER_REFERENCE:-All_Smel_Genes}"
 
 # Common directory structure patterns
-GENE_GROUPS_DIR="${GENE_GROUPS_DIR:-$BASE_DIR/0_INPUTS/gene_groups_csv}"
-ANALYSIS_MODULES_DIR="${ANALYSIS_MODULES_DIR:-$BASE_DIR/modules/analysis_modules}"
-UTILITIES_DIR="${UTILITIES_DIR:-$BASE_DIR/modules/utilities}"
-PREPROCESSING_DIR="${PREPROCESSING_DIR:-$BASE_DIR/modules/preprocessing}"
+GENE_GROUPS_DIR="${GENE_GROUPS_DIR:-$BASE_DIR/0_INPUTs/gene_groups}"
+ANALYSIS_MODULES_DIR="${ANALYSIS_MODULES_DIR:-$BASE_DIR/modules/c_post_processing/analysis_modules}"
+UTILITIES_DIR="${UTILITIES_DIR:-$BASE_DIR/modules/c_post_processing/utilities}"
+PREPROCESSING_DIR="${PREPROCESSING_DIR:-$BASE_DIR/modules/c_post_processing/preprocessing}"
 
 # Output directory naming convention
-FIGURES_OUTPUT_BASE="${FIGURES_OUTPUT_BASE:-7_Figures_Outputs}"
+FIGURES_OUTPUT_BASE="${FIGURES_OUTPUT_BASE:-Figure_Outputs}"
 HEATMAP_SUBDIR="${HEATMAP_SUBDIR:-I_Basic_Heatmap}"
 CV_HEATMAP_SUBDIR="${CV_HEATMAP_SUBDIR:-II_Heatmap_with_CV}"
 BAR_GRAPH_SUBDIR="${BAR_GRAPH_SUBDIR:-III_Bar_Graphs}"
-WGCNA_SUBDIR="${WGCNA_SUBDIR:-IV_Coexpression_WGCNA}"
+WGCNA_SUBDIR="${WGCNA_SUBDIR:-III_Coexpression_WGCNA}"
 DE_SUBDIR="${DE_SUBDIR:-V_Differential_Expression}"
 GSEA_SUBDIR="${GSEA_SUBDIR:-VI_Gene_Set_Enrichment}"
 PCA_SUBDIR="${PCA_SUBDIR:-VII_PCA}"

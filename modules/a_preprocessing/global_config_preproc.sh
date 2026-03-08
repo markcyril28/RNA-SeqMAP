@@ -31,9 +31,9 @@ DELETE_RAW_SRR_AFTER_DOWNLOAD_and_TRIMMING="${DELETE_RAW_SRR_AFTER_DOWNLOAD_and_
 # ==============================================================================
 # DIRECTORY STRUCTURE
 # ==============================================================================
-RAW_DIR_ROOT="${RAW_DIR_ROOT:-1_RAW_SRR}"
-TRIM_DIR_ROOT="${TRIM_DIR_ROOT:-2_TRIMMED_SRR}"
-FASTQC_ROOT="${FASTQC_ROOT:-3_FastQC}"
+RAW_DIR_ROOT="${RAW_DIR_ROOT:-1_SRRs/A_RAW_SRR}"
+TRIM_DIR_ROOT="${TRIM_DIR_ROOT:-1_SRRs/B_TRIM_SRR}"
+FASTQC_ROOT="${FASTQC_ROOT:-1_SRRs/C_FastQC}"
 
 # ==============================================================================
 # TRIMMING PARAMETER PROFILES
