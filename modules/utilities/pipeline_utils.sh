@@ -80,7 +80,7 @@ get_preprocessing_script() {
 # Usage: run_method_analysis "method_name" "master_reference"
 run_method_analysis() {
     local method=$1 master_ref=$2
-    local method_dir="$BASE_DIR/4_POST_PROC_v1_postproc_test/$method"
+    local method_dir="$BASE_DIR/4_POST_PROC/$method"
     
     [[ ! -d "$method_dir" ]] && { log_error "Method directory not found: $method_dir"; return 1; }
     

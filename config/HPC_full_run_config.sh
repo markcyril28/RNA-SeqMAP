@@ -205,6 +205,9 @@ SRR_COMBINED_LIST=(
 # DIRECTORY STRUCTURE AND OUTPUT PATHS
 # ==============================================================================
 
+POST_PROC_ROOT="4_POST_PROC"
+export POST_PROC_ROOT
+
 # Create required directories (including log directories)
 mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT" \
 	"$HISAT2_REF_GUIDED_ROOT" "$HISAT2_REF_GUIDED_INDEX_DIR" "$STRINGTIE_HISAT2_REF_GUIDED_ROOT" \

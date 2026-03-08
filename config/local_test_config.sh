@@ -200,7 +200,7 @@ SRR_COMBINED_LIST=(
 # DIRECTORY STRUCTURE AND OUTPUT PATHS
 # ==============================================================================
 
-POST_PROC_ROOT="4_POST_PROC_local_test"
+POST_PROC_ROOT="4_POST_PROC"
 export POST_PROC_ROOT
 
 # Create required directories (including log directories)
