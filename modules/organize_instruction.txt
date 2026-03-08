@@ -19,7 +19,8 @@ Folders:
         - shared_utils_methods.sh 
         - separate the methods into each own bash scripts. 
         Don't write Rscripts within bash script. Create a separate helper Rscripts
-
+    c_post_processing
+        
     logging
         - logging_utils.sh
 

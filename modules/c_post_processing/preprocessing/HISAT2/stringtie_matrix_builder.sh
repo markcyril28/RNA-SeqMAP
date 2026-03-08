@@ -7,7 +7,7 @@
 # Generates gene expression count matrices from StringTie abundance files.
 # Process:
 # 1. For each gene group, locate abundance files for all samples
-# 2. Extract gene names from reference CSV files (centralized in gene_groups_csv/)
+# 2. Extract gene names from reference CSV files (centralized in gene_groups/)
 # 3. Build matrices (coverage, FPKM, TPM) with genes as rows, samples/organs as columns
 # 4. Output matrices to results directory
 # ===============================================
@@ -36,8 +36,8 @@ MASTER_SUFFIX="_from_${MASTER_REFERENCE}"
 
 # Directories
 BASE_DIR="${BASE_DIR:-$PWD}"
-INPUTS_DIR="${INPUTS_DIR:-5_stringtie_WD/a_Method_2_RAW_RESULTs}"
-OUT_DIR="${OUT_DIR:-5_stringtie_WD/b_Method_2_COUNT_MATRICES}"
+INPUTS_DIR="${INPUTS_DIR:-stringtie_WD/a_Method_2_RAW_RESULTs}"
+OUT_DIR="${OUT_DIR:-stringtie_WD/b_Method_2_COUNT_MATRICES}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Utilities directory (contains matrix_builder.py)
@@ -57,7 +57,7 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] Master reference: $MASTER_REFERENCE"
 # ===============================================
 # Load from SRR_csv directory instead of hardcoding
 # SRR_CSV_DIR is exported by run_all_post_processing.sh
-# Fallback to 0_INPUTS/SRR_csv relative to the project root
+# Fallback to 0_INPUTs/SRR_csv relative to the project root
 
 SRR_CSV_DIR="${SRR_CSV_DIR:-$SCRIPT_DIR/../../../0_INPUTs/SRR_csv}"
 
@@ -266,7 +266,7 @@ merge_group_counts() {
  
 # Centralized gene groups CSV directory
 # Use GENE_GROUPS_DIR from environment (set by run_all_post_processing.sh)
-# Fallback to 0_INPUTS/gene_groups_csv relative to the project root
+# Fallback to 0_INPUTs/gene_groups relative to the project root
 GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-$SCRIPT_DIR/../../../0_INPUTs/gene_groups}}"
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gene groups CSV directory: $GENE_GROUPS_CSV_DIR"

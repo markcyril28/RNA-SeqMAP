@@ -52,9 +52,9 @@ GPU_BACKEND <- "cpu"  # "cpu", "cuda", or "torch"
 
 # Base directories (relative to method folder)
 # Different methods have different quantification output structures:
-#   M1/M2 (HISAT2+StringTie): 5_stringtie_WD/
-#   M4 (Salmon): 5_Salmon_Quant_WD/
-#   M5 (RSEM): 5_RSEM_Quant_WD/
+#   M1/M2 (HISAT2+StringTie): stringtie_WD/
+#   M4 (Salmon): Salmon_Quant/
+#   M5 (RSEM): RSEM_Quant_WD/
 MATRICES_DIR <- "count_matrices"
 CONSOLIDATED_BASE_DIR <- "Figure_Outputs"
 
