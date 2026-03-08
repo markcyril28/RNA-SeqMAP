@@ -70,7 +70,7 @@ scp admontecillo@10.0.9.31:/home/admontecillo/MCRM_pipeline_HPC/HeatSeq/CMSC244_
 
 scp admontecillo@10.0.9.31:/home/admontecillo/MCRM_pipeline_HPC/HeatSeq/CMSC244_last.zip $PWD
 
-7z a -t7z -mx=9 last_transfer.7z 3_FastQC/ 4_POST_PROC/ logs/ logs_archive/
+7z a -t7z -mx=9 last_transfer.7z 1_SRRs/C_FastQC/ 3_POST_PROC/ logs/ logs_archive/
 
 scp admontecillo@10.0.9.31:/home/admontecillo/MCRM_pipeline_HPC/HeatSeq/last_transfer.7z $PWD 
 

@@ -12,10 +12,10 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$SCRIPT_DIR"  # HeatSeq is the project root
-ANALYSIS_MODULES_DIR="$BASE_DIR/modules/analysis_modules"
-GENE_GROUPS_DIR="$BASE_DIR/0_INPUTS/gene_groups_csv"
-SRR_CSV_DIR="$BASE_DIR/0_INPUTS/SRR_csv"
-UTILITIES_DIR="$BASE_DIR/modules/utilities"
+ANALYSIS_MODULES_DIR="$BASE_DIR/modules/c_post_processing/analysis_modules"
+GENE_GROUPS_DIR="$BASE_DIR/0_INPUTs/gene_groups"
+SRR_CSV_DIR="$BASE_DIR/0_INPUTs/SRR_csv"
+UTILITIES_DIR="$BASE_DIR/modules/c_post_processing/utilities"
 LOGGING_UTILS="$BASE_DIR/modules/logging/logging_utils.sh"
 
 # Source logging utilities first (provides log_info, log_step, log_error, etc.)
@@ -81,7 +81,7 @@ GENE_GROUPS=(
     #"Selected_GRF_GIF_Genes_vAll_GIFs"
 )
 
-# Each name corresponds to a CSV file in 0_INPUTS/SRR_csv/
+# Each name corresponds to a CSV file in 0_INPUTs/SRR_csv/
 # CSV format: SRR_ID,Organ,Notes
 SRR_DATASETS=(
     #"PRJNA328564"      # Main Dataset - Eggplant tissue atlas (PRJNA328564)
@@ -197,7 +197,7 @@ get_output_folder_name() {
         "Basic_Heatmap")                    echo "I_Basic_Heatmap" ;;
         "Heatmap_with_CV")                  echo "II_Heatmap_with_CV" ;;
         "BarGraph")                         echo "III_Bar_Graphs" ;;
-        "Coexpression_using_WGCNA")         echo "IV_Coexpression_WGCNA" ;;
+        "Coexpression_using_WGCNA")         echo "III_Coexpression_WGCNA" ;;
         "Differential_Expression")          echo "V_Differential_Expression" ;;
         "Gene_Set_Enrichment")              echo "VI_Gene_Set_Enrichment" ;;
         "PCA_Dimensionality_Reduction")     echo "VII_Dimensionality_Reduction" ;;
@@ -211,7 +211,7 @@ get_output_folder_name() {
 if [[ "$CLEAR_OUTPUT_FOLDER" == "TRUE" ]]; then
     log_info "Clearing output folders for enabled analyses..."
     for method in "${METHODS[@]}"; do
-        output_base="$BASE_DIR/4_POST_PROC/$method/7_Figures_Outputs"
+        output_base="$BASE_DIR/3_POST_PROC/$method/Figure_Outputs"
         for analysis in "${ANALYSES[@]}"; do
             folder_name=$(get_output_folder_name "$analysis")
             if [[ -n "$folder_name" && -d "$output_base/$folder_name" ]]; then
