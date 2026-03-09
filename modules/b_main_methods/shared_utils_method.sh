@@ -225,6 +225,77 @@ normalize_expression_data() {
 # CROSS-METHOD VALIDATION
 # ==============================================================================
 
+# ==============================================================================
+# GNU PARALLEL HELPER FUNCTIONS
+# ==============================================================================
+
+# Initialize parallel worker environment (call at start of any parallel worker)
+# Sets: trimmed1, trimmed2
+# Requires exported: abs_trim_dir_root, CONDA_PREFIX, CONDA_EXE, CONDA_DEFAULT_ENV
+_init_parallel_worker() {
+	local SRR="$1"
+
+	# Reactivate conda in subshell if needed
+	if [[ -n "${CONDA_PREFIX:-}" && -n "${CONDA_EXE:-}" ]]; then
+		source "$(dirname "$CONDA_EXE")/../etc/profile.d/conda.sh" 2>/dev/null || true
+		conda activate "${CONDA_DEFAULT_ENV:-base}" 2>/dev/null || true
+	fi
+
+	# Inline find_trimmed_fastq (avoids function export issues)
+	local trim_dir="${abs_trim_dir_root}/$SRR"
+	trimmed1="" trimmed2=""
+	if [[ -f "$trim_dir/${SRR}_1_val_1.fq.gz" && -f "$trim_dir/${SRR}_2_val_2.fq.gz" ]]; then
+		trimmed1="$trim_dir/${SRR}_1_val_1.fq.gz"
+		trimmed2="$trim_dir/${SRR}_2_val_2.fq.gz"
+	elif [[ -f "$trim_dir/${SRR}_1_val_1.fq" && -f "$trim_dir/${SRR}_2_val_2.fq" ]]; then
+		trimmed1="$trim_dir/${SRR}_1_val_1.fq"
+		trimmed2="$trim_dir/${SRR}_2_val_2.fq"
+	elif [[ -f "$trim_dir/${SRR}_trimmed.fq.gz" ]]; then
+		trimmed1="$trim_dir/${SRR}_trimmed.fq.gz"
+	elif [[ -f "$trim_dir/${SRR}_trimmed.fq" ]]; then
+		trimmed1="$trim_dir/${SRR}_trimmed.fq"
+	else
+		for f in "$trim_dir"/${SRR}*val_1*.fq* "$trim_dir"/${SRR}*val_1*.gz; do
+			[[ -f "$f" ]] && { trimmed1="$f"; break; }
+		done
+		for f in "$trim_dir"/${SRR}*val_2*.fq* "$trim_dir"/${SRR}*val_2*.gz; do
+			[[ -f "$f" ]] && { trimmed2="$f"; break; }
+		done
+	fi
+}
+export -f _init_parallel_worker
+
+# Log helper for parallel workers
+# Usage: _parallel_log METHOD SRR LEVEL message
+_parallel_log() {
+	local method="$1" SRR="$2" level="$3"; shift 3
+	local ts
+	ts=$(date '+%Y-%m-%d %H:%M:%S')
+	printf '[%s] [%s] [%s-%s] %s\n' "$ts" "$level" "$method" "$SRR" "$*"
+	[[ -n "${abs_error_warn_file:-}" ]] && \
+		printf '[%s] [%s] [%s-%s] %s\n' "$ts" "$level" "$method" "$SRR" "$*" >> "$abs_error_warn_file"
+}
+export -f _parallel_log
+
+# Export common environment variables for parallel workers
+# Call before dispatching parallel jobs
+_prepare_parallel_env() {
+	export PATH CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_EXE
+	export keep_bam_global
+
+	abs_trim_dir_root="$TRIM_DIR_ROOT"
+	[[ "$abs_trim_dir_root" != /* ]] && abs_trim_dir_root="$(pwd)/$abs_trim_dir_root"
+	export abs_trim_dir_root
+
+	abs_error_warn_file="${ERROR_WARN_FILE:-}"
+	[[ -n "$abs_error_warn_file" && "$abs_error_warn_file" != /* ]] && abs_error_warn_file="$(pwd)/$abs_error_warn_file"
+	export abs_error_warn_file
+}
+
+# ==============================================================================
+# CROSS-METHOD VALIDATION
+# ==============================================================================
+
 compare_methods_summary() {
 	local fasta_tag="$1"
 	
@@ -233,10 +304,10 @@ compare_methods_summary() {
 	
 	# Check each method's output
 	local methods=(
-		"Method 1 (HISAT2 Ref-Guided):$STRINGTIE_HISAT2_REF_GUIDED_ROOT/$fasta_tag/deseq2_input/gene_count_matrix.csv"
-		"Method 3 (STAR):$STAR_ALIGN_ROOT/$fasta_tag/count_matrices_from_STAR/gene_counts_tximport.tsv"
-		"Method 4 (Salmon SAF):$SALMON_SAF_MATRIX_ROOT/$fasta_tag/deseq2_input/gene_count_matrix.csv"
-		"Method 5 (Bowtie2+RSEM):$RSEM_MATRIX_ROOT/$fasta_tag/deseq2_input/gene_count_matrix.csv"
+		"Method 1 (HISAT2 Ref-Guided):$STRINGTIE_HISAT2_REF_GUIDED_ROOT/deseq2_input/gene_count_matrix.csv"
+		"Method 3 (STAR):$STAR_MATRIX_ROOT/gene_counts_tximport.tsv"
+		"Method 4 (Salmon SAF):$SALMON_SAF_MATRIX_ROOT/deseq2_input/gene_count_matrix.csv"
+		"Method 5 (Bowtie2+RSEM):$RSEM_MATRIX_ROOT/deseq2_input/gene_count_matrix.csv"
 	)
 	
 	for method_info in "${methods[@]}"; do

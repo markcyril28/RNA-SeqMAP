@@ -20,6 +20,11 @@ export METHOD_CONFIG_SOURCED="true"
 THREADS="${THREADS:-12}"
 JOBS="${JOBS:-2}"
 
+# GNU Parallel Configuration
+# Number of concurrent sample processing jobs (requires GNU Parallel)
+# Each job receives THREADS/PARALLEL_JOBS threads
+PARALLEL_JOBS="${PARALLEL_JOBS:-${JOBS:-2}}"
+
 # BAM File Retention
 keep_bam_global="${keep_bam_global:-n}"  # y = keep BAM files, n = delete after processing
 
@@ -97,6 +102,7 @@ HISAT2_DE_NOVO_MATRIX_ROOT="$POST_PROCESSING_ROOT/M2_HISAT2_DeNovo/count_matrice
 STAR_ALIGN_ROOT="$ALIGNMENT_RESULTS_ROOT/M3_STAR_Align"
 STAR_INDEX_ROOT="$STAR_ALIGN_ROOT/STAR_index"
 STAR_GENOME_DIR="$STAR_ALIGN_ROOT/STAR_alignment_WD"
+STAR_MATRIX_ROOT="$POST_PROCESSING_ROOT/M3_STAR_Align/count_matrices_from_STAR"
 
 # ==============================================================================
 # METHOD 4: SALMON SAF DIRECTORIES
@@ -134,7 +140,56 @@ init_method_directories() {
 		"$RSEM_INDEX_ROOT" "$RSEM_QUANT_ROOT"
 	# Post-processing matrix directories
 	mkdir -p "$HISAT2_REF_GUIDED_MATRIX_ROOT" "$HISAT2_DE_NOVO_MATRIX_ROOT" \
-		"$SALMON_SAF_MATRIX_ROOT" "$RSEM_MATRIX_ROOT"
+		"$STAR_MATRIX_ROOT" "$SALMON_SAF_MATRIX_ROOT" "$RSEM_MATRIX_ROOT"
+}
+
+# ==============================================================================
+# DYNAMIC FASTA-BASED OUTPUT DIRECTORIES
+# ==============================================================================
+# Call before running any method to isolate outputs by input FASTA filename.
+# Reconfigures all method directory variables to include fasta_tag as a
+# subdirectory under ALIGNMENT_RESULTS_ROOT and POST_PROCESSING_ROOT.
+# ==============================================================================
+
+set_fasta_output_dirs() {
+	local fasta_tag="$1"
+	[[ -z "$fasta_tag" ]] && { echo "ERROR: set_fasta_output_dirs requires a fasta_tag argument" >&2; return 1; }
+
+	# Method 1: HISAT2 Reference Guided
+	HISAT2_REF_GUIDED_ROOT="$ALIGNMENT_RESULTS_ROOT/M1_HISAT2_RefGuided/HISAT2_WD/$fasta_tag"
+	HISAT2_REF_GUIDED_INDEX_DIR="$HISAT2_REF_GUIDED_ROOT/index"
+	STRINGTIE_HISAT2_REF_GUIDED_ROOT="$ALIGNMENT_RESULTS_ROOT/M1_HISAT2_RefGuided/stringtie_WD/$fasta_tag"
+	HISAT2_REF_GUIDED_MATRIX_ROOT="$POST_PROCESSING_ROOT/M1_HISAT2_RefGuided/count_matrices_from_stringtie/$fasta_tag"
+
+	# Method 2: HISAT2 De Novo
+	HISAT2_DE_NOVO_ROOT="$ALIGNMENT_RESULTS_ROOT/M2_HISAT2_DeNovo/HISAT2_WD/$fasta_tag"
+	HISAT2_DE_NOVO_INDEX_DIR="$HISAT2_DE_NOVO_ROOT/index"
+	STRINGTIE_HISAT2_DE_NOVO_ROOT="$ALIGNMENT_RESULTS_ROOT/M2_HISAT2_DeNovo/stringtie_WD/$fasta_tag"
+	HISAT2_DE_NOVO_MATRIX_ROOT="$POST_PROCESSING_ROOT/M2_HISAT2_DeNovo/count_matrices_from_stringtie/$fasta_tag"
+
+	# Method 3: STAR Alignment
+	STAR_ALIGN_ROOT="$ALIGNMENT_RESULTS_ROOT/M3_STAR_Align"
+	STAR_INDEX_ROOT="$ALIGNMENT_RESULTS_ROOT/M3_STAR_Align/STAR_index/$fasta_tag"
+	STAR_GENOME_DIR="$ALIGNMENT_RESULTS_ROOT/M3_STAR_Align/STAR_alignment_WD/$fasta_tag"
+	STAR_MATRIX_ROOT="$POST_PROCESSING_ROOT/M3_STAR_Align/count_matrices_from_STAR/$fasta_tag"
+
+	# Method 4: Salmon SAF
+	SALMON_SAF_ROOT="$ALIGNMENT_RESULTS_ROOT/M4_Salmon_Saf"
+	SALMON_INDEX_ROOT="$ALIGNMENT_RESULTS_ROOT/M4_Salmon_Saf/Salmon_WD/$fasta_tag/index"
+	SALMON_QUANT_ROOT="$ALIGNMENT_RESULTS_ROOT/M4_Salmon_Saf/Salmon_Quant/$fasta_tag"
+	SALMON_SAF_MATRIX_ROOT="$POST_PROCESSING_ROOT/M4_Salmon_Saf/count_matrices_from_Salmon_Quant/$fasta_tag"
+	SALMON_MATRIX_ROOT="$SALMON_SAF_MATRIX_ROOT"
+
+	# Method 5: Bowtie2 + RSEM
+	BOWTIE2_RSEM_ROOT="$ALIGNMENT_RESULTS_ROOT/M5_RSEM_Bowtie2"
+	RSEM_INDEX_ROOT="$ALIGNMENT_RESULTS_ROOT/M5_RSEM_Bowtie2/Bowtie2_WD/$fasta_tag/index"
+	RSEM_QUANT_ROOT="$ALIGNMENT_RESULTS_ROOT/M5_RSEM_Bowtie2/RSEM_Quant_WD/$fasta_tag"
+	RSEM_MATRIX_ROOT="$POST_PROCESSING_ROOT/M5_RSEM_Bowtie2/count_matrices_from_RSEM_Quant/$fasta_tag"
+
+	# Create all directories
+	init_method_directories
+
+	log_info "[CONFIG] Output directories configured for FASTA: $fasta_tag"
 }
 
 # ==============================================================================

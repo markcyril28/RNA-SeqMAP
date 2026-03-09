@@ -5,9 +5,9 @@
 # ==============================================================================
 
 # Runtime Configuration
-THREADS=8                              # Threads for parallel operations
-JOBS=2									# Parallel jobs for GNU Parallel
-USE_GNU_PARALLEL="FALSE"                 # TRUE/FALSE for GNU Parallel
+THREADS=64                              # Threads for parallel operations
+JOBS=4									# Parallel jobs for GNU Parallel
+USE_GNU_PARALLEL="TRUE"                 # TRUE/FALSE for GNU Parallel
 keep_bam_global="n"                     # y=keep BAM files, n=delete after
 
 # Pipeline Stages (comment/uncomment to enable/disable)
@@ -19,18 +19,20 @@ PIPELINE_STAGES=(
 	#"TRIM_SRR"
 	
 	# Option B: Combined download+trim+cleanup (auto-deletes raw after trim)
-	#"DOWNLOAD_TRIM_and_DELETE_RAW_SRR"
+	"DOWNLOAD_TRIM_and_DELETE_RAW_SRR"
 	
-	#"GZIP_TRIMMED_FILES"
-	#"QUALITY_CONTROL"
+	"GZIP_TRIMMED_FILES"
+	"QUALITY_CONTROL"
+
 	#"DELETE_RAW_SRR"				# Manually delete raw SRR files
 	#"DELETE_TRIMMED_FASTQ_FILES"	# Manually delete trimmed files
 
-	"METHOD_1_HISAT2_REF_GUIDED"
-	"METHOD_2_HISAT2_DE_NOVO"
-	"METHOD_3_STAR_ALIGNMENT"
-	"METHOD_4_SALMON_SAF"
-	"METHOD_5_BOWTIE2_RSEM"
+	#"METHOD_1_HISAT2_REF_GUIDED"
+	#"METHOD_2_HISAT2_DE_NOVO"
+	#"METHOD_3_STAR_ALIGNMENT"
+	#"METHOD_4_SALMON_SAF"
+	#"METHOD_5_BOWTIE2_RSEM"
+
 	#"HEATMAP_WRAPPER"
 	#"ZIP_RESULTS"
 )
@@ -67,23 +69,20 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 # Legacy GTF and FASTA references (commented out)
 #All_SmelGIF_GTF_FILE="0_INPUTs/All_SmelDMP_Head_Gene_Name_v4.gtf"
 Eggplant_V4_1_transcripts_function_FASTA_FILE="0_INPUTs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
-ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="0_INPUTs/gtf/reference/All_Smel_Genes_Full_Name_reformatted.gtf"
+#ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="0_INPUTs/gtf/reference/All_Smel_Genes_Full_Name_reformatted.gtf"
+#ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="0_INPUTs/gtf/reference/All_Smel_Genes_Full_Name_reformatted_TEST.gtf"
+#ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="0_INPUTs/gtf/reference/Eggplant_V4.1_function_IPR_reformatted_v4.gtf"
+ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="0_INPUTs/gtf/reference/GPE001970_transcripts.gtf"
+
 decoy="0_INPUTs/fasta/experimental/TEST.fasta"
+#gtf_file="${Eggplant_V4_1_transcripts_function_FASTA_FILE}"
 gtf_file="${ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE}"
 
 # FASTA Files for Analysis
 ALL_FASTA_FILES=(
 	# List of FASTA files to process
-	#"0_INPUTs/fasta/reference_genomes/All_Smel_Genes.fasta"
-	"0_INPUTs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
-	#"0_INPUTs/fasta/experimental/TEST.fasta"
-	#"0_INPUTs/fasta/experimental/SmelGIF_with_Cell_Cycle_Control_genes.fasta"
-	#"0_INPUTs/fasta/experimental/SmelDMP_CDS_Control_Best.fasta"
-	#"0_INPUTs/fasta/experimental/SmelGIF_with_Best_Control_Cyclo.fasta"
-	#"0_INPUTs/fasta/experimental/SmelGRF_with_Best_Control_Cyclo.fasta"
-	#"0_INPUTs/fasta/experimental/SmelGRF-GIF_with_Best_Control_Cyclo.fasta"
-	#"0_INPUTs/fasta/control_genes/Control_Genes_Puta.fasta"
-	#"0_INPUTs/fasta/experimental/SmelGRF_with_Cell_Cycle_Control_genes.fasta"
+	#"0_INPUTs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
+	"0_INPUTs/fasta/reference_genomes/GPE001970_transcripts.fa"
 )
 
 # ==============================================================================
@@ -95,25 +94,25 @@ ALL_FASTA_FILES=(
 SRR_LIST_PRJNA328564=(
 	# Source: https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA328564&o=acc_s%3Aa
 	# Developmental stages arranged from early to late
-	#SRR3884685	# Radicles (earliest - germination)
-	#SRR3884677	# Cotyledons (seed leaves)
-	#SRR3884675	# Roots (root development)
-	#SRR3884690	# Stems (vegetative growth)
-	#SRR3884689	# Leaves (vegetative growth)
-	#SRR3884684	# Senescent_leaves (leaf aging)
+	SRR3884685	# Radicles (earliest - germination)
+	SRR3884677	# Cotyledons (seed leaves)
+	SRR3884675	# Roots (root development)
+	SRR3884690	# Stems (vegetative growth)
+	SRR3884689	# Leaves (vegetative growth)
+	SRR3884684	# Senescent_leaves (leaf aging)
 	SRR3884686	# Buds_0.7cm (flower bud initiation) [MAIN INTEREST]
 	SRR3884687	# Opened_Buds (flower development) 	 [MAIN INTEREST]
 	SRR3884597	# Flowers (anthesis)/				 [MAIN INTEREST]	
-	#SRR3884679	# Pistils (female reproductive parts)
-	#SRR3884608	# Fruits_1cm (early fruit development)
-	#SRR3884620	# Fruits_Stage_1 (early fruit stage)
-	#SRR3884631	# Fruits_6cm (fruit enlargement)
+	SRR3884679	# Pistils (female reproductive parts)
+	SRR3884608	# Fruits_1cm (early fruit development)
+	SRR3884620	# Fruits_Stage_1 (early fruit stage)
+	SRR3884631	# Fruits_6cm (fruit enlargement)
 	#SRR3884642	# Fruits_Skin_Stage_2 (mid fruit development)
 	#SRR3884653	# Fruits_Flesh_Stage_2 (mid fruit development)
 	#SRR3884664	# Fruits_Calyx_Stage_2 (mid fruit development)
 	#SRR3884680	# Fruits_Skin_Stage_3 (late fruit development)
-	#RR3884681	# Fruits_Flesh_Stage_3 (late fruit development)
-	#SRR3884678	# Fruits_peduncle (fruit attachment)
+	SRR3884681	# Fruits_Flesh_Stage_3 (late fruit development)
+	SRR3884678	# Fruits_peduncle (fruit attachment)
 )
 
 SRR_LIST_SAMN28540077=(
@@ -189,11 +188,11 @@ OTHER_SRR_LIST=(
 )
 
 SRR_COMBINED_LIST=(
-	#"${SRR_LIST_PRJNA328564[@]}"	# Main Dataset for GEA. 
-	#"${SRR_LIST_SAMN28540077[@]}"	# Chinese Dataset for replicability. 
-	#"${SRR_LIST_SAMN28540068[@]}"	# Chinese Dataset for replicability. 
-	"${SRR_LIST_PRJNA865018[@]}"	# SET_1: Good Dataset for SmelDMP GEA.
-	"${SRR_LIST_PRJNA941250[@]}"	# SET_2: Good Dataset for SmelDMP GEA.
+	"${SRR_LIST_PRJNA328564[@]}"	# Main Dataset for GEA. 
+	"${SRR_LIST_SAMN28540077[@]}"	# Chinese Dataset for replicability. 
+	"${SRR_LIST_SAMN28540068[@]}"	# Chinese Dataset for replicability. 
+	#"${SRR_LIST_PRJNA865018[@]}"	# SET_1: Good Dataset for SmelDMP GEA.
+	#"${SRR_LIST_PRJNA941250[@]}"	# SET_2: Good Dataset for SmelDMP GEA.
 )
 
 # ==============================================================================

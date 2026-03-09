@@ -52,10 +52,11 @@ GPU_BACKEND <- "cpu"  # "cpu", "cuda", or "torch"
 
 # Base directories (relative to method folder)
 # Different methods have different quantification output structures:
-#   M1/M2 (HISAT2+StringTie): stringtie_WD/
-#   M4 (Salmon): Salmon_Quant/
-#   M5 (RSEM): RSEM_Quant_WD/
-MATRICES_DIR <- "count_matrices"
+#   M1/M2 (HISAT2+StringTie): count_matrices_from_stringtie/
+#   M3 (STAR): count_matrices_from_STAR/
+#   M4 (Salmon): count_matrices_from_Salmon_Quant/
+#   M5 (RSEM): count_matrices_from_RSEM_Quant/
+# Use get_matrices_dir() for method-specific directory names
 CONSOLIDATED_BASE_DIR <- "Figure_Outputs"
 
 # Gene groups directory - use environment variable if set, otherwise compute from script location
@@ -72,18 +73,18 @@ if (SRR_CSV_DIR == "") {
   SRR_CSV_DIR <- file.path(dirname(ANALYSIS_MODULES_DIR_TMP), "SRR_csv")
 }
 
-# Output subdirectories
+# Output subdirectories (include MASTER_REFERENCE as leaf for per-reference isolation)
 OUTPUT_SUBDIRS <- list(
-  MATRIX_CREATION = "0_Matrix_Creation",
-  BASIC_HEATMAP = "I_Basic_Heatmap",
-  CV_HEATMAP = "II_Heatmap_with_CV",
-  BAR_GRAPH = "III_Bar_Graphs",
-  WGCNA = "III_Coexpression_WGCNA",
-  DEA = "V_Differential_Expression",
-  GSEA = "VI_Gene_Set_Enrichment",
-  DIM_REDUCTION = "VII_Dimensionality_Reduction",
-  CORRELATION = "VIII_Sample_Correlation",
-  TISSUE_SPEC = "IX_Tissue_Specificity"
+  MATRIX_CREATION = file.path("0_Matrix_Creation", MASTER_REFERENCE),
+  BASIC_HEATMAP = file.path("I_Basic_Heatmap", MASTER_REFERENCE),
+  CV_HEATMAP = file.path("II_Heatmap_with_CV", MASTER_REFERENCE),
+  BAR_GRAPH = file.path("III_Bar_Graphs", MASTER_REFERENCE),
+  WGCNA = file.path("III_Coexpression_WGCNA", MASTER_REFERENCE),
+  DEA = file.path("V_Differential_Expression", MASTER_REFERENCE),
+  GSEA = file.path("VI_Gene_Set_Enrichment", MASTER_REFERENCE),
+  DIM_REDUCTION = file.path("VII_Dimensionality_Reduction", MASTER_REFERENCE),
+  CORRELATION = file.path("VIII_Sample_Correlation", MASTER_REFERENCE),
+  TISSUE_SPEC = file.path("IX_Tissue_Specificity", MASTER_REFERENCE)
 )
 
 # ===============================================
@@ -338,10 +339,10 @@ is_valid_norm_for_count <- function(count_type, norm_scheme) {
 get_matrices_dir <- function(method = CURRENT_METHOD) {
   method_type <- get_method_type(method)
   switch(method_type,
-    "stringtie" = "stringtie_WD/b_Method_2_COUNT_MATRICES",
-    "salmon" = "count_matrices",
-    "rsem" = "count_matrices",
-    "star" = "count_matrices",
+    "stringtie" = "count_matrices_from_stringtie",
+    "salmon" = "count_matrices_from_Salmon_Quant",
+    "rsem" = "count_matrices_from_RSEM_Quant",
+    "star" = "count_matrices_from_STAR",
     "count_matrices"  # default
   )
 }
@@ -515,7 +516,7 @@ build_input_path <- function(gene_group, processing_level, count_type, gene_type
               paste0(folder_name, "_", count_type, "_counts_", stringtie_gene_type, 
                      "_", stringtie_label_type, "_from_", master_ref, ".tsv"))
   } else {
-    # Tximport path (Salmon/RSEM): 6_matrices/{master_ref}/{level}/{gene_group}/
+    # Tximport path (Salmon/RSEM): count_matrices_from_*/{master_ref}/{level}/{gene_group}/
     if (gene_group == master_ref) {
       file.path(matrices_dir, master_ref, processing_level,
                 paste0(master_ref, "_", count_type, "_", gene_type,

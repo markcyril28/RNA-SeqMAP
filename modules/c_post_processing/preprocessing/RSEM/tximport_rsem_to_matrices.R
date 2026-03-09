@@ -73,7 +73,7 @@ save_count_matrix <- function(counts_matrix, output_dir, base_name, master_ref, 
 
 QUANT_DIR <- "RSEM_Quant_WD"
 MASTER_REFERENCE <- Sys.getenv("MASTER_REFERENCE", "All_Smel_Genes")
-MATRICES_OUTPUT_DIR <- "count_matrices"
+MATRICES_OUTPUT_DIR <- "count_matrices_from_RSEM_Quant"
 # Use shared GENE_GROUPS_DIR from 0_shared_config.R (already sourced)
 
 # Toggle to generate both gene-level and isoform-level matrices

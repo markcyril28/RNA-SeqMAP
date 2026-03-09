@@ -22,7 +22,7 @@ source "$SCRIPT_DIR/shared_utils_method.sh"
 
 # Salmon quantification settings
 SALMON_KMER_SIZE="${SALMON_KMER_SIZE:-31}"
-SALMON_NUM_BOOTSTRAPS="${SALMON_NUM_BOOTSTRAPS:-30}"
+SALMON_NUM_BOOTSTRAPS="${SALMON_NUM_BOOTSTRAPS:-0}"
 
 # ==============================================================================
 # SALMON SAF PIPELINE
@@ -46,9 +46,9 @@ salmon_saf_pipeline() {
 
 	local tag="$(basename "${fasta%.*}")"
 	local work="tmp_${tag}_gentrome"
-	local idx_dir="$SALMON_INDEX_ROOT/${tag}_decoySAF"
-	local quant_root="$SALMON_QUANT_ROOT/$tag"
-	local matrix_dir="$SALMON_MATRIX_ROOT/$tag"
+	local idx_dir="$SALMON_INDEX_ROOT/decoySAF"
+	local quant_root="$SALMON_QUANT_ROOT"
+	local matrix_dir="$SALMON_MATRIX_ROOT"
 
 	mkdir -p "$SALMON_INDEX_ROOT" "$quant_root" "$matrix_dir" "$work"
 
@@ -72,42 +72,92 @@ salmon_saf_pipeline() {
 	fi
 
 	# QUANTIFICATION PER SRR
-	for SRR in "${rnaseq_list[@]}"; do
-		local out_dir="$quant_root/$SRR"
-		mkdir -p "$out_dir"
-		
-		[[ -f "$out_dir/quant.sf" ]] && { log_info "[SALMON QUANT] Quantification for $SRR already exists. Skipping."; continue; }
+	local parallel_jobs="${PARALLEL_JOBS:-${JOBS:-2}}"
+	local threads_per_job=$((THREADS / parallel_jobs))
+	[[ $threads_per_job -lt 1 ]] && threads_per_job=1
 
-		find_trimmed_fastq "$SRR"
-		[[ -z "$trimmed1" ]] && { log_warn "Missing trimmed reads for $SRR. Skipping."; continue; }
+	if command -v parallel >/dev/null 2>&1 && [[ "$parallel_jobs" -gt 1 ]]; then
+		log_step "[PARALLEL] Salmon quantification: ${#rnaseq_list[@]} samples, $parallel_jobs jobs x $threads_per_job threads"
+		_prepare_parallel_env
 
-		log_step "Quantifying expression for $SRR with Salmon"
-		
-		if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
-			# Paired-end reads
-			log_info "[SALMON QUANT] Using paired-end reads for $SRR"
-			run_with_space_time_log --input "$TRIM_DIR_ROOT/$SRR" --output "$out_dir" salmon quant \
-				-i "$idx_dir" -l A \
-				-1 "$trimmed1" -2 "$trimmed2" \
-				-p "$THREADS" \
-				--validateMappings \
-				--seqBias --gcBias --posBias \
-				--numBootstraps "$SALMON_NUM_BOOTSTRAPS" \
-				-o "$out_dir"
-		else
-			# Single-end reads
-			log_info "[SALMON QUANT] Using single-end reads for $SRR"
-			run_with_space_time_log salmon quant \
-				-i "$idx_dir" -l A \
-				-r "$trimmed1" \
-				-p "$THREADS" \
-				--validateMappings \
-				--seqBias --gcBias --posBias \
-				--numBootstraps "$SALMON_NUM_BOOTSTRAPS" \
-				-o "$out_dir"
-		fi
-		log_file_size "$out_dir/quant.sf" "Salmon quantification output - $SRR"
-	done
+		export idx_dir quant_root threads_per_job
+		local salmon_num_bootstraps="$SALMON_NUM_BOOTSTRAPS"
+		export salmon_num_bootstraps
+
+		_m4_salmon_parallel_worker() {
+			local SRR="$1"
+			_init_parallel_worker "$SRR"
+			[[ -z "$trimmed1" ]] && { _parallel_log SALMON "$SRR" WARN "Missing trimmed reads - skipping"; return 0; }
+
+			local out_dir="$quant_root/$SRR"
+			mkdir -p "$out_dir"
+			[[ -f "$out_dir/quant.sf" ]] && { _parallel_log SALMON "$SRR" INFO "Already quantified - skipping"; return 0; }
+
+			_parallel_log SALMON "$SRR" INFO "Quantifying with $threads_per_job threads"
+			local salmon_exit=0
+			if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
+				salmon quant -i "$idx_dir" -l A \
+					-1 "$trimmed1" -2 "$trimmed2" \
+					-p "$threads_per_job" \
+					-o "$out_dir" 2>&1 || salmon_exit=$?
+			else
+				salmon quant -i "$idx_dir" -l A \
+					-r "$trimmed1" \
+					-p "$threads_per_job" \
+					-o "$out_dir" 2>&1 || salmon_exit=$?
+			fi
+
+			[[ $salmon_exit -ne 0 ]] && { _parallel_log SALMON "$SRR" ERROR "Salmon failed (exit=$salmon_exit)"; return $salmon_exit; }
+			[[ ! -f "$out_dir/quant.sf" ]] && { _parallel_log SALMON "$SRR" ERROR "quant.sf not created"; return 1; }
+			_parallel_log SALMON "$SRR" INFO "Completed successfully"
+			return 0
+		}
+		export -f _m4_salmon_parallel_worker
+
+		printf '%s\n' "${rnaseq_list[@]}" | parallel \
+			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
+			--env abs_trim_dir_root --env abs_error_warn_file --env keep_bam_global \
+			--env idx_dir --env quant_root --env threads_per_job --env salmon_num_bootstraps \
+			-j "$parallel_jobs" \
+			--halt soon,fail=1 \
+			--joblog "$quant_root/parallel_salmon_saf.log" \
+			_m4_salmon_parallel_worker {}
+
+		local par_exit=$?
+		local successful=$(find "$quant_root" -name "quant.sf" 2>/dev/null | wc -l)
+		log_info "[PARALLEL] Salmon SAF complete: $successful/${#rnaseq_list[@]} samples succeeded"
+		[[ $par_exit -ne 0 ]] && log_warn "[PARALLEL] Some jobs failed - check $quant_root/parallel_salmon_saf.log"
+	else
+		# Sequential fallback
+		for SRR in "${rnaseq_list[@]}"; do
+			local out_dir="$quant_root/$SRR"
+			mkdir -p "$out_dir"
+
+			[[ -f "$out_dir/quant.sf" ]] && { log_info "[SALMON QUANT] Quantification for $SRR already exists. Skipping."; continue; }
+
+			find_trimmed_fastq "$SRR"
+			[[ -z "$trimmed1" ]] && { log_warn "Missing trimmed reads for $SRR. Skipping."; continue; }
+
+			log_step "Quantifying expression for $SRR with Salmon"
+
+			if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
+				log_info "[SALMON QUANT] Using paired-end reads for $SRR"
+				run_with_space_time_log --input "$TRIM_DIR_ROOT/$SRR" --output "$out_dir" salmon quant \
+					-i "$idx_dir" -l A \
+					-1 "$trimmed1" -2 "$trimmed2" \
+					-p "$THREADS" \
+					-o "$out_dir"
+			else
+				log_info "[SALMON QUANT] Using single-end reads for $SRR"
+				run_with_space_time_log salmon quant \
+					-i "$idx_dir" -l A \
+					-r "$trimmed1" \
+					-p "$THREADS" \
+					-o "$out_dir"
+			fi
+			log_file_size "$out_dir/quant.sf" "Salmon quantification output - $SRR"
+		done
+	fi
 
 	# MERGE MATRICES
 	_create_salmon_matrices "$fasta" "$tag" "$quant_root" "$matrix_dir" rnaseq_list[@]

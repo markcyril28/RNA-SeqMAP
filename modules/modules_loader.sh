@@ -45,8 +45,13 @@ source "$MODULES_DIR/b_main_methods/methods_loader.sh"
 init_directories() {
 	mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT"
 	init_method_directories
-	mkdir -p "logs/log_files" "logs/time_logs" "logs/space_logs" \
-		"logs/space_time_logs" "logs/error_warn_logs" "logs/software_catalogs"
+	# Per-stage log directories (1_SRRs, 2_ALIGNMENT_RESULTs, 3_POST_PROC)
+	local stage_dir
+	for stage_dir in "1_SRRs" "2_ALIGNMENT_RESULTs" "3_POST_PROC"; do
+		mkdir -p "${stage_dir}/logs/log_files" "${stage_dir}/logs/time_logs" "${stage_dir}/logs/space_logs" \
+			"${stage_dir}/logs/space_time_logs" "${stage_dir}/logs/error_warn_logs" "${stage_dir}/logs/software_catalogs" \
+			"${stage_dir}/logs/gpu_log"
+	done
 }
 
 # ==============================================================================

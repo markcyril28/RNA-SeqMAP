@@ -74,7 +74,7 @@ cat("[DEBUG] Number of SAMPLE_IDS loaded:", length(SAMPLE_IDS), "\n")
 
 QUANT_DIR <- "Salmon_Quant"
 MASTER_REFERENCE <- Sys.getenv("MASTER_REFERENCE", "All_Smel_Genes")
-MATRICES_OUTPUT_DIR <- "count_matrices"  # Consistent with other methods
+MATRICES_OUTPUT_DIR <- "count_matrices_from_Salmon_Quant"
 # Use shared GENE_GROUPS_DIR from 0_shared_config.R (already sourced)
 
 # Toggle to generate both gene-level and isoform-level matrices

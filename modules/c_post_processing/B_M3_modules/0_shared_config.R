@@ -39,11 +39,12 @@ SCRIPT_DIR <- dirname(sys.frame(1)$ofile)
 BASE_DIR <- dirname(SCRIPT_DIR)
 
 # Input directories
-# tximport outputs are stored in count_matrices_from_STAR/ or alignments/
+# tximport outputs are stored in count_matrices_from_STAR/
 MATRIX_DIR <- file.path(BASE_DIR, "count_matrices_from_STAR")
 if (!dir.exists(MATRIX_DIR)) {
   # Fallback - check for alternative locations
   alt_dirs <- c(
+    file.path(BASE_DIR, "count_matrices"),
     file.path(BASE_DIR, "matrices"),
     file.path(BASE_DIR, "alignments", "matrices")
   )

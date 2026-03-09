@@ -36,8 +36,8 @@ MASTER_SUFFIX="_from_${MASTER_REFERENCE}"
 
 # Directories
 BASE_DIR="${BASE_DIR:-$PWD}"
-INPUTS_DIR="${INPUTS_DIR:-stringtie_WD/a_Method_2_RAW_RESULTs}"
-OUT_DIR="${OUT_DIR:-stringtie_WD/b_Method_2_COUNT_MATRICES}"
+INPUTS_DIR="${INPUTS_DIR:-${BASE_DIR}/2_ALIGNMENT_RESULTs/${CURRENT_METHOD:-M1_HISAT2_RefGuided}/stringtie_WD}"
+OUT_DIR="${OUT_DIR:-count_matrices_from_stringtie}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Utilities directory (contains matrix_builder.py)

@@ -135,6 +135,67 @@ setup_logging() {
 }
 
 # ==============================================================================
+# STAGE-BASED LOG ROUTING
+# ==============================================================================
+
+switch_log_stage() {
+	# Switch all log output to a stage-specific directory.
+	# Usage: switch_log_stage <base_dir>
+	# Example: switch_log_stage "1_SRRs"
+	#          switch_log_stage "2_ALIGNMENT_RESULTs"
+	#          switch_log_stage "3_POST_PROC"
+	local stage_base="$1"
+
+	# Convert to absolute path if relative
+	if [[ "$stage_base" != /* ]]; then
+		stage_base="${PROJECT_ROOT:-$(pwd)}/$stage_base"
+	fi
+
+	# Update directory paths
+	LOG_DIR="${stage_base}/logs/log_files"
+	TIME_DIR="${stage_base}/logs/time_logs"
+	SPACE_DIR="${stage_base}/logs/space_logs"
+	SPACE_TIME_DIR="${stage_base}/logs/space_time_logs"
+	ERROR_WARN_DIR="${stage_base}/logs/error_warn_logs"
+	SOFTWARE_CATALOG_DIR="${stage_base}/logs/software_catalogs"
+	GPU_LOG_DIR="${stage_base}/logs/gpu_log"
+
+	# Update file paths
+	LOG_FILE="${LOG_DIR}/pipeline_${RUN_ID}_full_log.log"
+	TIME_FILE="${TIME_DIR}/pipeline_${RUN_ID}_time_metrics.csv"
+	TIME_TEMP="${TIME_DIR}/.time_temp_${RUN_ID}.txt"
+	SPACE_FILE="${SPACE_DIR}/pipeline_${RUN_ID}_space_metrics.csv"
+	SPACE_TIME_FILE="${SPACE_TIME_DIR}/pipeline_${RUN_ID}_combined_metrics.csv"
+	ERROR_WARN_FILE="${ERROR_WARN_DIR}/pipeline_${RUN_ID}_errors_warnings.log"
+	SOFTWARE_FILE="${SOFTWARE_CATALOG_DIR}/software_catalog_${RUN_ID}.csv"
+	GPU_LOG_FILE="${GPU_LOG_DIR}/gpu_${RUN_ID}.log"
+
+	# Create directories
+	mkdir -p "$LOG_DIR" "$TIME_DIR" "$SPACE_DIR" "$SPACE_TIME_DIR" \
+		"$ERROR_WARN_DIR" "$SOFTWARE_CATALOG_DIR" "$GPU_LOG_DIR" || {
+		echo "ERROR: Failed to create log directories for stage: $stage_base" >&2
+		return 1
+	}
+
+	# Initialize CSV headers if files don't exist
+	[[ ! -f "$TIME_FILE" ]] && echo "Timestamp,Command,Elapsed_Time_sec,CPU_Percent,Max_RSS_KB,User_Time_sec,System_Time_sec,Exit_Status" > "$TIME_FILE"
+	[[ ! -f "$SPACE_FILE" ]] && echo "Timestamp,Type,Path,Size_KB,Size_MB,Size_GB,File_Count,Description" > "$SPACE_FILE"
+	[[ ! -f "$SPACE_TIME_FILE" ]] && echo "Timestamp,Command,Elapsed_Time_sec,CPU_Percent,Max_RSS_KB,User_Time_sec,System_Time_sec,Input_Size_MB,Output_Size_MB,Exit_Status" > "$SPACE_TIME_FILE"
+	[[ ! -f "$ERROR_WARN_FILE" ]] && touch "$ERROR_WARN_FILE"
+	[[ ! -f "$SOFTWARE_FILE" ]] && echo "Software/Tool,Version" > "$SOFTWARE_FILE"
+	[[ ! -f "$GPU_LOG_FILE" ]] && echo "=== GPU Log Started: $(timestamp) ===" > "$GPU_LOG_FILE"
+
+	# Re-setup output redirection to the new log file
+	if [[ "$log_choice" == "2" ]]; then
+		exec >"$LOG_FILE" 2>&1
+	else
+		exec > >(tee -a "$LOG_FILE") 2>&1
+	fi
+
+	log_info "Switched logging to stage: $stage_base"
+}
+
+# ==============================================================================
 # ERROR HANDLING
 # ==============================================================================
 

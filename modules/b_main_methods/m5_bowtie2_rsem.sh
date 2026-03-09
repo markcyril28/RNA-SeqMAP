@@ -166,9 +166,9 @@ bowtie2_rsem_pipeline() {
 	command -v dos2unix >/dev/null 2>&1 && dos2unix "$fasta" 2>/dev/null || true
 
 	local tag="$(basename "${fasta%.*}")"
-	local rsem_idx="$RSEM_INDEX_ROOT/${tag}_rsem"
-	local quant_root="$RSEM_QUANT_ROOT/$tag"
-	local matrix_dir="$RSEM_MATRIX_ROOT/$tag"
+	local rsem_idx="$RSEM_INDEX_ROOT/rsem_ref"
+	local quant_root="$RSEM_QUANT_ROOT"
+	local matrix_dir="$RSEM_MATRIX_ROOT"
 
 	mkdir -p "$RSEM_INDEX_ROOT" "$quant_root" "$matrix_dir"
 

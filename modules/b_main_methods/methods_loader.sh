@@ -34,7 +34,7 @@ compare_methods_summary() {
 	log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	
 	# Method 1: HISAT2 Reference-Guided
-	local m1_matrix="$STRINGTIE_HISAT2_REF_GUIDED_ROOT/$fasta_tag/deseq2_input/gene_count_matrix.csv"
+	local m1_matrix="$STRINGTIE_HISAT2_REF_GUIDED_ROOT/deseq2_input/gene_count_matrix.csv"
 	if [[ -f "$m1_matrix" ]]; then
 		local m1_genes=$(tail -n +2 "$m1_matrix" | wc -l)
 		local m1_samples=$(head -n1 "$m1_matrix" | tr ',' '\n' | tail -n +2 | wc -l)
@@ -43,14 +43,14 @@ compare_methods_summary() {
 	fi
 	
 	# Method 2: HISAT2 De Novo
-	local m2_dir="$STRINGTIE_HISAT2_DE_NOVO_ROOT/$fasta_tag"
+	local m2_dir="$STRINGTIE_HISAT2_DE_NOVO_ROOT"
 	if [[ -d "$m2_dir" ]]; then
 		log_info "✅ Method 2 (HISAT2 De Novo): Transcript discovery mode"
 		log_info "   Status: De novo assembly without reference GTF"
 	fi
 	
 	# Method 3: STAR Alignment
-	local m3_matrix="$STAR_ALIGN_ROOT/$fasta_tag/count_matrices_from_STAR/gene_counts_tximport.tsv"
+	local m3_matrix="$STAR_MATRIX_ROOT/gene_counts_tximport.tsv"
 	if [[ -f "$m3_matrix" ]]; then
 		local m3_genes=$(tail -n +2 "$m3_matrix" | wc -l)
 		local m3_samples=$(head -n1 "$m3_matrix" | tr '\t' '\n' | tail -n +2 | wc -l)
@@ -59,15 +59,15 @@ compare_methods_summary() {
 	fi
 	
 	# Method 4: Salmon SAF
-	local m4_matrix="$SALMON_MATRIX_ROOT/*/deseq2_input/gene_count_matrix.csv"
-	if compgen -G "$m4_matrix" >/dev/null 2>&1; then
+	local m4_matrix="$SALMON_MATRIX_ROOT/deseq2_input/gene_count_matrix.csv"
+	if [[ -f "$m4_matrix" ]]; then
 		log_info "✅ Method 4 (Salmon SAF): Fast pseudo-alignment"
 		log_info "   Status: EXCELLENT for publication (fast, accurate, modern)"
 	fi
 	
 	# Method 5: Bowtie2 + RSEM
-	local m5_matrix="$RSEM_MATRIX_ROOT/*/deseq2_input/gene_count_matrix.csv"
-	if compgen -G "$m5_matrix" >/dev/null 2>&1; then
+	local m5_matrix="$RSEM_MATRIX_ROOT/deseq2_input/gene_count_matrix.csv"
+	if [[ -f "$m5_matrix" ]]; then
 		log_info "⚠️  Method 5 (Bowtie2+RSEM): RSEM expected counts"
 		log_info "   Status: Uses RSEM expected_count (statistical estimates)"
 	fi
