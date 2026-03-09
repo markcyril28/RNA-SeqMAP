@@ -68,7 +68,7 @@ done
 
 # Gene groups to analyze
 # NOTE: For HISAT2 methods, ensure these groups have pre-built matrices in
-#       5_stringtie_WD/b_Method_2_COUNT_MATRICES/{gene_group}/
+#       count_matrices_from_stringtie/{gene_group}/
 GENE_GROUPS=(
     #"SmelDMPs"
     "SmelDMPs_with_1_18s_rRNA"
@@ -113,13 +113,13 @@ METHODS=(
 # ----------------------
 # HISAT2 (M1/M2): Matrices are built by stringtie_matrix_builder.sh during preprocessing.
 #                 Use Stringtie_Matrix for matrix creation. Do NOT use Tximport_Salmon or Tximport_RSEM.
-#                 Heatmaps read from: 5_stringtie_WD/b_Method_2_COUNT_MATRICES/
+#                 Heatmaps read from: count_matrices_from_stringtie/
 #
 # Salmon (M4):    Requires Tximport_Salmon for matrix creation (auto-run as preprocessing).
-#                 Heatmaps read from: 6_matrices/
+#                 Heatmaps read from: count_matrices_from_Salmon_Quant/
 #
 # RSEM (M5):      Requires Tximport_RSEM for matrix creation (auto-run as preprocessing).
-#                 Heatmaps read from: 6_matrices/
+#                 Heatmaps read from: count_matrices_from_RSEM_Quant/
 
 ANALYSES=(
     "Stringtie_Matrix"         # For HISAT2-based methods (M1/M2) - builds matrices from StringTie output
@@ -174,13 +174,13 @@ conda activate gea 2>/dev/null || echo "Warning: conda env 'gea' not found, usin
 [[ -f "$BASE_DIR/modules/shared_utils.sh" ]] && source "$BASE_DIR/modules/shared_utils.sh"
 
 # Setup logging directories with ABSOLUTE paths (critical for subprocesses that change directories)
-LOG_DIR="$BASE_DIR/logs/log_files"
-TIME_DIR="$BASE_DIR/logs/time_logs"
-SPACE_DIR="$BASE_DIR/logs/space_logs"
-SPACE_TIME_DIR="$BASE_DIR/logs/space_time_logs"
-ERROR_WARN_DIR="$BASE_DIR/logs/error_warn_logs"
-SOFTWARE_CATALOG_DIR="$BASE_DIR/logs/software_catalogs"
-GPU_LOG_DIR="$BASE_DIR/logs/gpu_log"
+LOG_DIR="$BASE_DIR/3_POST_PROC/logs/log_files"
+TIME_DIR="$BASE_DIR/3_POST_PROC/logs/time_logs"
+SPACE_DIR="$BASE_DIR/3_POST_PROC/logs/space_logs"
+SPACE_TIME_DIR="$BASE_DIR/3_POST_PROC/logs/space_time_logs"
+ERROR_WARN_DIR="$BASE_DIR/3_POST_PROC/logs/error_warn_logs"
+SOFTWARE_CATALOG_DIR="$BASE_DIR/3_POST_PROC/logs/software_catalogs"
+GPU_LOG_DIR="$BASE_DIR/3_POST_PROC/logs/gpu_log"
 export LOG_DIR TIME_DIR SPACE_DIR SPACE_TIME_DIR ERROR_WARN_DIR SOFTWARE_CATALOG_DIR GPU_LOG_DIR
 
 # Initialize logging system
@@ -214,16 +214,16 @@ if [[ "$CLEAR_OUTPUT_FOLDER" == "TRUE" ]]; then
         output_base="$BASE_DIR/3_POST_PROC/$method/Figure_Outputs"
         for analysis in "${ANALYSES[@]}"; do
             folder_name=$(get_output_folder_name "$analysis")
-            if [[ -n "$folder_name" && -d "$output_base/$folder_name" ]]; then
-                log_info "  Clearing: $method/$folder_name"
-                rm -rf "$output_base/$folder_name"/* 2>/dev/null || true
+            if [[ -n "$folder_name" && -d "$output_base/$folder_name/$MASTER_REFERENCE" ]]; then
+                log_info "  Clearing: $method/$folder_name/$MASTER_REFERENCE"
+                rm -rf "$output_base/$folder_name/$MASTER_REFERENCE"/* 2>/dev/null || true
             fi
         done
     done
 fi
 
 # Export environment variables for R scripts and subprocesses
-export THREADS ENABLE_GPU ANALYSIS_MODULES_DIR GENE_GROUPS_DIR UTILITIES_DIR SRR_CSV_DIR
+export BASE_DIR THREADS ENABLE_GPU ANALYSIS_MODULES_DIR GENE_GROUPS_DIR UTILITIES_DIR SRR_CSV_DIR
 
 # Export arrays as strings for subprocesses (needed by stringtie_matrix_builder.sh)
 export GENE_GROUPS_STR="${GENE_GROUPS[*]}"

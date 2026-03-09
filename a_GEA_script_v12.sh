@@ -17,7 +17,10 @@ cd "$PROJECT_ROOT" || exit 1
 # ==============================================================================
 
 CONFIG_FILES=(
-	"config/HPC_full_run_config.sh"		# Full HPC run configuration
+	#"config/HPC_full_run_config_TEST.sh"
+	#"config/HPC_full_run_config_DOWNLOAD.sh"
+	"config/HPC_full_run_config_STAR_TEST.sh"
+	#"config/HPC_full_run_config.sh"		# Full HPC run configuration
 	#"config/local_test_config.sh"		# Local testing configuration
 )
 
@@ -36,14 +39,8 @@ done
 # DIRECTORY STRUCTURE AND OUTPUT PATHS
 # ==============================================================================
 
-# Create required directories (including log directories)
-mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT" \
-	"$HISAT2_REF_GUIDED_ROOT" "$HISAT2_REF_GUIDED_INDEX_DIR" "$STRINGTIE_HISAT2_REF_GUIDED_ROOT" \
-	"$HISAT2_DE_NOVO_ROOT" "$HISAT2_DE_NOVO_INDEX_DIR" "$STRINGTIE_HISAT2_DE_NOVO_ROOT" \
-	"$STAR_ALIGN_ROOT" "$STAR_INDEX_ROOT" "$STAR_GENOME_DIR" \
-	"$SALMON_SAF_ROOT" "$SALMON_INDEX_ROOT" "$SALMON_QUANT_ROOT" "$SALMON_SAF_MATRIX_ROOT" \
-	"$BOWTIE2_RSEM_ROOT" "$RSEM_INDEX_ROOT" "$RSEM_QUANT_ROOT" "$RSEM_MATRIX_ROOT" \
-	"logs/log_files"
+# Create required preprocessing directories (method dirs created dynamically by set_fasta_output_dirs)
+mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT"
 
 # ==============================================================================
 # CLEANUP OPTIONS AND TESTING ESSENTIALS
@@ -100,7 +97,14 @@ run_all() {
 
 	local start_time end_time elapsed formatted_elapsed
 	start_time=$(date +%s)
+
+	# Configure output directories based on FASTA filename
+	local fasta_base="$(basename "$fasta")"
+	local fasta_tag="${fasta_base%.*}"
+	set_fasta_output_dirs "$fasta_tag"
+
 	setup_logging
+	switch_log_stage "1_SRRs"
 	log_configuration
 	log_step "Script started at: $(date -d @$start_time)"
 	
@@ -149,6 +153,9 @@ run_all() {
 		log_step "STEP 01c: Quality Control analysis"
 		run_quality_control_all "${rnaseq_list[@]}"
 	fi
+
+	# Switch logging to alignment results directory
+	switch_log_stage "2_ALIGNMENT_RESULTs"
 
 	# Method 1: HISAT2 Reference-Guided Pipeline
 	if [[ $RUN_METHOD_1_HISAT2_REF_GUIDED == "TRUE" ]]; then
@@ -210,8 +217,6 @@ run_all() {
 	fi
 
 	# Generate cross-method validation summary
-	local fasta_base="$(basename "$fasta")"
-	local fasta_tag="${fasta_base%.*}"
 	compare_methods_summary "$fasta_tag"
 
 	end_time=$(date +%s)
@@ -225,6 +230,10 @@ run_all() {
 # ==============================================================================
 # SCRIPT EXECUTION
 # ==============================================================================
+
+# Initialize logging and route to preprocessing directory
+setup_logging
+switch_log_stage "1_SRRs"
 
 # Call the function if installation is enabled
 if [[ $RUN_MAMBA_INSTALLATION == "TRUE" ]]; then
@@ -245,6 +254,9 @@ done
 # ==============================================================================
 # POST-PROCESSING: HEATMAP WRAPPER EXECUTION for HISAT2 DE NOVO
 # ==============================================================================
+
+# Switch logging to post-processing directory
+switch_log_stage "3_POST_PROC"
 
 if [[ $RUN_HEATMAP_WRAPPER == "TRUE" ]]; then
 	log_step "Heatmap Wrapper post-processing enabled"
@@ -292,13 +304,18 @@ if [[ $RUN_ZIP_RESULTS == "TRUE" ]]; then
 	TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 	tar -c \
 		--exclude="${POST_PROC_ROOT}/M3_STAR_Align" \
-		"$POST_PROC_ROOT" logs | pigz -p "$THREADS" > "CMSC244_${TIMESTAMP}.tar.gz"
+		"$POST_PROC_ROOT" \
+		1_SRRs/logs 2_ALIGNMENT_RESULTs/logs 3_POST_PROC/logs \
+		| pigz -p "$THREADS" > "CMSC244_${TIMESTAMP}.tar.gz"
 	log_info "Archive created: CMSC244_${TIMESTAMP}.tar.gz"
 fi
 
 # ==============================================================================
 # CLEANUP: DELETE TRIMMED FASTQ FILES
 # ==============================================================================
+
+# Switch logging back to SRR directory for cleanup
+switch_log_stage "1_SRRs"
 
 if [[ $RUN_DELETE_TRIMMED_FASTQ_FILES == "TRUE" ]]; then
 	log_step "Deleting trimmed FASTQ files for SRR_COMBINED_LIST"
