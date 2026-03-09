@@ -1,0 +1,9 @@
+Chr01	maker	transcript	651021	651725	.	+	.	transcript_id "SMEL4.1_01g000730.1.01"; gene_id "SMEL4.1_01g000730.1";
+Chr01	maker	exon	651021	651725	.	+	.	transcript_id "SMEL4.1_01g000730.1.01"; gene_id "SMEL4.1_01g000730.1";
+Chr01	maker	CDS	651021	651707	.	+	0	transcript_id "SMEL4.1_01g000730.1.01"; gene_id "SMEL4.1_01g000730.1";
+Chr01	maker	transcript	31942637	31943173	.	-	.	transcript_id "SMEL4.1_01g024990.1.01"; gene_id "SMEL4.1_01g024990.1";
+Chr01	maker	exon	31942637	31943173	.	-	.	transcript_id "SMEL4.1_01g024990.1.01"; gene_id "SMEL4.1_01g024990.1";
+Chr01	maker	CDS	31942637	31943173	.	-	0	transcript_id "SMEL4.1_01g024990.1.01"; gene_id "SMEL4.1_01g024990.1";
+Chr02	maker	transcript	63371892	63372521	.	+	.	transcript_id "SMEL4.1_02g015810.1.01"; gene_id "SMEL4.1_02g015810.1";
+Chr02	maker	exon	63371892	63372521	.	+	.	transcript_id "SMEL4.1_02g015810.1.01"; gene_id "SMEL4.1_02g015810.1";
+Chr02	maker	CDS	63371892	63372521	.	+	0	transcript_id "SMEL4.1_02g015810.1.01"; gene_id "SMEL4.1_02g015810.1";

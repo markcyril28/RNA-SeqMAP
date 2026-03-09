@@ -1,0 +1,47 @@
+SRR_ID	condition	batch
+# ============================================================================
+# PRJNA328564 - Eggplant Developmental Stages
+# ============================================================================
+SRR3884685	Radicles	1
+SRR3884677	Cotyledons	1
+SRR3884675	Roots	1
+SRR3884690	Stems	1
+SRR3884689	Leaves	1
+SRR3884684	Senescent_leaves	1
+SRR3884686	Buds_0.7cm	1
+SRR3884687	Opened_Buds	1
+SRR3884597	Flowers	1
+SRR3884679	Pistils	1
+SRR3884608	Fruits_1cm	1
+SRR3884620	Fruits_Stage_1	1
+SRR3884631	Fruits_6cm	1
+SRR3884642	Fruits_Skin_Stage_2	1
+SRR3884653	Fruits_Flesh_Stage_2	1
+SRR3884664	Fruits_Calyx_Stage_2	1
+SRR3884680	Fruits_Skin_Stage_3	1
+SRR3884681	Fruits_Flesh_Stage_3	1
+SRR3884678	Fruits_peduncle	1
+# ============================================================================
+# PRJNA865018 - Organ Types (Buds, Flowers, Fruits)
+# ============================================================================
+SRR21010466	Buds	2
+SRR21010456	Buds	2
+SRR21010454	Buds	2
+SRR21010462	Flowers	2
+SRR21010460	Flowers	2
+SRR21010458	Flowers	2
+SRR21010452	Fruits	2
+SRR21010450	Fruits	2
+SRR21010464	Fruits	2
+# ============================================================================
+# PRJNA941250 - Developmental Time Points (Days Before Flowering)
+# ============================================================================
+SRR23909869	8DBF	3
+SRR23909870	8DBF	3
+SRR23909871	8DBF	3
+SRR23909866	5DBF	3
+SRR23909867	5DBF	3
+SRR23909868	5DBF	3
+SRR23909863	Fully_Develop	3
+SRR23909864	Fully_Develop	3
+SRR23909865	Fully_Develop	3
