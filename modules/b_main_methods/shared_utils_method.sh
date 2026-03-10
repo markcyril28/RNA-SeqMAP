@@ -32,7 +32,7 @@ validate_count_matrix() {
 	
 	log_step "Validating $matrix_type matrix: $(basename "$matrix")"
 	
-	local delim="\t"
+	local delim=$'\t'
 	[[ "$matrix" == *.csv ]] && delim=","
 	
 	local header=$(head -n1 "$matrix")
@@ -77,8 +77,8 @@ load_sample_metadata() {
 # Create sample metadata CSV for DESeq2
 create_sample_metadata() {
 	local metadata_file="$1"
-	local -a sample_list=("${!2}")
-	local metadata_source="${3:-${SAMPLE_CONDITIONS_FILE:-sample_conditions.txt}}"
+	local -a sample_list=("${@:2}")
+	local metadata_source="${SAMPLE_CONDITIONS_FILE:-sample_conditions.txt}"
 	
 	local delim=","
 	[[ "$metadata_file" == *.tsv ]] && delim=$'\t'
@@ -272,7 +272,7 @@ _parallel_log() {
 	local ts
 	ts=$(date '+%Y-%m-%d %H:%M:%S')
 	printf '[%s] [%s] [%s-%s] %s\n' "$ts" "$level" "$method" "$SRR" "$*"
-	[[ -n "${abs_error_warn_file:-}" ]] && \
+	[[ "$level" != "INFO" && -n "${abs_error_warn_file:-}" ]] && \
 		printf '[%s] [%s] [%s-%s] %s\n' "$ts" "$level" "$method" "$SRR" "$*" >> "$abs_error_warn_file"
 }
 export -f _parallel_log

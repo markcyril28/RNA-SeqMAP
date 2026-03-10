@@ -6,7 +6,9 @@
 # Fast and accurate pseudo-alignment
 # ==============================================================================
 
-#set -euo pipefail
+# NOTE: set -e/-u/-o pipefail are intentionally NOT set here — this file is sourced
+# as a library and must not alter the parent shell's error-exit behaviour.
+# Pipe failures in salmon quant are checked manually via PIPESTATUS (lines ~117, ~125).
 
 # Guard against double-sourcing
 [[ "${M4_SALMON_SOURCED:-}" == "true" ]] && return 0
@@ -46,19 +48,23 @@ salmon_saf_pipeline() {
 	[[ ${#rnaseq_list[@]} -eq 0 ]] && rnaseq_list=("${SRR_COMBINED_LIST[@]}")
 
 	local tag="$(basename "${fasta%.*}")"
-	local work="tmp_${tag}_gentrome"
+	# Use an absolute path so $work is unambiguous regardless of the caller's CWD
+	local work="$SALMON_SAF_ROOT/tmp_${tag}_gentrome"
 	local idx_dir="$SALMON_INDEX_ROOT/decoySAF"
 	local quant_root="$SALMON_QUANT_ROOT"
 	local matrix_dir="$SALMON_MATRIX_ROOT"
 
-	mkdir -p "$SALMON_INDEX_ROOT" "$quant_root" "$matrix_dir" "$work"
+	mkdir -p "$SALMON_INDEX_ROOT" "$quant_root" "$matrix_dir"
 
 	# BUILD DECOY-AWARE INDEX
 	if [[ -f "$idx_dir/versionInfo.json" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 		log_info "[SALMON INDEX] Decoy index already exists. Skipping."
 	else
+		# $work is created here only — not unconditionally — so it isn't left as an empty
+		# orphan directory on runs where the index already exists.
+		mkdir -p "$work"
 		log_step "Building decoy-aware Salmon index for $tag"
-		awk '/^>/{print substr($0,2); next}{next}' "$genome" > "$work/decoys.txt"
+		grep "^>" "$genome" | awk '{print substr($1,2)}' > "$work/decoys.txt"
 		cat "$fasta" "$genome" > "$work/gentrome.fa"
 		log_file_size "$work/gentrome.fa" "Gentrome FASTA for Salmon - $tag"
 		log_file_size "$work/decoys.txt" "Decoy list for Salmon - $tag"
@@ -68,8 +74,14 @@ salmon_saf_pipeline() {
 			-i "$idx_dir" \
 			-k "$SALMON_KMER_SIZE" -p "$THREADS"
 		log_file_size "$idx_dir" "Salmon index output - $tag"
-		log_info "[CLEANUP] Removing temporary gentrome work directory"
-		rm -rf "$work"
+		# Only clean up the temporary gentrome directory if the index was built successfully.
+		# If salmon index failed, versionInfo.json will be absent; keep $work for debugging.
+		if [[ -f "$idx_dir/versionInfo.json" ]]; then
+			log_info "[CLEANUP] Removing temporary gentrome work directory"
+			rm -rf "$work"
+		else
+			log_warn "[INDEX] salmon index may have failed — keeping $work for inspection"
+		fi
 	fi
 
 	# QUANTIFICATION PER SRR
@@ -100,12 +112,16 @@ salmon_saf_pipeline() {
 				salmon quant -i "$idx_dir" -l A \
 					-1 "$trimmed1" -2 "$trimmed2" \
 					-p "$threads_per_job" \
+					--numBootstraps "$salmon_num_bootstraps" \
+					--gcBias --seqBias \
 					-o "$out_dir" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
 				salmon_exit=${PIPESTATUS[0]}
 			else
 				salmon quant -i "$idx_dir" -l A \
 					-r "$trimmed1" \
 					-p "$threads_per_job" \
+					--numBootstraps "$salmon_num_bootstraps" \
+					--gcBias --seqBias \
 					-o "$out_dir" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
 				salmon_exit=${PIPESTATUS[0]}
 			fi
@@ -128,7 +144,12 @@ salmon_saf_pipeline() {
 			_m4_salmon_parallel_worker {}
 
 		local par_exit=$?
-		local successful=$(find "$quant_root" -name "quant.sf" 2>/dev/null | wc -l)
+		# Count only samples from this run's rnaseq_list to avoid inflating the count
+		# with stale quant.sf files from prior runs under quant_root.
+		local successful=0
+		for _s in "${rnaseq_list[@]}"; do
+			[[ -f "$quant_root/$_s/quant.sf" ]] && successful=$((successful + 1))
+		done
 		log_info "[PARALLEL] Salmon SAF complete: $successful/${#rnaseq_list[@]} samples succeeded"
 		[[ $par_exit -ne 0 ]] && log_warn "[PARALLEL] Some jobs failed - check $quant_root/parallel_salmon_saf.log"
 	else
@@ -150,13 +171,17 @@ salmon_saf_pipeline() {
 					-i "$idx_dir" -l A \
 					-1 "$trimmed1" -2 "$trimmed2" \
 					-p "$THREADS" \
+					--numBootstraps "$SALMON_NUM_BOOTSTRAPS" \
+					--gcBias --seqBias \
 					-o "$out_dir"
 			else
 				log_info "[SALMON QUANT] Using single-end reads for $SRR"
-				run_with_space_time_log salmon quant \
+				run_with_space_time_log --input "$TRIM_DIR_ROOT/$SRR" --output "$out_dir" salmon quant \
 					-i "$idx_dir" -l A \
 					-r "$trimmed1" \
 					-p "$THREADS" \
+					--numBootstraps "$SALMON_NUM_BOOTSTRAPS" \
+					--gcBias --seqBias \
 					-o "$out_dir"
 			fi
 			log_file_size "$out_dir/quant.sf" "Salmon quantification output - $SRR"
@@ -193,15 +218,32 @@ _create_salmon_matrices() {
 		log_info "[SALMON MATRIX] Creating gene-transcript mapping file..."
 		create_gene_trans_map "$fasta" "$gene_trans_map"
 	fi
+	# Export so tximport_salmon_to_matrices.R can locate it via GENE_TRANS_MAP_FILE
+	# without needing to do a recursive glob search across inputs/
+	export GENE_TRANS_MAP_FILE="$gene_trans_map"
 	
+	# Build per-sample quant.sf paths from srr_list; fall back to glob only when list is empty.
+	# This prevents stale directories from prior runs being silently merged into the matrix.
+	local quant_sf_files=()
+	if [[ ${#srr_list[@]} -gt 0 ]]; then
+		for _s in "${srr_list[@]}"; do
+			[[ -f "$quant_root/$_s/quant.sf" ]] && quant_sf_files+=("$quant_root/$_s/quant.sf")
+		done
+	fi
+	if [[ ${#quant_sf_files[@]} -eq 0 ]]; then
+		while IFS= read -r _qf; do quant_sf_files+=("$_qf"); done \
+			< <(find "$quant_root" -name "quant.sf" 2>/dev/null | sort)
+	fi
+
 	# Generate matrices using Trinity's script or manual creation
 	if command -v abundance_estimates_to_matrix.pl >/dev/null 2>&1; then
 		log_info "[SALMON MATRIX] Running abundance_estimates_to_matrix.pl..."
-		run_with_space_time_log abundance_estimates_to_matrix.pl \
+		run_with_space_time_log --input "$quant_root" --output "$matrix_dir" \
+			abundance_estimates_to_matrix.pl \
 			--est_method salmon \
 			--gene_trans_map "$gene_trans_map" \
 			--out_prefix "$matrix_dir/genes" \
-			--name_sample_by_basedir "$quant_root"/*/quant.sf || {
+			--name_sample_by_basedir "${quant_sf_files[@]}" || {
 			log_warn "abundance_estimates_to_matrix.pl failed. Creating manual count matrix..."
 			_create_manual_salmon_matrix "$quant_root" "$matrix_dir" srr_list[@]
 		}
@@ -248,20 +290,31 @@ _create_manual_salmon_matrix() {
 			if [[ -f "$quant_root/$SRR/quant.sf" ]]; then
 				awk 'NR>1 {print int($5 + 0.5)}' "$quant_root/$SRR/quant.sf" > "$matrix_dir/${SRR}_counts.tmp"
 			else
-				local num_genes=$(wc -l < "$temp_gene_ids")
+				# Separate declaration from assignment so wc errors are not masked by local
+				local num_genes
+				num_genes=$(wc -l < "$temp_gene_ids")
 				yes 0 | head -n "$num_genes" > "$matrix_dir/${SRR}_counts.tmp"
 			fi
 		done
-		
-		paste "$temp_gene_ids" "$matrix_dir"/*_counts.tmp > "$temp_counts"
-		
-		echo -n "gene_id" > "$matrix_dir/genes.counts.matrix"
+
+		local _paste_args=("$temp_gene_ids")
+		for _s in "${srr_list[@]}"; do
+			[[ -f "$matrix_dir/${_s}_counts.tmp" ]] && _paste_args+=("$matrix_dir/${_s}_counts.tmp")
+		done
+		paste "${_paste_args[@]}" > "$temp_counts"
+
+		# NOTE: Column 1 of quant.sf is the transcript Name, so this fallback matrix
+		# is transcript-level despite the "genes" filename.  The authoritative gene-level
+		# matrices are produced by tximport_salmon_to_matrices.R (uses tximport aggregation).
+		# When abundance_estimates_to_matrix.pl is available it applies --gene_trans_map
+		# to produce true gene-level output; this manual path does not.
+		echo -n "transcript_id" > "$matrix_dir/genes.counts.matrix"
 		for SRR in "${srr_list[@]}"; do
 			echo -ne "\t$SRR" >> "$matrix_dir/genes.counts.matrix"
 		done
 		echo "" >> "$matrix_dir/genes.counts.matrix"
 		cat "$temp_counts" >> "$matrix_dir/genes.counts.matrix"
-		
+
 		rm -f "$temp_gene_ids" "$temp_counts" "$matrix_dir"/*_counts.tmp
 	fi
 }
@@ -294,7 +347,8 @@ _prepare_salmon_deseq2_output() {
 	# Verify quantifications
 	local quant_count=0
 	for SRR in "${srr_list[@]}"; do
-		[[ -f "$quant_root/$SRR/quant.sf" ]] && ((quant_count++))
+		# Use arithmetic assignment (not ((++))) to avoid exit-code 1 when count is 0 under set -e
+		[[ -f "$quant_root/$SRR/quant.sf" ]] && quant_count=$((quant_count + 1))
 	done
 	
 	[[ $quant_count -lt 2 ]] && { log_error "Insufficient Salmon quantifications (found: $quant_count, need: ≥2)"; return 1; }
@@ -303,11 +357,11 @@ _prepare_salmon_deseq2_output() {
 	# Convert to CSV
 	if [[ -f "$matrix_dir/genes.counts.matrix" && ! -f "$gene_count_matrix" ]]; then
 		log_info "[SALMON MATRIX] Converting count matrix to CSV format..."
-		sed 's/\t/,/g' "$matrix_dir/genes.counts.matrix" | sed '1s/gene_id/Gene_ID/' > "$gene_count_matrix"
+		sed 's/\t/,/g' "$matrix_dir/genes.counts.matrix" | sed '1s/transcript_id/Transcript_ID/' > "$gene_count_matrix"
 	fi
 	
 	# Create sample metadata
-	[[ ! -f "$sample_metadata" ]] && create_sample_metadata "$sample_metadata" srr_list[@]
+	[[ ! -f "$sample_metadata" ]] && create_sample_metadata "$sample_metadata" "${srr_list[@]}"
 
 	# Generate tximport script
 	local tximport_script="$deseq2_dir/run_tximport_salmon.R"
@@ -357,9 +411,12 @@ _create_salmon_summary() {
 		
 		for SRR in "${srr_list[@]}"; do
 			if [[ -f "$quant_root/$SRR/quant.sf" ]]; then
-				local total=$(awk 'NR>1' "$quant_root/$SRR/quant.sf" | wc -l)
-				local expressed=$(awk 'NR>1 && $5>0' "$quant_root/$SRR/quant.sf" | wc -l)
-				local reads=$(awk 'NR>1 {sum+=$5} END {print int(sum)}' "$quant_root/$SRR/quant.sf")
+				# Separate local declarations from assignments so errors in command
+				# substitutions are not silently swallowed (local always returns 0)
+				local total expressed reads
+				total=$(awk 'END{print NR-1}' "$quant_root/$SRR/quant.sf")
+				expressed=$(awk 'NR>1 && $5>0 {n++} END{print n+0}' "$quant_root/$SRR/quant.sf")
+				reads=$(awk 'NR>1 {sum+=$5} END {print int(sum)}' "$quant_root/$SRR/quant.sf")
 				echo "$SRR: $expressed/$total expressed, $reads total counts"
 			fi
 		done

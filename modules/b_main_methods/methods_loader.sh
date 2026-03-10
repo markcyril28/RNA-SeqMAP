@@ -97,4 +97,4 @@ compare_methods_summary() {
 # ==============================================================================
 
 log_info "[METHODS] All GEA analysis methods loaded successfully"
-log_info "[METHODS] Sample conditions file: ${SAMPLE_CONDITIONS_FILE:-0_INPUTs/sample_conditions.txt}"
+log_info "[METHODS] Sample conditions file: ${SAMPLE_CONDITIONS_FILE:-inputs/sample_conditions.txt}"

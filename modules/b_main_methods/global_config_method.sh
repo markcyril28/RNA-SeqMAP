@@ -31,7 +31,8 @@ keep_bam_global="${keep_bam_global:-n}"
 # BOWTIE2/RSEM CONFIGURATION
 # ==============================================================================
 
-# Alignment sensitivity (options: very-sensitive-local, sensitive-local, fast-local, very-fast-local)
+# Alignment sensitivity for rsem-calculate-expression --bowtie2-sensitivity-level
+# Valid options: sensitive (default), very-sensitive, fast, very-fast
 BOWTIE2_MODE="${BOWTIE2_MODE:-sensitive}"
 
 # ==============================================================================
@@ -44,6 +45,20 @@ STAR_GENOME_LOAD="${STAR_GENOME_LOAD:-NoSharedMemory}"
 STAR_READ_LENGTH="${STAR_READ_LENGTH:-100}"
 # Strandedness: None (unstranded), Forward, Reverse
 STAR_STRAND_SPECIFIC="${STAR_STRAND_SPECIFIC:-None}"
+
+# ==============================================================================
+# OVERWRITE MODE
+# ==============================================================================
+# OVERWRITE_MODE controls whether alignment steps skip existing outputs.
+# "overwrite" = re-run even if outputs exist; "skip" = skip existing (default).
+# Derived from OVERWRITE_EXISTING (set/exported by run_all_post_processing.sh).
+# Respects an existing OVERWRITE_MODE set by a_GEA_script_v12.sh or the environment.
+if [[ "${OVERWRITE_EXISTING:-FALSE}" == "TRUE" ]]; then
+	OVERWRITE_MODE="overwrite"
+elif [[ -z "${OVERWRITE_MODE:-}" ]]; then
+	OVERWRITE_MODE="skip"
+fi
+export OVERWRITE_MODE
 
 # ==============================================================================
 # POST PROCESSING ROOT
@@ -74,7 +89,7 @@ unset _ALIGN_DEFAULT
 # ==============================================================================
 # Path to the sample conditions file (tab-separated: SRR_ID condition batch)
 # Convert to absolute path if relative (same pattern as POST_PROCESSING_ROOT)
-_SAMPLE_COND_DEFAULT="${SAMPLE_CONDITIONS_FILE:-0_INPUTs/sample_conditions.txt}"
+_SAMPLE_COND_DEFAULT="${SAMPLE_CONDITIONS_FILE:-inputs/sample_conditions.txt}"
 if [[ "$_SAMPLE_COND_DEFAULT" != /* ]]; then
 	SAMPLE_CONDITIONS_FILE="$(pwd)/$_SAMPLE_COND_DEFAULT"
 else
@@ -103,7 +118,6 @@ HISAT2_DE_NOVO_MATRIX_ROOT="$POST_PROCESSING_ROOT/M2_HISAT2_DeNovo/count_matrice
 # ==============================================================================
 STAR_ALIGN_ROOT="$ALIGNMENT_RESULTS_ROOT/M3_STAR_Align"
 STAR_INDEX_ROOT="$STAR_ALIGN_ROOT/STAR_index"
-STAR_GENOME_DIR="$STAR_ALIGN_ROOT/STAR_alignment_WD"
 STAR_MATRIX_ROOT="$POST_PROCESSING_ROOT/M3_STAR_Align/count_matrices_from_STAR"
 
 # ==============================================================================
@@ -126,7 +140,7 @@ RSEM_MATRIX_ROOT="$POST_PROCESSING_ROOT/M5_RSEM_Bowtie2/count_matrices_from_RSEM
 # ==============================================================================
 # SRR SAMPLE ARRAYS (initialize if not set)
 # ==============================================================================
-if ! declare -p SRR_COMBINED_LIST &>/dev/null 2>&1; then
+if ! declare -p SRR_COMBINED_LIST &>/dev/null; then
 	declare -a SRR_COMBINED_LIST=()
 fi
 
@@ -137,7 +151,7 @@ init_method_directories() {
 	# Alignment directories
 	mkdir -p "$HISAT2_REF_GUIDED_ROOT" "$HISAT2_REF_GUIDED_INDEX_DIR" "$STRINGTIE_HISAT2_REF_GUIDED_ROOT" \
 		"$HISAT2_DE_NOVO_ROOT" "$HISAT2_DE_NOVO_INDEX_DIR" "$STRINGTIE_HISAT2_DE_NOVO_ROOT" \
-		"$STAR_ALIGN_ROOT" "$STAR_INDEX_ROOT" "$STAR_GENOME_DIR" \
+		"$STAR_ALIGN_ROOT" "$STAR_INDEX_ROOT" \
 		"$SALMON_INDEX_ROOT" "$SALMON_QUANT_ROOT" \
 		"$RSEM_INDEX_ROOT" "$RSEM_QUANT_ROOT"
 	# Post-processing matrix directories
@@ -172,7 +186,6 @@ set_fasta_output_dirs() {
 	# Method 3: STAR Alignment
 	STAR_ALIGN_ROOT="$ALIGNMENT_RESULTS_ROOT/M3_STAR_Align"
 	STAR_INDEX_ROOT="$ALIGNMENT_RESULTS_ROOT/M3_STAR_Align/STAR_index/$fasta_tag"
-	STAR_GENOME_DIR="$ALIGNMENT_RESULTS_ROOT/M3_STAR_Align/STAR_alignment_WD/$fasta_tag"
 	STAR_MATRIX_ROOT="$POST_PROCESSING_ROOT/M3_STAR_Align/count_matrices_from_STAR/$fasta_tag"
 
 	# Method 4: Salmon SAF
@@ -187,9 +200,6 @@ set_fasta_output_dirs() {
 	RSEM_INDEX_ROOT="$ALIGNMENT_RESULTS_ROOT/M5_RSEM_Bowtie2/Bowtie2_WD/$fasta_tag/index"
 	RSEM_QUANT_ROOT="$ALIGNMENT_RESULTS_ROOT/M5_RSEM_Bowtie2/RSEM_Quant_WD/$fasta_tag"
 	RSEM_MATRIX_ROOT="$POST_PROCESSING_ROOT/M5_RSEM_Bowtie2/count_matrices_from_RSEM_Quant/$fasta_tag"
-
-	# Create all directories
-	init_method_directories
 
 	log_info "[CONFIG] Output directories configured for FASTA: $fasta_tag"
 }

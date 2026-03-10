@@ -34,11 +34,47 @@ STAR_DELETE_TRANSIENT="${STAR_DELETE_TRANSIENT:-true}"
 
 # Transcriptome FASTA for Salmon quantification step (auto-detected if not set)
 # When using a genome FASTA for STAR, point this to the transcript-level FASTA.
-# e.g. STAR_TRANSCRIPTOME_FASTA="0_INPUTs/fasta/reference_genomes/GPE001970_transcripts.fa"
+# e.g. STAR_TRANSCRIPTOME_FASTA="inputs/fasta/reference_genomes/GPE001970_transcripts.fa"
 # Auto-detect: looks for <genome_basename>_transcripts.fa; falls back to --FASTA if absent.
 
 # STAR temp directory: "system"=/tmp, "local"=output dir, "cwd"=current dir, "none"=STAR default
 STAR_TMP_MODE="${STAR_TMP_MODE:-cwd}"
+
+# ==============================================================================
+# HELPER FUNCTIONS (called by the pipeline)
+# ==============================================================================
+
+# Detect actual read length from the second line of the first trimmed FASTQ.
+# Returns the integer length; prints nothing on failure so callers can test -z.
+# Usage: len=$(_star_detect_read_length "SRR123456")
+_star_detect_read_length() {
+	local srr="$1"
+	find_trimmed_fastq "$srr" 2>/dev/null
+	[[ -z "$trimmed1" || ! -f "$trimmed1" ]] && return
+	local _seq
+	if [[ "$trimmed1" == *.gz ]]; then
+		_seq=$(zcat -f "$trimmed1" 2>/dev/null | sed -n '2p')
+	else
+		_seq=$(sed -n '2p' "$trimmed1" 2>/dev/null)
+	fi
+	[[ "${#_seq}" -gt 0 ]] && echo "${#_seq}"
+}
+
+# Map STAR_STRAND_SPECIFIC (None/Forward/Reverse) to a Salmon library-type string.
+# Salmon's -l A (auto-detect) is used for None so Salmon empirically confirms the
+# strandedness rather than accepting a mis-set config value.
+# Usage: lib=$(_get_salmon_lib_type "$STAR_STRAND_SPECIFIC" "true|false")
+#   paired = "true"  → paired-end prefixes (I*)
+#   paired = "false" → single-end prefixes
+_get_salmon_lib_type() {
+	local strand="${1:-None}"
+	local paired="${2:-false}"
+	case "$strand" in
+		Forward) [[ "$paired" == "true" ]] && echo "ISF" || echo "SF" ;;
+		Reverse) [[ "$paired" == "true" ]] && echo "ISR" || echo "SR" ;;
+		*)       echo "A" ;;   # auto-detect for unstranded or unknown
+	esac
+}
 
 # ==============================================================================
 # MAIN STAR ALIGNMENT PIPELINE
@@ -129,16 +165,17 @@ star_alignment_pipeline() {
 	abs_star_index_root="${abs_star_index_root//\/\//\/}"
 	abs_star_align_root="${abs_star_align_root//\/\//\/}"
 
-	# Set directories based on tissue tag (using absolute paths)
-	# fasta_tag is already embedded in STAR_ALIGN_ROOT/STAR_INDEX_ROOT via set_fasta_output_dirs
-	# Only append tissue_tag subdirectory when doing tissue-specific runs
+	# Set directories based on fasta_tag and tissue_tag (using absolute paths).
+	# STAR_INDEX_ROOT already contains {fasta_tag} (set by set_fasta_output_dirs).
+	# STAR_ALIGN_ROOT does NOT contain {fasta_tag}; we embed it explicitly below to
+	# isolate BAM outputs and Salmon quant per reference, preventing multi-reference collisions.
 	if [[ -n "$tissue_tag" ]]; then
 		star_index_dir="${abs_star_index_root}/5_star/index/${tissue_tag}"
-		star_genome_dir="${abs_star_align_root}/5_star/alignments/${tissue_tag}"
+		star_genome_dir="${abs_star_align_root}/${fasta_tag}/5_star/alignments/${tissue_tag}"
 		log_info "[STAR] Tissue-specific alignment for: $tissue_tag (${#rnaseq_list[@]} samples)"
 	else
 		star_index_dir="${abs_star_index_root}/5_star/index"
-		star_genome_dir="${abs_star_align_root}/5_star/alignments"
+		star_genome_dir="${abs_star_align_root}/${fasta_tag}/5_star/alignments"
 		log_info "[STAR] Pooled alignment: ${#rnaseq_list[@]} samples"
 	fi
 
@@ -150,8 +187,52 @@ star_alignment_pipeline() {
 	log_info "[STAR] Index directory (absolute): $star_index_dir"
 	log_info "[STAR] Output directory (absolute): $star_genome_dir"
 
+	# Auto-detect actual read length from the first sample's trimmed FASTQ.
+	# This ensures sjdbOverhang = readLength-1 is always correct regardless of
+	# whether STAR_READ_LENGTH was explicitly set (e.g. 150 bp NovaSeq vs 100 bp HiSeq).
+	local _det_len
+	_det_len=$(_star_detect_read_length "${rnaseq_list[0]}" 2>/dev/null || true)
+	if [[ -n "$_det_len" && "$_det_len" -gt 20 ]]; then
+		if [[ "$_det_len" -ne "$STAR_READ_LENGTH" ]]; then
+			log_warn "[STAR] Detected read length (${_det_len} bp) differs from STAR_READ_LENGTH=${STAR_READ_LENGTH}"
+			log_info "[STAR] Overriding to detected length. Export STAR_READ_LENGTH explicitly to keep configured value."
+			STAR_READ_LENGTH="$_det_len"
+		else
+			log_info "[STAR] Read length confirmed by FASTQ: ${STAR_READ_LENGTH} bp"
+		fi
+	else
+		log_info "[STAR] Using configured read length: ${STAR_READ_LENGTH} bp (FASTQ not yet available for detection)"
+	fi
+
 	local star_overhang=$((STAR_READ_LENGTH - 1))
+	log_info "[STAR] sjdbOverhang = $star_overhang (read length ${STAR_READ_LENGTH} bp)"
 	log_info "[STAR] CPU allocation: Total=$THREADS threads"
+
+	# Pre-compute Salmon library type strings from strandedness config.
+	# Computed once here so all per-sample calls (sequential + parallel) are consistent.
+	local _sal_lib_pe _sal_lib_se
+	_sal_lib_pe=$(_get_salmon_lib_type "${STAR_STRAND_SPECIFIC:-None}" "true")
+	_sal_lib_se=$(_get_salmon_lib_type "${STAR_STRAND_SPECIFIC:-None}" "false")
+	log_info "[STAR] Salmon library type: PE=${_sal_lib_pe}  SE=${_sal_lib_se}  (STAR_STRAND_SPECIFIC=${STAR_STRAND_SPECIFIC:-None})"
+
+	# Resolve effective genome load. --twopassMode Basic is incompatible with LoadAndKeep;
+	# override and warn rather than silently degrading to 1-pass alignment.
+	# effective_genome_load is not declared local so it can be exported for parallel workers.
+	effective_genome_load="${STAR_GENOME_LOAD:-NoSharedMemory}"
+	if [[ "$effective_genome_load" == "LoadAndKeep" ]]; then
+		log_warn "[STAR] STAR_GENOME_LOAD=LoadAndKeep is incompatible with --twopassMode Basic. Overriding to NoSharedMemory."
+		effective_genome_load="NoSharedMemory"
+	fi
+	log_info "[STAR] Genome load mode: $effective_genome_load"
+
+	# Validate GTF early - used by both index build and tx2gene creation.
+	# Do this outside the index-skip branch so the check runs even when the index already exists.
+	if [[ ! -f "$STAR_GTF_FILE" ]]; then
+		log_error "[STAR] GTF annotation file not found: '${STAR_GTF_FILE:-<unset>}'"
+		log_error "[STAR] Set STAR_GTF_FILE (or gtf_file) in your configuration before running M3."
+		return 1
+	fi
+	log_info "[STAR] GTF annotation: $STAR_GTF_FILE"
 
 	# STEP 1: BUILD STAR GENOME INDEX
 	log_step "STAR genome index generation for $fasta_tag"
@@ -163,14 +244,6 @@ star_alignment_pipeline() {
 		mkdir -p "$star_index_dir"
 
 		log_file_size "$fasta" "Input genome FASTA for STAR indexing"
-
-		# Validate GTF file exists
-		if [[ ! -f "$STAR_GTF_FILE" ]]; then
-			log_error "GTF annotation file not found: $STAR_GTF_FILE"
-			log_error "Set STAR_GTF_FILE to a valid GTF file path"
-			return 1
-		fi
-		log_info "[STAR INDEX] Using GTF annotation: $STAR_GTF_FILE"
 
 		# Compute recommended SAindex size: min(14, floor(log2(GenomeLength)/2 - 1))
 		local genome_sa_index=14
@@ -230,6 +303,7 @@ star_alignment_pipeline() {
 		export fasta_tag threads_per_job
 		export star_index_dir star_genome_dir
 		export STAR_DELETE_TRANSIENT PROJECT_ROOT
+		export effective_genome_load
 
 		_m3_star_parallel_worker() {
 			local SRR="$1"
@@ -277,6 +351,11 @@ star_alignment_pipeline() {
 				--outFileNamePrefix "$out_prefix" \
 				--outTmpDir "$star_tmp_dir" \
 				--outSAMtype BAM Unsorted \
+				--outSAMstrandField intronMotif \
+				--outSAMattributes NH HI AS NM MD \
+				--outSAMunmapped Within \
+				--twopassMode Basic \
+				--genomeLoad "$effective_genome_load" \
 				--runThreadN "$threads_per_job" 2>&1 || \
 				{ _parallel_log STAR "$SRR" ERROR "--- END STAR OUTPUT (FAILED) ---"; _parallel_log STAR "$SRR" ERROR "STAR alignment failed"; return 1; }
 
@@ -328,7 +407,7 @@ star_alignment_pipeline() {
 			--env fasta_tag --env threads_per_job \
 			--env star_index_dir --env star_genome_dir \
 			--env STAR_DELETE_TRANSIENT --env PROJECT_ROOT \
-			--env OVERWRITE_MODE \
+			--env OVERWRITE_MODE --env effective_genome_load \
 			-j "$parallel_jobs" \
 			--halt soon,fail=1 \
 			--joblog "$star_genome_dir/parallel_star_align.log" \
@@ -436,6 +515,11 @@ star_alignment_pipeline() {
 					--outFileNamePrefix "$out_prefix" \
 					--outTmpDir "$star_tmp_dir" \
 					--outSAMtype BAM Unsorted \
+					--outSAMstrandField intronMotif \
+					--outSAMattributes NH HI AS NM MD \
+					--outSAMunmapped Within \
+					--twopassMode Basic \
+					--genomeLoad "$effective_genome_load" \
 					--runThreadN "$THREADS"
 
 			# Check if unsorted BAM was created
@@ -511,12 +595,12 @@ star_alignment_pipeline() {
 	log_info "[STAR] All samples aligned successfully"
 
 	# STEP 3: SALMON QUANTIFICATION
-	# fasta_tag is already embedded in abs_star_align_root via set_fasta_output_dirs
-	# Only append tissue_tag subdirectory when doing tissue-specific runs
+	# Include fasta_tag in paths to prevent multi-reference collisions.
+	# tissue_tag further subdivides within a given reference run.
 	local ref_suffix=""
 	[[ -n "${tissue_tag:-}" ]] && ref_suffix="${tissue_tag}"
-	local salmon_idx="${abs_star_align_root}/6_salmon/index${ref_suffix:+/${ref_suffix}}"
-	local quant_root="${abs_star_align_root}/6_salmon/quant${ref_suffix:+/${ref_suffix}}"
+	local salmon_idx="${abs_star_align_root}/${fasta_tag}/6_salmon/index${ref_suffix:+/${ref_suffix}}"
+	local quant_root="${abs_star_align_root}/${fasta_tag}/6_salmon/quant${ref_suffix:+/${ref_suffix}}"
 	# Clean up double slashes
 	salmon_idx="${salmon_idx//\/\//\/}"
 	quant_root="${quant_root//\/\//\/}"
@@ -540,6 +624,7 @@ star_alignment_pipeline() {
 		_prepare_parallel_env
 
 		export fasta_tag threads_per_job salmon_idx quant_root
+		export _sal_lib_pe _sal_lib_se
 
 		_m3_salmon_parallel_worker() {
 			local SRR="$1"
@@ -556,12 +641,12 @@ star_alignment_pipeline() {
 			# Strip ANSI escape codes and carriage returns (Salmon uses colored progress bars)
 			if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
 				salmon quant -p "$threads_per_job" -i "$salmon_idx" -o "$quant_dir" \
-					--validateMappings -l A -1 "$trimmed1" -2 "$trimmed2" 2>&1 | \
+					--validateMappings --gcBias -l "${_sal_lib_pe:-A}" -1 "$trimmed1" -2 "$trimmed2" 2>&1 | \
 					sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
 				quant_exit=${PIPESTATUS[0]}
 			else
 				salmon quant -p "$threads_per_job" -i "$salmon_idx" -o "$quant_dir" \
-					--validateMappings -l A -r "$trimmed1" 2>&1 | \
+					--validateMappings --gcBias -l "${_sal_lib_se:-A}" -r "$trimmed1" 2>&1 | \
 					sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
 				quant_exit=${PIPESTATUS[0]}
 			fi
@@ -576,6 +661,7 @@ star_alignment_pipeline() {
 			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
 			--env abs_trim_dir_root --env abs_error_warn_file --env keep_bam_global \
 			--env fasta_tag --env threads_per_job --env salmon_idx --env quant_root \
+			--env _sal_lib_pe --env _sal_lib_se \
 			--env OVERWRITE_MODE \
 			-j "$parallel_jobs" \
 			--halt soon,fail=1 \
@@ -600,10 +686,10 @@ star_alignment_pipeline() {
 
 			if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
 				run_with_space_time_log salmon quant -p "$THREADS" -i "$salmon_idx" -o "$quant_dir" \
-					--validateMappings -l A -1 "$trimmed1" -2 "$trimmed2"
+					--validateMappings --gcBias -l "${_sal_lib_pe:-A}" -1 "$trimmed1" -2 "$trimmed2"
 			else
 				run_with_space_time_log salmon quant -p "$THREADS" -i "$salmon_idx" -o "$quant_dir" \
-					--validateMappings -l A -r "$trimmed1"
+					--validateMappings --gcBias -l "${_sal_lib_se:-A}" -r "$trimmed1"
 			fi
 
 			[[ -f "$quant_dir/quant.sf" ]] && log_info "[SALMON] Successfully quantified: $SRR"
@@ -645,22 +731,20 @@ star_alignment_pipeline() {
 
 	[[ $quant_count -lt 2 ]] && { log_error "Insufficient quantifications: $quant_count (need ≥2)"; return 1; }
 
-	# Create sample metadata
-	[[ ! -f "$sample_metadata" ]] && create_sample_metadata "$sample_metadata" rnaseq_list[@]
+	# Create sample metadata (always regenerate: sample set changes per dataset/tissue)
+	create_sample_metadata "$sample_metadata" "${rnaseq_list[@]}"
 
-	# Generate tximport R script
+	# Generate tximport R script (always refresh so helper updates propagate)
 	local tximport_script="$matrix_dir/run_tximport_star_salmon.R"
-	if [[ ! -f "$tximport_script" ]]; then
-		generate_tximport_star_script "$quant_root" "$sample_metadata" "$tx2gene_file" "$matrix_dir" "$tximport_script"
-	fi
+	generate_tximport_star_script "$quant_root" "$sample_metadata" "$tx2gene_file" "$matrix_dir" "$tximport_script"
 
 	# Run tximport if R is available
 	if command -v Rscript >/dev/null 2>&1; then
 		log_step "Running tximport to import Salmon quantifications"
 		# Note: stdout already goes through tee via exec redirect; do NOT pipe to tee -a "$LOG_FILE" (causes double-logging)
-		if Rscript "$tximport_script" "$quant_root" "$sample_metadata" "$tx2gene_file" "$matrix_dir" 2>&1; then
+		if Rscript "$tximport_script" "$quant_root" "$sample_metadata" "$tx2gene_file" "$matrix_dir" "$fasta_tag" 2>&1; then
 			log_info "[TXIMPORT] Successfully imported counts for DESeq2"
-			local count_matrix="$matrix_dir/gene_counts_tximport.tsv"
+			local count_matrix="$matrix_dir/gene_level/${fasta_tag}_NumReads_Gene_ID_from_${fasta_tag}_gene_level.tsv"
 			[[ -f "$count_matrix" ]] && validate_count_matrix "$count_matrix" "gene" 2
 		else
 			log_warn "[TXIMPORT] tximport failed - check R dependencies"
@@ -681,12 +765,13 @@ star_alignment_pipeline() {
 # ==============================================================================
 
 # Run tximport for STAR+Salmon using external R helper
-# Usage: run_tximport_star <quant_dir> <metadata_file> <tx2gene_file> [output_dir]
+# Usage: run_tximport_star <quant_dir> <metadata_file> <tx2gene_file> [output_dir] [master_ref]
 run_tximport_star() {
 	local quant_dir="$1"
 	local metadata_file="$2"
 	local tx2gene_file="$3"
 	local output_dir="${4:-$(dirname "$metadata_file")}"
+	local master_ref="${5:-$(basename "$output_dir")}"
 	local helper_script="$SCRIPT_DIR/helpers/tximport_star_helper.R"
 
 	if [[ ! -f "$helper_script" ]]; then
@@ -695,7 +780,7 @@ run_tximport_star() {
 	fi
 
 	log_info "[TXIMPORT] Running STAR+Salmon import..."
-	Rscript "$helper_script" "$quant_dir" "$metadata_file" "$tx2gene_file" "$output_dir"
+	Rscript "$helper_script" "$quant_dir" "$metadata_file" "$tx2gene_file" "$output_dir" "$master_ref"
 }
 
 # Generate tximport script (legacy - copies helper)

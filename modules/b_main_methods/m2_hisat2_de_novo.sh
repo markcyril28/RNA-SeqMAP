@@ -54,7 +54,8 @@ hisat2_de_novo_pipeline() {
 		log_step "Building HISAT2 de novo index from $fasta"
 		log_file_size "$fasta" "Input FASTA for HISAT2 de novo index"
 		run_with_space_time_log --input "$fasta" --output "$HISAT2_DE_NOVO_INDEX_DIR" \
-			hisat2-build -p "${THREADS}" "$fasta" "$index_prefix"
+			hisat2-build -p "${THREADS}" "$fasta" "$index_prefix" \
+			|| { log_error "HISAT2 de novo index build failed for $fasta_tag"; return 1; }
 		log_file_size "$HISAT2_DE_NOVO_INDEX_DIR" "HISAT2 de novo index output"
 	fi
 
@@ -63,7 +64,7 @@ hisat2_de_novo_pipeline() {
 	local threads_per_job=$((THREADS / parallel_jobs))
 	[[ $threads_per_job -lt 1 ]] && threads_per_job=1
 
-	if command -v parallel >/dev/null 2>&1 && [[ "$parallel_jobs" -gt 1 ]]; then
+	if command -v parallel >/dev/null 2>&1 && [[ "$parallel_jobs" -gt 1 ]] && [[ "${USE_GNU_PARALLEL:-TRUE}" != "FALSE" ]]; then
 		log_step "[PARALLEL] HISAT2 De Novo: ${#rnaseq_list[@]} samples, $parallel_jobs jobs x $threads_per_job threads"
 		_prepare_parallel_env
 
@@ -100,27 +101,30 @@ hisat2_de_novo_pipeline() {
 				fi
 				[[ $align_exit -ne 0 ]] && { _parallel_log HISAT2_DN "$SRR" ERROR "HISAT2 failed (exit=$align_exit)"; return $align_exit; }
 
-				samtools sort -@ "$threads_per_job" -o "$bam" "$sam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g' || { _parallel_log HISAT2_DN "$SRR" ERROR "samtools sort failed"; return 1; }
-				samtools index -@ "$threads_per_job" "$bam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g' || true
+				samtools sort -@ "$threads_per_job" -o "$bam" "$sam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
+				[[ ${PIPESTATUS[0]} -ne 0 ]] && { _parallel_log HISAT2_DN "$SRR" ERROR "samtools sort failed"; return 1; }
+				samtools index -@ "$threads_per_job" "$bam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
+				[[ ${PIPESTATUS[0]} -ne 0 ]] && { _parallel_log HISAT2_DN "$SRR" ERROR "samtools index failed"; return 1; }
 				rm -f "$sam"
 			fi
 
 			# StringTie assembly (de novo)
 			local out_dir="$abs_stringtie_dn_root/$SRR"
 			local out_gtf="$out_dir/${SRR}_${fasta_tag}_trimmed_mapped_sorted_stringtie_assembled_de_novo.gtf"
+			local out_abund="$out_dir/${SRR}_${fasta_tag}_gene_abundances_de_novo.tsv"
 			mkdir -p "$out_dir"
 
-			if [[ -f "$out_gtf" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
+			if [[ -f "$out_gtf" && -f "$out_abund" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 				_parallel_log HISAT2_DN "$SRR" INFO "De novo assembly exists - skipping"
 			else
 				_parallel_log HISAT2_DN "$SRR" INFO "Assembling transcripts (de novo)"
 				stringtie -p "$threads_per_job" "$bam" -o "$out_gtf" \
-					-A "$out_dir/${SRR}_${fasta_tag}_gene_abundances_de_novo.tsv" 2>&1 || \
+					-A "$out_abund" 2>&1 || \
 					{ _parallel_log HISAT2_DN "$SRR" ERROR "StringTie failed"; return 1; }
 			fi
 
 			if [[ "$keep_bam_global" != "y" ]]; then
-				rm -f "$bam" "${bam}.bai" "$sam"
+				rm -f "$bam" "${bam}.bai"
 			fi
 			_parallel_log HISAT2_DN "$SRR" INFO "Completed successfully"
 			return 0
@@ -158,36 +162,44 @@ hisat2_de_novo_pipeline() {
 			else
 				log_step "Aligning $SRR using HISAT2 De Novo"
 
+				local align_exit=0
 				if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
 					run_with_space_time_log --input "$TRIM_DIR_ROOT/$SRR" --output "$HISAT2_DIR" \
 						hisat2 -p "${THREADS}" -x "$index_prefix" -1 "$trimmed1" -2 "$trimmed2" -S "$sam"
 				else
-					run_with_space_time_log hisat2 -p "${THREADS}" -x "$index_prefix" -U "$trimmed1" -S "$sam"
+					run_with_space_time_log --input "$TRIM_DIR_ROOT/$SRR" --output "$HISAT2_DIR" \
+						hisat2 -p "${THREADS}" -x "$index_prefix" -U "$trimmed1" -S "$sam"
 				fi
+				align_exit=$?
+				[[ $align_exit -ne 0 ]] && { log_error "[HISAT2] Alignment failed for $SRR (exit=$align_exit)"; rm -f "$sam"; continue; }
 
 				log_info "[SAMTOOLS] Converting SAM to sorted BAM..."
-				run_with_space_time_log --input "$sam" --output "$bam" samtools sort -@ "${THREADS}" -o "$bam" "$sam"
-				run_with_space_time_log samtools index -@ "${THREADS}" "$bam"
+				run_with_space_time_log --input "$sam" --output "$bam" samtools sort -@ "${THREADS}" -o "$bam" "$sam" \
+					|| { log_error "[SAMTOOLS] sort failed for $SRR"; rm -f "$sam"; continue; }
+				run_with_space_time_log samtools index -@ "${THREADS}" "$bam" \
+					|| { log_error "[SAMTOOLS] index failed for $SRR"; continue; }
 				rm -f "$sam"
 			fi
 
 			# StringTie assembly (de novo - no reference GTF)
 			local out_dir="$STRINGTIE_HISAT2_DE_NOVO_ROOT/$SRR"
 			local out_gtf="$out_dir/${SRR}_${fasta_tag}_trimmed_mapped_sorted_stringtie_assembled_de_novo.gtf"
+			local out_abund="$out_dir/${SRR}_${fasta_tag}_gene_abundances_de_novo.tsv"
 			mkdir -p "$out_dir"
 
-			if [[ -f "$out_gtf" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
+			if [[ -f "$out_gtf" && -f "$out_abund" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 				log_info "[STRINGTIE] De novo assembly exists for $SRR - skipping"
 			else
 				log_step "Assembling transcripts for $SRR (de novo)"
 				run_with_space_time_log --input "$bam" --output "$out_dir" \
 					stringtie -p "$THREADS" "$bam" -o "$out_gtf" \
-						-A "$out_dir/${SRR}_${fasta_tag}_gene_abundances_de_novo.tsv"
+						-A "$out_abund" \
+					|| { log_error "[STRINGTIE] Assembly failed for $SRR"; continue; }
 			fi
 
 			# Cleanup BAM files if configured
 			if [[ "$keep_bam_global" != "y" ]]; then
-				rm -f "$bam" "${bam}.bai" "$sam"
+				rm -f "$bam" "${bam}.bai"
 			fi
 
 			log_info "[STRINGTIE] Done processing $SRR (de novo)"
