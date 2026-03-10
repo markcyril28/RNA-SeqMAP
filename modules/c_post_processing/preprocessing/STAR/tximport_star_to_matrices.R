@@ -251,8 +251,18 @@ for (level_name in names(processing_levels)) {
   level_output_dir <- file.path(MATRICES_DIR, MASTER_REFERENCE, level_name)
   dir.create(level_output_dir, recursive = TRUE, showWarnings = FALSE)
 
-  save_count_matrix(raw_counts, level_output_dir,
-                    base_name    = MASTER_REFERENCE,
+  # Dataset-namespaced folder (matches gene group structure; avoids overwrite across datasets)
+  CURRENT_DATASET <- Sys.getenv("CURRENT_DATASET", unset = "")
+  full_ref_folder <- if (nzchar(CURRENT_DATASET)) {
+    paste0(MASTER_REFERENCE, "_in_", CURRENT_DATASET)
+  } else {
+    MASTER_REFERENCE
+  }
+  full_ref_dir <- file.path(level_output_dir, full_ref_folder)
+  dir.create(full_ref_dir, recursive = TRUE, showWarnings = FALSE)
+
+  save_count_matrix(raw_counts, full_ref_dir,
+                    base_name    = full_ref_folder,
                     master_ref   = MASTER_REFERENCE,
                     level_suffix = level_config$output_suffix,
                     sample_labels = SAMPLE_LABELS,
@@ -304,7 +314,7 @@ for (level_name in names(processing_levels)) {
           raw_lines <- raw_lines[
             !grepl("^#|^Gene_ID", raw_lines, ignore.case = TRUE) & nzchar(raw_lines)
           ]
-          raw_lines
+          sub("\t.*", "", raw_lines)  # strip tab-delimited extra fields (e.g. gene names, descriptions)
         }
       }, error = function(e) {
         cat("    Error reading gene list:", conditionMessage(e), "\n")

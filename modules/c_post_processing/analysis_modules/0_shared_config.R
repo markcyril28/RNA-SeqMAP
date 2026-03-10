@@ -529,16 +529,12 @@ build_input_path <- function(gene_group, processing_level, count_type, gene_type
               paste0(folder_name, "_", count_type, "_counts_", stringtie_gene_type, 
                      "_", stringtie_label_type, "_from_", master_ref, ".tsv"))
   } else {
-    # Tximport path (Salmon/RSEM): count_matrices_from_*/{master_ref}/{level}/{gene_group}/
-    if (gene_group == master_ref) {
-      file.path(matrices_dir, master_ref, processing_level,
-                paste0(master_ref, "_", count_type, "_", gene_type,
-                       "_from_", master_ref, "_", processing_level, ".tsv"))
-    } else {
-      file.path(matrices_dir, master_ref, processing_level, folder_name,
-                paste0(folder_name, "_", count_type, "_", gene_type,
-                       "_from_", master_ref, "_", processing_level, ".tsv"))
-    }
+    # Tximport path (Salmon/RSEM): count_matrices_from_*/{master_ref}/{level}/{folder_name}/
+    # Both full-genome (gene_group == master_ref) and gene group subsets use the same structure;
+    # folder_name = get_output_folder_name(gene_group, dataset) = "{gene_group}_in_{dataset}"
+    file.path(matrices_dir, master_ref, processing_level, folder_name,
+              paste0(folder_name, "_", count_type, "_", gene_type,
+                     "_from_", master_ref, "_", processing_level, ".tsv"))
   }
 }
 

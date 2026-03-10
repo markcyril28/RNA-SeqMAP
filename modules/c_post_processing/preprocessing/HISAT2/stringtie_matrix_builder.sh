@@ -193,7 +193,8 @@ merge_group_counts() {
     fi
 
     # Extract gene names from reference CSV (first column is Gene_ID)
-    tail -n +2 "${ref_csv}" | cut -d',' -f1 > "$tmpdir/gene_names.txt"
+    tail -n +2 "${ref_csv}" | cut -d',' -f1 > "$tmpdir/gene_names.txt" \
+        || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: Failed to extract gene names from $ref_csv"; rm -rf "$tmpdir"; return 1; }
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gene names extracted: $(wc -l < "$tmpdir/gene_names.txt") lines."
 
     for count_type in coverage fpkm tpm; do
@@ -218,10 +219,15 @@ merge_group_counts() {
             fi
         done
 
+        if [[ ${#sample_files[@]} -eq 0 ]]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: No sample files for $count_type in $gene_group, skipping matrix"
+            continue
+        fi
+
         local output_geneName_SRR_tsv="$OUT_DIR/$group_name/${group_name}_${count_type}_counts_geneName_SRR${MASTER_SUFFIX}.tsv"
-        
+
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Creating SRR matrix: $(basename "$output_geneName_SRR_tsv")"
-        
+
         printf "%s\n" "${sample_files[@]}" > "$tmpdir/sample_files_list.txt"
         
         # Create matrix with SRR headers

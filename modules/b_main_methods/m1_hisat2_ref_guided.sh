@@ -173,6 +173,10 @@ hisat2_ref_guided_pipeline() {
 				[[ ${PIPESTATUS[0]} -ne 0 ]] && { rm -f "$sam"; _parallel_log HISAT2_RG "$SRR" ERROR "samtools sort failed"; return 1; }
 				samtools index -@ "$threads_per_job" "$bam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g' || true
 				rm -f "$sam"
+
+				# Infer strandness once (lock-file ensures only first worker runs it)
+				[[ -z "$hisat2_strand_opts" ]] && \
+					_m1_infer_strandness "$bam" "$abs_gtf" "$(dirname "$index_prefix")" "HISAT2_RG" "$SRR"
 			fi
 
 			# StringTie quantification (ref-guided, single pass)
@@ -198,7 +202,7 @@ hisat2_ref_guided_pipeline() {
 			_parallel_log HISAT2_RG "$SRR" INFO "Completed successfully"
 			return 0
 		}
-		export -f _m1_align_parallel_worker
+		export -f _m1_align_parallel_worker _m1_infer_strandness
 
 		printf '%s\n' "${rnaseq_list[@]}" | parallel \
 			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
@@ -247,6 +251,12 @@ hisat2_ref_guided_pipeline() {
 				run_with_space_time_log --input "$sam" --output "$bam" samtools sort -@ "${THREADS}" -o "$bam" "$sam"
 				run_with_space_time_log samtools index -@ "${THREADS}" "$bam"
 				rm -f "$sam"
+
+				# Infer strandness once on the first sample
+				if [[ -z "$strandness" && -z "${_m1_strand_inferred:-}" ]]; then
+					_m1_strand_inferred=1
+					_m1_infer_strandness "$bam" "$gtf" "$HISAT2_REF_GUIDED_INDEX_DIR" "HISAT2_RG" "$SRR"
+				fi
 			fi
 
 			# StringTie quantification (ref-guided, single pass)
@@ -322,4 +332,68 @@ hisat2_ref_guided_pipeline() {
 	log_step "HISAT2 reference-guided pipeline completed for $fasta_tag"
 	log_info "Gene count matrix: $gene_count_matrix"
 	log_info "Sample metadata: $sample_metadata"
+}
+
+# ==============================================================================
+# STRANDNESS INFERENCE HELPER
+# ==============================================================================
+# Build BED12 from GTF (cached) and run infer_experiment.py on a BAM once.
+# A lock file (infer_strandness.done) ensures only the first caller executes.
+# val_1 = FR (1++,1--,2+-,2-+) / val_2 = RF (1+-,1-+,2++,2--)
+# Usage: _m1_infer_strandness <bam> <gtf> <index_dir> [method_tag] [srr_tag]
+_m1_infer_strandness() {
+	local bam="$1" gtf="$2" index_dir="$3"
+	local method="${4:-STRANDNESS}" srr="${5:-PIPELINE}"
+	local sentinel="$index_dir/infer_strandness.done"
+	local bed12="$index_dir/annotation_infer_exp.bed"
+
+	# Atomic lock — only the first concurrent caller proceeds
+	( set -o noclobber; : > "$sentinel" ) 2>/dev/null || return 0
+
+	if ! command -v infer_experiment.py >/dev/null 2>&1; then
+		_parallel_log "$method" "$srr" WARN "infer_experiment.py not found — skipping strandness check"
+		return 0
+	fi
+
+	# Build BED12 from GTF (cached in index dir)
+	if [[ ! -s "$bed12" ]]; then
+		if command -v gtfToGenePred >/dev/null 2>&1 && command -v genePredToBed >/dev/null 2>&1; then
+			gtfToGenePred "$gtf" /dev/stdout 2>/dev/null | genePredToBed /dev/stdin "$bed12" 2>/dev/null
+		else
+			_parallel_log "$method" "$srr" WARN "gtfToGenePred not found — cannot build BED12 for strandness check"
+			return 0
+		fi
+	fi
+
+	[[ ! -s "$bed12" ]] && { _parallel_log "$method" "$srr" WARN "BED12 conversion from GTF failed"; return 0; }
+
+	_parallel_log "$method" "$srr" INFO "Running infer_experiment.py on: $(basename "$bam")"
+	local result
+	result=$(infer_experiment.py -i "$bam" -r "$bed12" 2>/dev/null)
+	printf '%s\n' "$result" >> "$sentinel"
+
+	# Parse: val_1 = FR (forward-stranded), val_2 = RF (reverse-stranded / dUTP)
+	# Paired-end: "1++,1--,2+-,2-+" (FR) / "1+-,1-+,2++,2--" (RF)
+	# Single-end:       "++,--"      (FR) /       "+-,-+"       (RF)
+	local val1 val2
+	val1=$(printf '%s' "$result" | grep -i '"1++,1--,2+-,2-+"' | grep -oP '[0-9]+\.[0-9]+' | tail -1)
+	val2=$(printf '%s' "$result" | grep -i '"1+-,1-+,2++,2--"' | grep -oP '[0-9]+\.[0-9]+' | tail -1)
+	# Fallback to single-end patterns if paired-end yielded nothing
+	if [[ -z "$val1" && -z "$val2" ]]; then
+		val1=$(printf '%s' "$result" | grep -i '"++,--"' | grep -oP '[0-9]+\.[0-9]+' | tail -1)
+		val2=$(printf '%s' "$result" | grep -i '"+-,-+"' | grep -oP '[0-9]+\.[0-9]+' | tail -1)
+	fi
+
+	local rec
+	if   [[ -n "$val1" ]] && awk "BEGIN{exit !($val1 > 0.6)}"; then
+		rec="FR  → add --STRANDNESS FR to your config (ligation / forward-stranded)"
+	elif [[ -n "$val2" ]] && awk "BEGIN{exit !($val2 > 0.6)}"; then
+		rec="RF  → add --STRANDNESS RF to your config (dUTP / TruSeq / reverse-stranded)"
+	else
+		rec="Unstranded  → omit --STRANDNESS (already the default)"
+	fi
+
+	_parallel_log "$method" "$srr" INFO "[STRANDNESS]   _val_1 (FR  1++,1--,2+-,2-+): ${val1:-N/A}"
+	_parallel_log "$method" "$srr" INFO "[STRANDNESS]   _val_2 (RF  1+-,1-+,2++,2--): ${val2:-N/A}"
+	_parallel_log "$method" "$srr" WARN "[STRANDNESS]   Recommendation: $rec"
 }

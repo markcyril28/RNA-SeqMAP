@@ -248,12 +248,12 @@ for (level_name in names(processing_levels)) {
     txi <- tximport(files, type = "salmon",
                     txIn = TRUE, txOut = FALSE,
                     tx2gene = tx2gene,
-                    ignoreTxVersion = FALSE, ignoreAfterBar = FALSE)
+                    ignoreTxVersion = TRUE, ignoreAfterBar = FALSE)
   } else {
     # Isoform-level: no tx2gene needed
     cat("  Importing at transcript level...\n")
     txi <- tximport(files, type = "salmon", txIn = TRUE, txOut = TRUE,
-                   ignoreTxVersion = FALSE, ignoreAfterBar = FALSE)
+                   ignoreTxVersion = TRUE, ignoreAfterBar = FALSE)
   }
   
   entity_type <- if (level_config$tx_out) "transcripts" else "genes"
@@ -331,10 +331,21 @@ for (level_name in names(processing_levels)) {
   level_output_dir <- file.path(output_dir, level_name)
   dir.create(level_output_dir, recursive = TRUE, showWarnings = FALSE)
 
+  # Dataset-namespaced folder (matches gene group structure; avoids overwrite across datasets)
+  full_ref_folder <- if (nzchar(CURRENT_DATASET)) {
+    paste0(MASTER_REFERENCE, "_in_", CURRENT_DATASET)
+  } else {
+    MASTER_REFERENCE
+  }
+  # Save full-genome matrix in a named subdirectory so the path matches
+  # build_input_path() which always expects: {level}/{folder_name}/{folder_name}_...tsv
+  full_ref_dir <- file.path(level_output_dir, full_ref_folder)
+  dir.create(full_ref_dir, recursive = TRUE, showWarnings = FALSE)
+
   # Save raw_counts as "NumReads" — downstream DESeq2 scripts require raw integer-like
   # counts as input and perform their own normalization internally. Saving DESeq2-normalized
   # values here would cause double-normalization. TPM is saved alongside for visualization.
-  save_count_matrix(raw_counts, level_output_dir, MASTER_REFERENCE,
+  save_count_matrix(raw_counts, full_ref_dir, full_ref_folder,
                    MASTER_REFERENCE, level_config$output_suffix,
                    tpm_matrix = tpm_matrix)
   cat("\n")

@@ -55,7 +55,7 @@ hisat2_de_novo_pipeline() {
 		log_file_size "$fasta" "Input FASTA for HISAT2 de novo index"
 		run_with_space_time_log --input "$fasta" --output "$HISAT2_DE_NOVO_INDEX_DIR" \
 			hisat2-build -p "${THREADS}" "$fasta" "$index_prefix" \
-			|| { log_error "HISAT2 de novo index build failed for $fasta_tag"; return 1; }
+			|| { log_error "HISAT2 de novo index build failed for $fasta_tag"; rm -f "${index_prefix}".*.ht2; return 1; }
 		log_file_size "$HISAT2_DE_NOVO_INDEX_DIR" "HISAT2 de novo index output"
 	fi
 
@@ -99,12 +99,12 @@ hisat2_de_novo_pipeline() {
 						-U "$trimmed1" -S "$sam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
 					align_exit=${PIPESTATUS[0]}
 				fi
-				[[ $align_exit -ne 0 ]] && { _parallel_log HISAT2_DN "$SRR" ERROR "HISAT2 failed (exit=$align_exit)"; return $align_exit; }
+				[[ $align_exit -ne 0 ]] && { _parallel_log HISAT2_DN "$SRR" ERROR "HISAT2 failed (exit=$align_exit)"; rm -f "$sam"; return $align_exit; }
 
 				samtools sort -@ "$threads_per_job" -o "$bam" "$sam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
-				[[ ${PIPESTATUS[0]} -ne 0 ]] && { _parallel_log HISAT2_DN "$SRR" ERROR "samtools sort failed"; return 1; }
+				[[ ${PIPESTATUS[0]} -ne 0 ]] && { _parallel_log HISAT2_DN "$SRR" ERROR "samtools sort failed"; rm -f "$sam" "$bam"; return 1; }
 				samtools index -@ "$threads_per_job" "$bam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
-				[[ ${PIPESTATUS[0]} -ne 0 ]] && { _parallel_log HISAT2_DN "$SRR" ERROR "samtools index failed"; return 1; }
+				[[ ${PIPESTATUS[0]} -ne 0 ]] && { _parallel_log HISAT2_DN "$SRR" ERROR "samtools index failed"; rm -f "$sam" "$bam"; return 1; }
 				rm -f "$sam"
 			fi
 
@@ -120,7 +120,7 @@ hisat2_de_novo_pipeline() {
 				_parallel_log HISAT2_DN "$SRR" INFO "Assembling transcripts (de novo)"
 				stringtie -p "$threads_per_job" "$bam" -o "$out_gtf" \
 					-A "$out_abund" 2>&1 || \
-					{ _parallel_log HISAT2_DN "$SRR" ERROR "StringTie failed"; return 1; }
+					{ _parallel_log HISAT2_DN "$SRR" ERROR "StringTie failed"; rm -f "$out_gtf" "$out_abund"; return 1; }
 			fi
 
 			if [[ "$keep_bam_global" != "y" ]]; then
@@ -144,7 +144,7 @@ hisat2_de_novo_pipeline() {
 
 		local par_exit=$?
 		log_info "[PARALLEL] HISAT2 De Novo complete (exit=$par_exit)"
-		[[ $par_exit -ne 0 ]] && log_warn "[PARALLEL] Some jobs failed - check $HISAT2_DE_NOVO_ROOT/parallel_hisat2_denovo.log"
+		[[ $par_exit -ne 0 ]] && log_warn "[PARALLEL] Some jobs failed - check $HISAT2_DE_NOVO_ROOT/parallel_hisat2_denovo.log" && return $par_exit
 	else
 		# Sequential fallback
 		for SRR in "${rnaseq_list[@]}"; do
@@ -175,9 +175,9 @@ hisat2_de_novo_pipeline() {
 
 				log_info "[SAMTOOLS] Converting SAM to sorted BAM..."
 				run_with_space_time_log --input "$sam" --output "$bam" samtools sort -@ "${THREADS}" -o "$bam" "$sam" \
-					|| { log_error "[SAMTOOLS] sort failed for $SRR"; rm -f "$sam"; continue; }
+					|| { log_error "[SAMTOOLS] sort failed for $SRR"; rm -f "$sam" "$bam"; continue; }
 				run_with_space_time_log samtools index -@ "${THREADS}" "$bam" \
-					|| { log_error "[SAMTOOLS] index failed for $SRR"; continue; }
+					|| { log_error "[SAMTOOLS] index failed for $SRR"; rm -f "$sam" "$bam"; continue; }
 				rm -f "$sam"
 			fi
 
@@ -194,7 +194,7 @@ hisat2_de_novo_pipeline() {
 				run_with_space_time_log --input "$bam" --output "$out_dir" \
 					stringtie -p "$THREADS" "$bam" -o "$out_gtf" \
 						-A "$out_abund" \
-					|| { log_error "[STRINGTIE] Assembly failed for $SRR"; continue; }
+					|| { log_error "[STRINGTIE] Assembly failed for $SRR"; rm -f "$out_gtf" "$out_abund"; continue; }
 			fi
 
 			# Cleanup BAM files if configured

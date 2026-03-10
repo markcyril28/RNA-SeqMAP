@@ -121,7 +121,7 @@ salmon_saf_pipeline() {
 					-r "$trimmed1" \
 					-p "$threads_per_job" \
 					--numBootstraps "$salmon_num_bootstraps" \
-					--gcBias --seqBias \
+					--seqBias \
 					-o "$out_dir" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
 				salmon_exit=${PIPESTATUS[0]}
 			fi
@@ -181,7 +181,7 @@ salmon_saf_pipeline() {
 					-r "$trimmed1" \
 					-p "$THREADS" \
 					--numBootstraps "$SALMON_NUM_BOOTSTRAPS" \
-					--gcBias --seqBias \
+					--seqBias \
 					-o "$out_dir"
 			fi
 			log_file_size "$out_dir/quant.sf" "Salmon quantification output - $SRR"
@@ -235,22 +235,10 @@ _create_salmon_matrices() {
 			< <(find "$quant_root" -name "quant.sf" 2>/dev/null | sort)
 	fi
 
-	# Generate matrices using Trinity's script or manual creation
-	if command -v abundance_estimates_to_matrix.pl >/dev/null 2>&1; then
-		log_info "[SALMON MATRIX] Running abundance_estimates_to_matrix.pl..."
-		run_with_space_time_log --input "$quant_root" --output "$matrix_dir" \
-			abundance_estimates_to_matrix.pl \
-			--est_method salmon \
-			--gene_trans_map "$gene_trans_map" \
-			--out_prefix "$matrix_dir/genes" \
-			--name_sample_by_basedir "${quant_sf_files[@]}" || {
-			log_warn "abundance_estimates_to_matrix.pl failed. Creating manual count matrix..."
-			_create_manual_salmon_matrix "$quant_root" "$matrix_dir" srr_list[@]
-		}
-	else
-		log_warn "abundance_estimates_to_matrix.pl not found. Creating manual count matrix..."
-		_create_manual_salmon_matrix "$quant_root" "$matrix_dir" srr_list[@]
-	fi
+	# abundance_estimates_to_matrix.pl (Trinity) only supports RSEM|eXpress|kallisto,
+	# not salmon — skip it and use the manual fallback directly.
+	log_info "[SALMON MATRIX] abundance_estimates_to_matrix.pl does not support --est_method salmon; using manual count matrix builder."
+	_create_manual_salmon_matrix "$quant_root" "$matrix_dir" srr_list[@]
 
 	# Prepare DESeq2-compatible outputs
 	_prepare_salmon_deseq2_output "$tag" "$quant_root" "$matrix_dir" srr_list[@]

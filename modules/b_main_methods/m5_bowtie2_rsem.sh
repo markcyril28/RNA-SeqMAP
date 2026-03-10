@@ -74,13 +74,15 @@ bowtie2_rsem_pipeline() {
 
 	# QUANTIFY SAMPLES - parallel or sequential
 	if _rsem_should_use_parallel && [[ ${#rnaseq_list[@]} -gt 1 ]]; then
-		_rsem_quantify_parallel "$rsem_idx" "$quant_root" rnaseq_list[@]
+		_rsem_quantify_parallel "$rsem_idx" "$quant_root" rnaseq_list[@] || \
+			log_warn "[RSEM] Some parallel quantification jobs failed — proceeding to matrix generation"
 	else
 		_rsem_quantify_sequential "$rsem_idx" "$quant_root" rnaseq_list[@]
 	fi
 
 	# GENERATE MATRICES
-	_create_rsem_matrices "$fasta" "$tag" "$quant_root" "$matrix_dir" rnaseq_list[@]
+	_create_rsem_matrices "$fasta" "$tag" "$quant_root" "$matrix_dir" rnaseq_list[@] || \
+		log_warn "[RSEM] Matrix generation failed for $tag"
 
 	log_step "COMPLETED: Bowtie2-RSEM pipeline for $tag"
 }
@@ -106,9 +108,14 @@ _rsem_quantify_sequential() {
 
 	log_info "[RSEM QUANT] Running SEQUENTIAL quantification for ${#samples[@]} samples (threads per job: $THREADS)"
 
+	local failed_samples=0
 	for SRR in "${samples[@]}"; do
-		_rsem_process_single_sample "$SRR" "$rsem_idx" "$quant_root" "$THREADS"
+		_rsem_process_single_sample "$SRR" "$rsem_idx" "$quant_root" "$THREADS" || {
+			log_warn "[RSEM QUANT] Sample $SRR failed — continuing with remaining samples"
+			failed_samples=$((failed_samples + 1))
+		}
 	done
+	[[ $failed_samples -gt 0 ]] && log_warn "[RSEM QUANT] $failed_samples/${#samples[@]} sample(s) failed"
 }
 
 # ==============================================================================
@@ -176,8 +183,8 @@ _rsem_parallel_worker() {
 		return 1
 	fi
 
-	if [[ ! -f "${rsem_idx}.grp" ]]; then
-		_plog "ERROR" "RSEM index not found: ${rsem_idx}.grp"
+	if [[ ! -f "${rsem_idx}.grp" || ! -f "${rsem_idx}.rev.2.bt2" ]]; then
+		_plog "ERROR" "RSEM index incomplete or not found: ${rsem_idx}.grp / .rev.2.bt2"
 		return 1
 	fi
 
@@ -281,9 +288,11 @@ _rsem_quantify_parallel() {
 
 	local parallel_exit=$?
 
-	# Report results
-	local successful
-	successful=$(find "$quant_root" -name "*.genes.results" 2>/dev/null | wc -l)
+	# Report results — count only files for the current batch (avoids inflation from stale runs)
+	local successful=0
+	for s in "${valid_samples[@]}"; do
+		[[ -f "$quant_root/$s/${s}.genes.results" ]] && ((successful++))
+	done
 	log_info "[RSEM QUANT] Parallel quantification complete: $successful/$num_samples samples succeeded"
 
 	if [[ -f "$quant_root/parallel_rsem.log" ]]; then
@@ -325,7 +334,7 @@ _create_rsem_matrices() {
 		if [[ ! -s "$gene_trans_map" ]]; then
 			log_warn "[RSEM MATRIX] gene_trans_map is empty or creation failed — skipping abundance_estimates_to_matrix.pl, using manual fallback"
 			_create_manual_rsem_matrix "$quant_root" "$matrix_dir" samples[@]
-			_prepare_rsem_deseq2_output "$tag" "$quant_root" "$matrix_dir" samples[@]
+			_prepare_rsem_deseq2_output "$tag" "$quant_root" "$matrix_dir" samples[@] || return 1
 			return 0
 		fi
 	fi
@@ -343,7 +352,6 @@ _create_rsem_matrices() {
 		else
 			run_with_space_time_log abundance_estimates_to_matrix.pl \
 				--est_method RSEM \
-				--gene_trans_map "$gene_trans_map" \
 				--out_prefix "$matrix_dir/genes" \
 				--name_sample_by_basedir "${rsem_result_files[@]}" || {
 				log_warn "abundance_estimates_to_matrix.pl failed. Creating manual count matrix..."
@@ -356,7 +364,7 @@ _create_rsem_matrices() {
 	fi
 
 	# Prepare DESeq2 outputs
-	_prepare_rsem_deseq2_output "$tag" "$quant_root" "$matrix_dir" samples[@]
+	_prepare_rsem_deseq2_output "$tag" "$quant_root" "$matrix_dir" samples[@] || return 1
 }
 
 
@@ -478,7 +486,9 @@ _prepare_rsem_deseq2_output() {
 
 	# Generate tximport script (regenerate if missing)
 	local tximport_script="$deseq2_dir/run_tximport_rsem.R"
-	[[ ! -f "$tximport_script" ]] && generate_tximport_script "rsem" "$quant_root" "$tximport_script" "$sample_metadata"
+	if [[ ! -f "$tximport_script" || "${OVERWRITE_MODE:-skip}" == "overwrite" ]]; then
+		generate_tximport_script "rsem" "$quant_root" "$tximport_script" "$sample_metadata"
+	fi
 
 	# Create TPM and FPKM matrices (always regenerate if source is newer)
 	if [[ -f "$matrix_dir/genes.TPM.not_cross_norm" ]]; then
@@ -612,10 +622,17 @@ _rsem_process_single_sample() {
 		return $rsem_exit_code
 	fi
 
+	# Verify output exists even when RSEM exits 0 (edge case: disk full, interrupted write)
+	if [[ ! -f "$out_dir/${SRR}.genes.results" ]]; then
+		log_error "[RSEM QUANT] RSEM completed but output missing: $out_dir/${SRR}.genes.results"
+		ls -la "$out_dir" 2>&1 | while IFS= read -r line; do log_error "  $line"; done
+		return 1
+	fi
+
 	log_file_size "$out_dir/${SRR}.genes.results" "RSEM gene results - $SRR"
 
 	# Cleanup BAM files
-	if [[ "$keep_bam_global" != "y" ]]; then
+	if [[ "${keep_bam_global:-n}" != "y" ]]; then
 		log_info "[CLEANUP] Deleting RSEM BAM files for $SRR to save disk space"
 		rm -f "$out_dir/${SRR}.transcript.bam" "$out_dir/${SRR}.genome.bam" \
 			  "$out_dir/${SRR}.transcript.sorted.bam" "$out_dir/${SRR}.transcript.sorted.bam.bai"

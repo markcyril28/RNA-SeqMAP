@@ -50,7 +50,8 @@ compare_methods_summary() {
 	fi
 	
 	# Method 3: STAR Alignment
-	local m3_matrix="$STAR_MATRIX_ROOT/gene_counts_tximport.tsv"
+	# Output filename follows the tximport naming convention set by tximport_star_helper.R
+	local m3_matrix="$STAR_MATRIX_ROOT/gene_level/${fasta_tag}_NumReads_Gene_ID_from_${fasta_tag}_gene_level.tsv"
 	if [[ -f "$m3_matrix" ]]; then
 		local m3_genes=$(tail -n +2 "$m3_matrix" | wc -l)
 		local m3_samples=$(head -n1 "$m3_matrix" | tr '\t' '\n' | tail -n +2 | wc -l)

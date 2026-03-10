@@ -28,6 +28,8 @@ parse_srr_csv() {
 # Map analysis name to R script filename
 # NOTE: Preprocessing scripts (Tximport_Salmon, Tximport_RSEM, Stringtie_Matrix)
 #       are now handled via get_preprocessing_script() in preprocessing/ folder
+# NOTE: Matrix_Creation uses method-specific scripts for M3/M4/M5 (see
+#       get_matrix_creation_script()); this table provides the fallback.
 get_analysis_script() {
     local -A scripts=(
         ["Matrix_Creation"]="3_Matrix_Creation.R"
@@ -42,6 +44,17 @@ get_analysis_script() {
         ["Tissue_Specificity"]="12_Tissue_Specificity.R"
     )
     echo "${scripts[$1]:-}"
+}
+
+# Return the method-specific Matrix_Creation script (M3/M4/M5) or fallback.
+# Usage: get_matrix_creation_script "method_name"
+get_matrix_creation_script() {
+    case "$1" in
+        "M5_RSEM_Bowtie2") echo "3_Matrix_Creation_RSEM.R" ;;
+        "M4_Salmon_Saf")   echo "3_Matrix_Creation_Salmon.R" ;;
+        "M3_STAR_Align")   echo "3_Matrix_Creation_STAR.R" ;;
+        *)                 echo "3_Matrix_Creation.R" ;;  # fallback for unknown/legacy methods
+    esac
 }
 
 # Get method-specific preprocessing script
@@ -95,10 +108,22 @@ run_method_analysis() {
     pushd "$method_dir" > /dev/null
     
     export CURRENT_METHOD="$method" MASTER_REFERENCE="$master_ref"
-    
+
+    # Export method-specific quant directory so R preprocessing scripts use the exact path
+    # rather than reconstructing it from MASTER_REFERENCE (which may differ from fasta_tag).
+    if [[ "$method" == "M4_Salmon_Saf" ]]; then
+        export SALMON_QUANT_ROOT="$BASE_DIR/2_ALIGNMENT_RESULTs/M4_Salmon_Saf/Salmon_Quant/$master_ref"
+    fi
+
     # Export GENE_GROUPS_DIR as absolute path for R scripts
     export GENE_GROUPS_DIR="$BASE_DIR/inputs/gene_groups"
     
+    # Rebuild arrays from exported strings first — bash arrays are not exported to subshells,
+    # so GNU Parallel workers arrive with GENE_GROUPS/ANALYSES empty.  This must happen
+    # BEFORE writing .gene_groups_temp.txt so R scripts receive the correct gene groups.
+    [[ -n "${GENE_GROUPS_STR:-}" ]] && IFS=' ' read -ra GENE_GROUPS <<< "$GENE_GROUPS_STR"
+    [[ -n "${ANALYSES_STR:-}" ]]    && IFS=' ' read -ra ANALYSES  <<< "$ANALYSES_STR"
+
     # Setup temp config files for R scripts (written to the method's post-proc dir)
     local modules_dir="."
 
@@ -106,19 +131,23 @@ run_method_analysis() {
     echo "$master_ref" > "$modules_dir/.master_reference_temp.txt"
     echo "${OVERWRITE_EXISTING:-FALSE}" > "$modules_dir/.overwrite_temp.txt"
     
-    # Rebuild GENE_GROUPS array from exported string in parallel mode
-    [[ -n "${GENE_GROUPS_STR:-}" ]] && IFS=' ' read -ra GENE_GROUPS <<< "$GENE_GROUPS_STR"
-    
-    # Rebuild ANALYSES array from exported string in parallel mode
-    [[ -n "${ANALYSES_STR:-}" ]] && IFS=' ' read -ra ANALYSES <<< "$ANALYSES_STR"
-    
     # Re-export SRR_COMBINED_LIST_STR for R scripts (ensures it's available in subprocesses)
     export SRR_COMBINED_LIST_STR="${SRR_COMBINED_LIST_STR:-}"
     
-    # Run method-specific preprocessing if needed
+    # Run method-specific preprocessing if needed.
+    # For M3/M4/M5: skip tximport preprocessing when Matrix_Creation is also enabled —
+    # the method-specific 3_Matrix_Creation_*.R script performs the same import and
+    # supersedes the tximport preprocessing step.
+    local skip_preprocess=false
+    if [[ "$method" =~ ^(M3_STAR_Align|M4_Salmon_Saf|M5_RSEM_Bowtie2)$ ]]; then
+        printf '%s\n' "${ANALYSES[@]}" | grep -q "^Matrix_Creation$" && skip_preprocess=true
+    fi
+
     local preprocess_path
     preprocess_path=$(get_preprocessing_script "$method")
-    if [[ -n "$preprocess_path" && -f "$preprocess_path" ]]; then
+    if [[ "$skip_preprocess" == "true" ]]; then
+        log_info "Skipping preprocessing for $method — Matrix_Creation will handle import"
+    elif [[ -n "$preprocess_path" && -f "$preprocess_path" ]]; then
         log_info "Running preprocessing: $(basename "$preprocess_path")"
         if [[ "$preprocess_path" == *.R ]]; then
             run_with_error_capture Rscript "$preprocess_path" || log_error "Failed: preprocessing"
@@ -139,8 +168,14 @@ run_method_analysis() {
             continue
         fi
         
-        local script=$(get_analysis_script "$analysis")
-        
+        # For Matrix_Creation, use a method-specific script when available
+        local script
+        if [[ "$analysis" == "Matrix_Creation" ]]; then
+            script=$(get_matrix_creation_script "$method")
+        else
+            script=$(get_analysis_script "$analysis")
+        fi
+
         # Check for script in utilities directory first (for shell scripts like stringtie_matrix_builder.sh)
         local script_path=""
         if [[ -f "$UTILITIES_DIR/$script" ]]; then
@@ -177,5 +212,5 @@ export_utils_for_parallel() {
     # Export error capture (from logging_utils.sh)
     export -f run_with_error_capture capture_stderr_errors 2>/dev/null || true
     # Export pipeline functions
-    export -f run_method_analysis get_analysis_script get_preprocessing_script parse_srr_csv
+    export -f run_method_analysis get_analysis_script get_matrix_creation_script get_preprocessing_script parse_srr_csv
 }

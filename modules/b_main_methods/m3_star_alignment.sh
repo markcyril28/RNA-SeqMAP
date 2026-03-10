@@ -646,7 +646,7 @@ star_alignment_pipeline() {
 				quant_exit=${PIPESTATUS[0]}
 			else
 				salmon quant -p "$threads_per_job" -i "$salmon_idx" -o "$quant_dir" \
-					--validateMappings --gcBias -l "${_sal_lib_se:-A}" -r "$trimmed1" 2>&1 | \
+					--validateMappings -l "${_sal_lib_se:-A}" -r "$trimmed1" 2>&1 | \
 					sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
 				quant_exit=${PIPESTATUS[0]}
 			fi
@@ -689,7 +689,7 @@ star_alignment_pipeline() {
 					--validateMappings --gcBias -l "${_sal_lib_pe:-A}" -1 "$trimmed1" -2 "$trimmed2"
 			else
 				run_with_space_time_log salmon quant -p "$THREADS" -i "$salmon_idx" -o "$quant_dir" \
-					--validateMappings --gcBias -l "${_sal_lib_se:-A}" -r "$trimmed1"
+					--validateMappings -l "${_sal_lib_se:-A}" -r "$trimmed1"
 			fi
 
 			[[ -f "$quant_dir/quant.sf" ]] && log_info "[SALMON] Successfully quantified: $SRR"
@@ -723,16 +723,18 @@ star_alignment_pipeline() {
 		log_info "[TXIMPORT] Created tx2gene mapping: $tx2gene_count transcripts"
 	fi
 
-	# Verify quantifications
-	local quant_count=0
+	# Collect samples that actually have quant.sf.
+	# Only passing successful samples to create_sample_metadata prevents tximport_star_helper.R
+	# from stop()-ing on the first missing quant.sf when partial failures occurred.
+	local quant_srrs=()
 	for SRR in "${rnaseq_list[@]}"; do
-		[[ -f "$quant_root/$SRR/quant.sf" ]] && ((quant_count++))
+		[[ -f "$quant_root/$SRR/quant.sf" ]] && quant_srrs+=("$SRR")
 	done
 
-	[[ $quant_count -lt 2 ]] && { log_error "Insufficient quantifications: $quant_count (need ≥2)"; return 1; }
+	[[ ${#quant_srrs[@]} -lt 2 ]] && { log_error "Insufficient quantifications: ${#quant_srrs[@]} (need ≥2)"; return 1; }
 
-	# Create sample metadata (always regenerate: sample set changes per dataset/tissue)
-	create_sample_metadata "$sample_metadata" "${rnaseq_list[@]}"
+	# Create sample metadata from successfully quantified samples only.
+	create_sample_metadata "$sample_metadata" "${quant_srrs[@]}"
 
 	# Generate tximport R script (always refresh so helper updates propagate)
 	local tximport_script="$matrix_dir/run_tximport_star_salmon.R"

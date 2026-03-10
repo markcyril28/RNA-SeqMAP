@@ -19,7 +19,7 @@ source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
 # RSEM-SPECIFIC HELPER
 # ===============================================
 
-save_count_matrix <- function(counts_matrix, output_dir, base_name, master_ref, level_suffix, sample_labels,
+save_count_matrix <- function(counts_matrix, output_dir, base_name, master_ref, level_suffix,
                               tpm_matrix = NULL) {
   # Saves matrices with naming convention expected by build_input_path:
   # {gene_group}_{count_type}_{gene_type}_from_{master_ref}_{processing_level}.tsv
@@ -70,7 +70,6 @@ QUANT_DIR <- if (nzchar(base_dir)) {
 } else {
   "RSEM_Quant_WD"  # fallback for standalone execution
 }
-MASTER_REFERENCE <- Sys.getenv("MASTER_REFERENCE", "All_Smel_Genes")
 MATRICES_OUTPUT_DIR <- "count_matrices_from_RSEM_Quant"
 # Use shared GENE_GROUPS_DIR from 0_shared_config.R (already sourced)
 
@@ -249,12 +248,21 @@ for (level_name in names(processing_levels)) {
   # ===============================================
   
   cat("Step 6: Saving raw expected count and TPM matrices...\n")
-  
+
+  # Dataset-namespaced folder (matches gene group structure; avoids overwrite across datasets)
+  CURRENT_DATASET <- Sys.getenv("CURRENT_DATASET", unset = "")
+  full_ref_folder <- if (nzchar(CURRENT_DATASET)) {
+    paste0(MASTER_REFERENCE, "_in_", CURRENT_DATASET)
+  } else {
+    MASTER_REFERENCE
+  }
+
   level_output_dir <- file.path(output_dir, level_name)
-  ensure_output_dir(level_output_dir)
-  
-  save_count_matrix(raw_counts, level_output_dir, MASTER_REFERENCE,
-                   MASTER_REFERENCE, level_config$output_suffix, SAMPLE_LABELS,
+  full_ref_dir     <- file.path(level_output_dir, full_ref_folder)
+  ensure_output_dir(full_ref_dir)
+
+  save_count_matrix(raw_counts, full_ref_dir, full_ref_folder,
+                   MASTER_REFERENCE, level_config$output_suffix,
                    tpm_matrix = tpm_matrix)
   cat("\n")
   
@@ -279,9 +287,8 @@ for (level_name in names(processing_levels)) {
   } else {
     cat("Found", length(gene_group_files), "gene group files\n\n")
     
-    # Get combined output folder name (GeneGroup_in_Dataset)
-    CURRENT_DATASET <- Sys.getenv("CURRENT_DATASET", unset = "")
-  
+    # CURRENT_DATASET already loaded in Step 6 above
+
     for (gene_group_file in gene_group_files) {
       gene_group_name <- tools::file_path_sans_ext(basename(gene_group_file))
       # Generate combined output name with dataset suffix
@@ -301,6 +308,7 @@ for (level_name in names(processing_levels)) {
         } else {
           gl <- suppressWarnings(readLines(gene_group_file))
           gl <- gl[!grepl("^#|^Gene_ID", gl, ignore.case = TRUE) & nzchar(gl)]
+          gl <- sub("\t.*", "", gl)  # strip tab-delimited extra fields (e.g. gene names, descriptions)
         }
         trimws(gl)
       }, error = function(e) {
@@ -325,9 +333,7 @@ for (level_name in names(processing_levels)) {
           # Prefix match: find IDs that start with the gene followed by a period or end
           matches <- all_gene_ids[grepl(paste0("^", gsub("\\.", "\\\\.", gene), "(\\..*)?$"), all_gene_ids)]
           if (length(matches) > 0) {
-            # At isoform level include ALL matching transcripts per gene;
-            # at gene level take only the first (primary isoform)
-            genes_in_data <- c(genes_in_data, if (level_config$tx_out) matches else matches[1])
+            genes_in_data <- c(genes_in_data, matches)
           }
         }
       }
@@ -346,7 +352,7 @@ for (level_name in names(processing_levels)) {
       subset_counts <- raw_counts[genes_in_data, , drop = FALSE]
       subset_tpm <- tpm_matrix[genes_in_data, , drop = FALSE]
       save_count_matrix(subset_counts, gene_group_dir, output_folder_name,
-                       MASTER_REFERENCE, level_config$output_suffix, SAMPLE_LABELS,
+                       MASTER_REFERENCE, level_config$output_suffix,
                        tpm_matrix = subset_tpm)
       cat("    Saved subset matrices\n")
     }
