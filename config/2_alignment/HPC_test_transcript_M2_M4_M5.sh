@@ -17,8 +17,8 @@
 # ==============================================================================
 
 # Runtime Configuration
-THREADS=72                              # Threads for parallel operations
-JOBS=3									# Parallel jobs for GNU Parallel
+THREADS=96                              # Threads for parallel operations
+JOBS=6									# Parallel jobs for GNU Parallel
 USE_GNU_PARALLEL="TRUE"                 # TRUE/FALSE for GNU Parallel
 keep_bam_global="n"                     # y=keep BAM files, n=delete after
 
@@ -75,10 +75,6 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 # ==============================================================================
 # INPUT FILES AND DATA SOURCES
 # ==============================================================================
-
-# Transcript-based references
-ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="inputs/gtf/reference/GPE001970_transcripts.gtf"
-gtf_file="${ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE}"
 
 # Genome file used as decoy for Salmon SAF (M4)
 decoy="inputs/fasta/experimental/TEST.fasta"

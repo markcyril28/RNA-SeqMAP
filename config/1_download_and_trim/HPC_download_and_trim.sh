@@ -1,12 +1,23 @@
 #!/bin/bash
 
 # ==============================================================================
+# DOWNLOAD & TRIM CONFIG — Full SRR List
+# ==============================================================================
+# Purpose: Download and quality-trim all RNA-seq SRR files before alignment.
+# Run this config BEFORE any alignment config (2_alignment/).
+#
+# Two download options (enable only one):
+#   Option A — Keep raw files:  enable DOWNLOAD_SRR + TRIM_SRR
+#   Option B — Auto-cleanup:    enable DOWNLOAD_TRIM_and_DELETE_RAW_SRR
+# ==============================================================================
+
+# ==============================================================================
 # IMPORTANT PARAMETERS
 # ==============================================================================
 
 # Runtime Configuration
 THREADS=64                              # Threads for parallel operations
-JOBS=4									# Parallel jobs for GNU Parallel
+JOBS=4                                  # Parallel jobs for GNU Parallel
 USE_GNU_PARALLEL="TRUE"                 # TRUE/FALSE for GNU Parallel
 keep_bam_global="n"                     # y=keep BAM files, n=delete after
 
@@ -19,17 +30,18 @@ PIPELINE_STAGES=(
 	#"TRIM_SRR"
 
 	# Option B: Combined download+trim+cleanup (auto-deletes raw after trim)
-	#"DOWNLOAD_TRIM_and_DELETE_RAW_SRR"
+	"DOWNLOAD_TRIM_and_DELETE_RAW_SRR"
 
 	#"GZIP_TRIMMED_FILES"
-	#"QUALITY_CONTROL"
+	"QUALITY_CONTROL"
 
 	#"DELETE_RAW_SRR"				# Manually delete raw SRR files
 	#"DELETE_TRIMMED_FASTQ_FILES"	# Manually delete trimmed files
 
-	"METHOD_1_HISAT2_REF_GUIDED"
+	# Alignment methods — disabled for this download-only config
+	#"METHOD_1_HISAT2_REF_GUIDED"
 	#"METHOD_2_HISAT2_DE_NOVO"
-	"METHOD_3_STAR_ALIGNMENT"
+	#"METHOD_3_STAR_ALIGNMENT"
 	#"METHOD_4_SALMON_SAF"
 	#"METHOD_5_BOWTIE2_RSEM"
 
@@ -46,8 +58,6 @@ conda activate gea
 
 # ==============================================================================
 # SOURCE MODULES
-# ==============================================================================
-# Structure: logging/, a_preprocessing/, b_main_methods/, 0_input_information/
 # ==============================================================================
 
 source "modules/modules_loader.sh"
@@ -66,14 +76,10 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 # INPUT FILES AND DATA SOURCES
 # ==============================================================================
 
-# Genome-based references (used by M1: HISAT2 Ref-Guided, M3: STAR)
-ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="inputs/gtf/reference/GPE001970_genome.gtf"
-
-gtf_file="${ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE}"
-
-# FASTA Files for Analysis (full genome, required for M1 and M3)
+# NOTE: FASTA is not used by the download/trim stages.
+# A single placeholder entry is required for the pipeline loop to execute.
 ALL_FASTA_FILES=(
-	"inputs/fasta/reference_genomes/GPE001970.fa"
+	"inputs/fasta/reference_genomes/GPE001970_transcripts.fa"
 )
 
 # ==============================================================================
@@ -93,7 +99,7 @@ SRR_LIST_PRJNA328564=(
 	SRR3884684	# Senescent_leaves (leaf aging)
 	SRR3884686	# Buds_0.7cm (flower bud initiation) [MAIN INTEREST]
 	SRR3884687	# Opened_Buds (flower development) 	 [MAIN INTEREST]
-	SRR3884597	# Flowers (anthesis)/				 [MAIN INTEREST]
+	SRR3884597	# Flowers (anthesis)				 [MAIN INTEREST]
 	SRR3884679	# Pistils (female reproductive parts)
 	SRR3884608	# Fruits_1cm (early fruit development)
 	SRR3884620	# Fruits_Stage_1 (early fruit stage)
@@ -112,7 +118,7 @@ SRR_LIST_SAMN28540077=(
 	SRR20722226 # Young_fruits
 	SRR20722234	# Flowers
 	SRR20722228	# sepals (too large; not included)
-	SRR4243802 # Buds, Adopted Dataset from ID: PRJNA341784
+	SRR4243802  # Buds, Adopted Dataset from ID: PRJNA341784
 	SRR20722233	# leaf_buds
 	SRR20722230	# mature_leaves (14 GB file; not included)
 	SRR20722227	# stems
@@ -175,17 +181,11 @@ SRR_COMBINED_LIST=(
 POST_PROC_ROOT="3_POST_PROC"
 export POST_PROC_ROOT
 
-# Create required directories
-mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT" \
-	"$HISAT2_REF_GUIDED_ROOT" "$HISAT2_REF_GUIDED_INDEX_DIR" "$STRINGTIE_HISAT2_REF_GUIDED_ROOT" \
-	"$HISAT2_DE_NOVO_ROOT" "$HISAT2_DE_NOVO_INDEX_DIR" "$STRINGTIE_HISAT2_DE_NOVO_ROOT" \
-	"$STAR_ALIGN_ROOT" "$STAR_INDEX_ROOT" "$STAR_GENOME_DIR" \
-	"$SALMON_SAF_ROOT" "$SALMON_INDEX_ROOT" "$SALMON_QUANT_ROOT" "$SALMON_SAF_MATRIX_ROOT" \
-	"$BOWTIE2_RSEM_ROOT" "$RSEM_INDEX_ROOT" "$RSEM_QUANT_ROOT" "$RSEM_MATRIX_ROOT" \
-	"$HISAT2_REF_GUIDED_MATRIX_ROOT" "$HISAT2_DE_NOVO_MATRIX_ROOT" "$STAR_MATRIX_ROOT"
+# Create required preprocessing directories
+mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT"
 
 # ==============================================================================
-# CLEANUP OPTIONS AND TESTING ESSENTIALS
+# CLEANUP OPTIONS
 # ==============================================================================
 # Uncomment lines below to remove previous results before re-running.
 # WARNING: These are destructive operations — verify before uncommenting.
@@ -197,15 +197,3 @@ ACTIVATE_RM=FALSE
 [[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$RAW_DIR_ROOT"                          # Raw SRR downloads
 [[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$TRIM_DIR_ROOT"                         # Trimmed FASTQ files
 [[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$FASTQC_ROOT"                           # FastQC reports
-
-# --- Method 1: HISAT2 Reference-Guided ---
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_REF_GUIDED_ROOT"                # HISAT2 ref-guided alignments
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_REF_GUIDED_INDEX_DIR"           # HISAT2 ref-guided index
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STRINGTIE_HISAT2_REF_GUIDED_ROOT"      # StringTie (ref-guided) assemblies
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_REF_GUIDED_MATRIX_ROOT"         # Count matrices (ref-guided)
-
-# --- Method 3: STAR Alignment ---
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STAR_ALIGN_ROOT"                       # STAR alignment results
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STAR_INDEX_ROOT"                       # STAR genome index
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STAR_GENOME_DIR"                       # STAR genome directory
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STAR_MATRIX_ROOT"                      # Count matrices (STAR)

@@ -5,9 +5,9 @@
 # ==============================================================================
 
 # Runtime Configuration
-THREADS=8                              # Threads for parallel operations
-JOBS=2									# Parallel jobs for GNU Parallel
-USE_GNU_PARALLEL="FALSE"                 # TRUE/FALSE for GNU Parallel
+THREADS=48                              # Threads for parallel operations
+JOBS=3									# Parallel jobs for GNU Parallel
+USE_GNU_PARALLEL="TRUE"                 # TRUE/FALSE for GNU Parallel
 keep_bam_global="n"                     # y=keep BAM files, n=delete after
 
 # Pipeline Stages (comment/uncomment to enable/disable)
@@ -23,14 +23,16 @@ PIPELINE_STAGES=(
 	
 	#"GZIP_TRIMMED_FILES"
 	#"QUALITY_CONTROL"
+
 	#"DELETE_RAW_SRR"				# Manually delete raw SRR files
 	#"DELETE_TRIMMED_FASTQ_FILES"	# Manually delete trimmed files
 
-	"METHOD_1_HISAT2_REF_GUIDED"
-	"METHOD_2_HISAT2_DE_NOVO"
+	#"METHOD_1_HISAT2_REF_GUIDED"
+	#"METHOD_2_HISAT2_DE_NOVO"
 	"METHOD_3_STAR_ALIGNMENT"
-	"METHOD_4_SALMON_SAF"
-	"METHOD_5_BOWTIE2_RSEM"
+	#"METHOD_4_SALMON_SAF"
+	#"METHOD_5_BOWTIE2_RSEM"
+
 	#"HEATMAP_WRAPPER"
 	#"ZIP_RESULTS"
 )
@@ -64,27 +66,18 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 # INPUT FILES AND DATA SOURCES
 # ==============================================================================
 
-# Legacy GTF and FASTA references (commented out)
-#All_SmelGIF_GTF_FILE="inputs/All_SmelDMP_Head_Gene_Name_v4.gtf"
-Eggplant_V4_1_transcripts_function_FASTA_FILE="inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
-ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="inputs/gtf/reference/All_Smel_Genes_Full_Name_reformatted.gtf"
-decoy="inputs/fasta/experimental/TEST.fasta"
-gtf_file="${ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE}"
-
-# FASTA Files for Analysis
-ALL_FASTA_FILES=(
-	# List of FASTA files to process
-	#"inputs/fasta/reference_genomes/All_Smel_Genes.fasta"
-	"inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
-	#"inputs/fasta/experimental/TEST.fasta"
-	#"inputs/fasta/experimental/SmelGIF_with_Cell_Cycle_Control_genes.fasta"
-	#"inputs/fasta/experimental/SmelDMP_CDS_Control_Best.fasta"
-	#"inputs/fasta/experimental/SmelGIF_with_Best_Control_Cyclo.fasta"
-	#"inputs/fasta/experimental/SmelGRF_with_Best_Control_Cyclo.fasta"
-	#"inputs/fasta/experimental/SmelGRF-GIF_with_Best_Control_Cyclo.fasta"
-	#"inputs/fasta/control_genes/Control_Genes_Puta.fasta"
-	#"inputs/fasta/experimental/SmelGRF_with_Cell_Cycle_Control_genes.fasta"
+# ------------------------------------------------------------------------------
+# GENOME REFERENCE PAIRS  (M1: HISAT2 Ref-Guided  |  M3: STAR)
+# Format: "GTF_FILE|FASTA_FILE"
+# Uncomment exactly ONE pair — comment out all others.
+# ------------------------------------------------------------------------------
+GENOME_REF_PAIRS=(
+	"inputs/gtf/reference/GPE001970.gtf|inputs/fasta/reference_genomes/GPE001970.fa"                              # GPE001970
+	#"inputs/gtf/reference/Eggplant_V4.1_function_IPR_final.gtf|inputs/fasta/reference_genomes/Eggplant_V4.1.fa"  # Eggplant V4.1
 )
+
+gtf_file="${GENOME_REF_PAIRS[0]%%|*}"
+ALL_FASTA_FILES=("${GENOME_REF_PAIRS[0]#*|}")
 
 # ==============================================================================
 # RNA-SEQ DATA SOURCES (SRR LISTS)
@@ -112,34 +105,34 @@ SRR_LIST_PRJNA328564=(
 	#SRR3884653	# Fruits_Flesh_Stage_2 (mid fruit development)
 	#SRR3884664	# Fruits_Calyx_Stage_2 (mid fruit development)
 	#SRR3884680	# Fruits_Skin_Stage_3 (late fruit development)
-	#RR3884681	# Fruits_Flesh_Stage_3 (late fruit development)
+	#SRR3884681	# Fruits_Flesh_Stage_3 (late fruit development)
 	#SRR3884678	# Fruits_peduncle (fruit attachment)
 )
 
 SRR_LIST_SAMN28540077=(
 	# Source: https://www.ncbi.nlm.nih.gov/Traces/study/?acc=SAMN28540077&o=acc_s%3Aa
-	SRR20722232	# Mature_fruits (10 GB file); corrected.
-	SRR20722226 # Young_fruits
+	#SRR20722232	# Mature_fruits (10 GB file); corrected.
+	#SRR20722226 # Young_fruits
+	#SRR20722228	# sepals (too large; not included)
 	SRR20722234	# Flowers 
-	SRR20722228	# sepals (too large; not included)
 	SRR4243802 # Buds, Adopted Dataset from ID: PRJNA341784 
-	SRR20722233	# leaf_buds 
-	SRR20722230	# mature_leaves (14 GB file; not included)
-	SRR20722227	# stems
-	SRR20722229	# roots
+	#SRR20722233	# leaf_buds 
+	#SRR20722230	# mature_leaves (14 GB file; not included)
+	#SRR20722227	# stems
+	#SRR20722229	# roots
 )
 
 SRR_LIST_SAMN28540068=(
 	#Source: https://www.ncbi.nlm.nih.gov/Traces/study/?acc=SAMN28540068&o=acc_s%3Aa
-	SRR20722387 # mature_fruits
+	#SRR20722387 # mature_fruits
 	SRR3884597 	# Flower
 	SRR20722297 # flower_buds 
-	SRR20722385 # sepals (not included)
-	SRR20722296 # leaf_buds 
-	SRR20722386 # mature_leaves (not included)
-	SRR20722383 # young_leaves (not included)
-	SRR20722384 # stems
-	SRR31755282 # Roots (https://www.ncbi.nlm.nih.gov/Traces/study/?acc=SRP552204&o=acc_s%3Aa)
+	#SRR20722385 # sepals (not included)
+	#SRR20722296 # leaf_buds 
+	#SRR20722386 # mature_leaves (not included)
+	#SRR20722383 # young_leaves (not included)
+	#SRR20722384 # stems
+	#SRR31755282 # Roots (https://www.ncbi.nlm.nih.gov/Traces/study/?acc=SRP552204&o=acc_s%3Aa)
 )
 
 SRR_LIST_PRJNA865018=(
@@ -189,11 +182,11 @@ OTHER_SRR_LIST=(
 )
 
 SRR_COMBINED_LIST=(
-	#"${SRR_LIST_PRJNA328564[@]}"	# Main Dataset for GEA. 
+	"${SRR_LIST_PRJNA328564[@]}"	# Main Dataset for GEA. 
 	#"${SRR_LIST_SAMN28540077[@]}"	# Chinese Dataset for replicability. 
 	#"${SRR_LIST_SAMN28540068[@]}"	# Chinese Dataset for replicability. 
-	"${SRR_LIST_PRJNA865018[@]}"	# SET_1: Good Dataset for SmelDMP GEA.
-	"${SRR_LIST_PRJNA941250[@]}"	# SET_2: Good Dataset for SmelDMP GEA.
+	#"${SRR_LIST_PRJNA865018[@]}"	# SET_1: Good Dataset for SmelDMP GEA.
+	#"${SRR_LIST_PRJNA941250[@]}"	# SET_2: Good Dataset for SmelDMP GEA.
 )
 
 # ==============================================================================
@@ -207,9 +200,9 @@ export POST_PROC_ROOT
 mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT" \
 	"$HISAT2_REF_GUIDED_ROOT" "$HISAT2_REF_GUIDED_INDEX_DIR" "$STRINGTIE_HISAT2_REF_GUIDED_ROOT" \
 	"$HISAT2_DE_NOVO_ROOT" "$HISAT2_DE_NOVO_INDEX_DIR" "$STRINGTIE_HISAT2_DE_NOVO_ROOT" \
-	"$STAR_ALIGN_ROOT" "$STAR_INDEX_ROOT" "$STAR_GENOME_DIR" \
-	"$SALMON_SAF_ROOT" "$SALMON_INDEX_ROOT" "$SALMON_QUANT_ROOT" "$SALMON_SAF_MATRIX_ROOT" \
-	"$BOWTIE2_RSEM_ROOT" "$RSEM_INDEX_ROOT" "$RSEM_QUANT_ROOT" "$RSEM_MATRIX_ROOT" \
+	"$STAR_ALIGN_ROOT" "$STAR_INDEX_ROOT" \
+	"$SALMON_SAF_ROOT" \
+	"$BOWTIE2_RSEM_ROOT" \
 	"$HISAT2_REF_GUIDED_MATRIX_ROOT" "$HISAT2_DE_NOVO_MATRIX_ROOT" "$STAR_MATRIX_ROOT"
 
 # ==============================================================================
@@ -222,10 +215,35 @@ mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT" \
 ACTIVATE_RM=FALSE
 
 # --- Preprocessing ---
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$RAW_DIR_ROOT"                   # Remove previous raw SRR files
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$FASTQC_ROOT"                    # Remove previous FastQC results
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$RAW_DIR_ROOT"                          # Raw SRR downloads
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$TRIM_DIR_ROOT"                         # Trimmed FASTQ files
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$FASTQC_ROOT"                           # FastQC reports
+
+# --- Method 1: HISAT2 Reference-Guided ---
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_REF_GUIDED_ROOT"                # HISAT2 ref-guided alignments
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_REF_GUIDED_INDEX_DIR"           # HISAT2 ref-guided index
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STRINGTIE_HISAT2_REF_GUIDED_ROOT"      # StringTie (ref-guided) assemblies
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_REF_GUIDED_MATRIX_ROOT"         # Count matrices (ref-guided)
 
 # --- Method 2: HISAT2 De Novo ---
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_DE_NOVO_ROOT"            # Remove previous HISAT2 results
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_DE_NOVO_INDEX_DIR"       # Remove previous HISAT2 index
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STRINGTIE_HISAT2_DE_NOVO_ROOT"  # Remove previous StringTie results
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_DE_NOVO_ROOT"                   # HISAT2 de novo alignments
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_DE_NOVO_INDEX_DIR"              # HISAT2 de novo index
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STRINGTIE_HISAT2_DE_NOVO_ROOT"         # StringTie (de novo) assemblies
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_DE_NOVO_MATRIX_ROOT"            # Count matrices (de novo)
+
+# --- Method 3: STAR Alignment ---
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STAR_ALIGN_ROOT"                       # STAR alignment results (removes index + BAMs)
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STAR_INDEX_ROOT"                       # STAR genome index only
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STAR_MATRIX_ROOT"                      # Count matrices (STAR)
+
+# --- Method 4: Salmon SAF ---
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$SALMON_SAF_ROOT"                       # Salmon SAF root
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$SALMON_INDEX_ROOT"                     # Salmon index
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$SALMON_QUANT_ROOT"                     # Salmon quantification
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$SALMON_SAF_MATRIX_ROOT"                # Count matrices (Salmon)
+
+# --- Method 5: Bowtie2 + RSEM ---
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$BOWTIE2_RSEM_ROOT"                     # Bowtie2/RSEM root
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$RSEM_INDEX_ROOT"                       # RSEM index
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$RSEM_QUANT_ROOT"                       # RSEM quantification
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$RSEM_MATRIX_ROOT"                      # Count matrices (RSEM)

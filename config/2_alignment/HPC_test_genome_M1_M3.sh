@@ -16,7 +16,7 @@
 # ==============================================================================
 
 # Runtime Configuration
-THREADS=72                              # Threads for parallel operations
+THREADS=96                              # Threads for parallel operations
 JOBS=3									# Parallel jobs for GNU Parallel
 USE_GNU_PARALLEL="TRUE"                 # TRUE/FALSE for GNU Parallel
 keep_bam_global="n"                     # y=keep BAM files, n=delete after
@@ -75,13 +75,23 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 # INPUT FILES AND DATA SOURCES
 # ==============================================================================
 
-# Genome-based references (used by M1: HISAT2 Ref-Guided, M3: STAR)
-gtf_file="inputs/gtf/reference/GPE001970_genome.gtf"
-
-# FASTA Files for Analysis (full genome, required for M1 and M3)
-ALL_FASTA_FILES=(
-	"inputs/fasta/reference_genomes/GPE001970_genome.fa"
+# ------------------------------------------------------------------------------
+# GENOME REFERENCE PAIRS  (M1: HISAT2 Ref-Guided  |  M3: STAR)
+# Format: "GTF_FILE|FASTA_FILE"
+# Uncomment exactly ONE pair — comment out all others.
+# ------------------------------------------------------------------------------
+GENOME_REF_PAIRS=(
+	#"inputs/gtf/reference/GPE001970_genome.gtf|inputs/fasta/reference_genomes/GPE001970_genome.fa"                			# GPE001970
+	"inputs/gtf/reference/Eggplant_V4.1_function_IPR_final_stringtie.gtf|inputs/fasta/reference_genomes/Eggplant_V4.1.fa"  	# Eggplant V4.1
 )
+
+gtf_file="${GENOME_REF_PAIRS[0]%%|*}"
+ALL_FASTA_FILES=("${GENOME_REF_PAIRS[0]#*|}")
+
+# M3 (STAR) transcriptome FASTA for Salmon quantification step
+# Auto-detect looks for <genome_basename>_transcripts.fa; set explicitly when name differs.
+STAR_TRANSCRIPTOME_FASTA="inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
+export STAR_TRANSCRIPTOME_FASTA
 
 # ==============================================================================
 # RNA-SEQ DATA SOURCES (SRR LISTS) — 3 samples for testing
@@ -123,5 +133,4 @@ ACTIVATE_RM=TRUE
 # --- Method 3: STAR Alignment ---
 [[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STAR_ALIGN_ROOT"
 [[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STAR_INDEX_ROOT"
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STAR_GENOME_DIR"
 [[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STAR_MATRIX_ROOT"

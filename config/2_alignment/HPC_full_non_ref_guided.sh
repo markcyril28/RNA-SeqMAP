@@ -1,13 +1,6 @@
 #!/bin/bash
 
 # ==============================================================================
-# FULL CONFIG: ALL METHODS — Full SRR Lists
-# ==============================================================================
-# Consolidated from HPC_full_run_config.sh, _DOWNLOAD.sh, and _ALIGNMENT.sh.
-# Uncomment the pipeline stages you need for each run.
-# ==============================================================================
-
-# ==============================================================================
 # IMPORTANT PARAMETERS
 # ==============================================================================
 
@@ -35,10 +28,10 @@ PIPELINE_STAGES=(
 	#"DELETE_TRIMMED_FASTQ_FILES"	# Manually delete trimmed files
 
 	#"METHOD_1_HISAT2_REF_GUIDED"
-	#"METHOD_2_HISAT2_DE_NOVO"
+	"METHOD_2_HISAT2_DE_NOVO"
 	#"METHOD_3_STAR_ALIGNMENT"
-	#"METHOD_4_SALMON_SAF"
-	#"METHOD_5_BOWTIE2_RSEM"
+	"METHOD_4_SALMON_SAF"
+	"METHOD_5_BOWTIE2_RSEM"
 
 	#"HEATMAP_WRAPPER"
 	#"ZIP_RESULTS"
@@ -73,23 +66,13 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 # INPUT FILES AND DATA SOURCES
 # ==============================================================================
 
-# Legacy GTF and FASTA references (commented out)
-#All_SmelGIF_GTF_FILE="inputs/All_SmelDMP_Head_Gene_Name_v4.gtf"
-Eggplant_V4_1_transcripts_function_FASTA_FILE="inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
-#ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="inputs/gtf/reference/All_Smel_Genes_Full_Name_reformatted.gtf"
-#ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="inputs/gtf/reference/All_Smel_Genes_Full_Name_reformatted_TEST.gtf"
-#ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="inputs/gtf/reference/Eggplant_V4.1_function_IPR_reformatted_v4.gtf"
-ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="inputs/gtf/reference/GPE001970_transcripts.gtf"
-
 decoy="inputs/fasta/experimental/TEST.fasta"
-#gtf_file="${Eggplant_V4_1_transcripts_function_FASTA_FILE}"
-gtf_file="${ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE}"
 
-# FASTA Files for Analysis
+# FASTA Files for Analysis (transcripts, required for M2, M4, M5)
 ALL_FASTA_FILES=(
-	# List of FASTA files to process
-	#"inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
 	"inputs/fasta/reference_genomes/GPE001970_transcripts.fa"
+	"inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
+
 )
 
 # ==============================================================================
@@ -176,24 +159,6 @@ SRR_LIST_PRJNA941250=(
 	SRR23909865 # Fully Develop (FD) 3
 )
 
-OTHER_SRR_LIST=(
-	# Possible Source: https://www.ncbi.nlm.nih.gov/Traces/study/?acc=SRP390977&o=acc_s%3Aa
-	SRR34564302	# Fruits (https://trace.ncbi.nlm.nih.gov/Traces/?view=run_browser&acc=SRR34564302&display=metadata)
-	SRR34848077 # Leaves (https://trace.ncbi.nlm.nih.gov/Traces/?view=run_browser&page_size=10&acc=SRR34848077&display=metadata)
-	PRJNA613773 # Leaf (https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA613773&o=acc_s%3Aa)
-		# Cotyledons (https://trace.ncbi.nlm.nih.gov/Traces/?view=run_browser&acc=SRR3884677&display=metadata)
-	SRR3479277 # Pistil (https://trace.ncbi.nlm.nih.gov/Traces/?view=run_browser&acc=SRR3479277&display=metadata)
-	SRR3884597 # Flowers (https://trace.ncbi.nlm.nih.gov/Traces/?view=run_browser&acc=SRR3884597&display=metadata)
-
-	#PRJNA341784 # Flower buds lang (https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA341784&o=acc_s%3Aa)
-	#PRJNA477924 # Leaf and Root (https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA477924&o=acc_s%3Aa)
-	 # Leaves
-	 # Stems
-	 # Radicles
-
-	# Add other SRR IDs here if needed
-)
-
 SRR_COMBINED_LIST=(
 	"${SRR_LIST_PRJNA328564[@]}"	# Main Dataset for GEA.
 	"${SRR_LIST_SAMN28540077[@]}"	# Chinese Dataset for replicability.
@@ -210,12 +175,16 @@ POST_PROC_ROOT="3_POST_PROC"
 export POST_PROC_ROOT
 
 # Create required directories
+# NOTE: SALMON_INDEX_ROOT / SALMON_QUANT_ROOT / SALMON_SAF_MATRIX_ROOT and the RSEM equivalents
+# are NOT pre-created here because they include the fasta_tag subdirectory (set by
+# set_fasta_output_dirs() inside run_all()). Creating them now would produce stale base-level
+# directories. Each method pipeline creates its own directories at the correct paths.
 mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT" \
 	"$HISAT2_REF_GUIDED_ROOT" "$HISAT2_REF_GUIDED_INDEX_DIR" "$STRINGTIE_HISAT2_REF_GUIDED_ROOT" \
 	"$HISAT2_DE_NOVO_ROOT" "$HISAT2_DE_NOVO_INDEX_DIR" "$STRINGTIE_HISAT2_DE_NOVO_ROOT" \
-	"$STAR_ALIGN_ROOT" "$STAR_INDEX_ROOT" "$STAR_GENOME_DIR" \
-	"$SALMON_SAF_ROOT" "$SALMON_INDEX_ROOT" "$SALMON_QUANT_ROOT" "$SALMON_SAF_MATRIX_ROOT" \
-	"$BOWTIE2_RSEM_ROOT" "$RSEM_INDEX_ROOT" "$RSEM_QUANT_ROOT" "$RSEM_MATRIX_ROOT" \
+	"$STAR_ALIGN_ROOT" "$STAR_INDEX_ROOT" \
+	"$SALMON_SAF_ROOT" \
+	"$BOWTIE2_RSEM_ROOT" \
 	"$HISAT2_REF_GUIDED_MATRIX_ROOT" "$HISAT2_DE_NOVO_MATRIX_ROOT" "$STAR_MATRIX_ROOT"
 
 # ==============================================================================
@@ -232,23 +201,11 @@ ACTIVATE_RM=FALSE
 [[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$TRIM_DIR_ROOT"                         # Trimmed FASTQ files
 [[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$FASTQC_ROOT"                           # FastQC reports
 
-# --- Method 1: HISAT2 Reference-Guided ---
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_REF_GUIDED_ROOT"                # HISAT2 ref-guided alignments
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_REF_GUIDED_INDEX_DIR"           # HISAT2 ref-guided index
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STRINGTIE_HISAT2_REF_GUIDED_ROOT"      # StringTie (ref-guided) assemblies
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_REF_GUIDED_MATRIX_ROOT"         # Count matrices (ref-guided)
-
 # --- Method 2: HISAT2 De Novo ---
 [[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_DE_NOVO_ROOT"                   # HISAT2 de novo alignments
 [[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_DE_NOVO_INDEX_DIR"              # HISAT2 de novo index
 [[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STRINGTIE_HISAT2_DE_NOVO_ROOT"         # StringTie (de novo) assemblies
 [[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_DE_NOVO_MATRIX_ROOT"            # Count matrices (de novo)
-
-# --- Method 3: STAR Alignment ---
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STAR_ALIGN_ROOT"                       # STAR alignment results
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STAR_INDEX_ROOT"                       # STAR genome index
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STAR_GENOME_DIR"                       # STAR genome directory
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STAR_MATRIX_ROOT"                      # Count matrices (STAR)
 
 # --- Method 4: Salmon SAF ---
 [[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$SALMON_SAF_ROOT"                       # Salmon SAF root

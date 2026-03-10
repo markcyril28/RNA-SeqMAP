@@ -74,13 +74,18 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 # INPUT FILES AND DATA SOURCES
 # ==============================================================================
 
-# Genome-based references (used by M1: HISAT2 Ref-Guided, M3: STAR)
-gtf_file="inputs/gtf/reference/GPE001970.gtf"
-
-# FASTA Files for Analysis (full genome, required for M1 and M3)
-ALL_FASTA_FILES=(
-	"inputs/fasta/reference_genomes/GPE001970.fa"
+# ------------------------------------------------------------------------------
+# GENOME REFERENCE PAIRS  (M1: HISAT2 Ref-Guided  |  M3: STAR)
+# Format: "GTF_FILE|FASTA_FILE"
+# Uncomment exactly ONE pair — comment out all others.
+# ------------------------------------------------------------------------------
+GENOME_REF_PAIRS=(
+	"inputs/gtf/reference/GPE001970.gtf|inputs/fasta/reference_genomes/GPE001970.fa"                              # GPE001970
+	#"inputs/gtf/reference/Eggplant_V4.1_function_IPR_final.gtf|inputs/fasta/reference_genomes/Eggplant_V4.1.fa"  # Eggplant V4.1
 )
+
+gtf_file="${GENOME_REF_PAIRS[0]%%|*}"
+ALL_FASTA_FILES=("${GENOME_REF_PAIRS[0]#*|}")
 
 # ==============================================================================
 # RNA-SEQ DATA SOURCES (SRR LISTS) — 3 samples for testing
@@ -122,5 +127,4 @@ ACTIVATE_RM=FALSE
 # --- Method 3: STAR Alignment ---
 [[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STAR_ALIGN_ROOT"
 [[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STAR_INDEX_ROOT"
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STAR_GENOME_DIR"
 [[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STAR_MATRIX_ROOT"
