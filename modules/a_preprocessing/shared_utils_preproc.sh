@@ -28,22 +28,22 @@ find_trimmed_fastq() {
 	local TrimGalore_DIR="$TRIM_DIR_ROOT/$SRR"
 	trimmed1="" trimmed2=""
 	
-	# Paired-end patterns (ordered by priority)
-	if [[ -f "$TrimGalore_DIR/${SRR}_1_val_1.fq" && -f "$TrimGalore_DIR/${SRR}_2_val_2.fq" ]]; then
-		trimmed1="$TrimGalore_DIR/${SRR}_1_val_1.fq"
-		trimmed2="$TrimGalore_DIR/${SRR}_2_val_2.fq"
-	elif [[ -f "$TrimGalore_DIR/${SRR}_1_val_1.fq.gz" && -f "$TrimGalore_DIR/${SRR}_2_val_2.fq.gz" ]]; then
+	# Paired-end patterns (compressed first — TrimGalore default output is .fq.gz)
+	if [[ -f "$TrimGalore_DIR/${SRR}_1_val_1.fq.gz" && -f "$TrimGalore_DIR/${SRR}_2_val_2.fq.gz" ]]; then
 		trimmed1="$TrimGalore_DIR/${SRR}_1_val_1.fq.gz"
 		trimmed2="$TrimGalore_DIR/${SRR}_2_val_2.fq.gz"
+	elif [[ -f "$TrimGalore_DIR/${SRR}_1_val_1.fq" && -f "$TrimGalore_DIR/${SRR}_2_val_2.fq" ]]; then
+		trimmed1="$TrimGalore_DIR/${SRR}_1_val_1.fq"
+		trimmed2="$TrimGalore_DIR/${SRR}_2_val_2.fq"
 	elif compgen -G "$TrimGalore_DIR/${SRR}*val_1.*" >/dev/null 2>&1; then
 		local files1=("$TrimGalore_DIR"/${SRR}*val_1.*) files2=("$TrimGalore_DIR"/${SRR}*val_2.*)
 		trimmed1="${files1[0]}"
 		[[ -f "${files2[0]:-}" ]] && trimmed2="${files2[0]}"
-	# Single-end patterns
-	elif [[ -f "$TrimGalore_DIR/${SRR}_trimmed.fq" ]]; then
-		trimmed1="$TrimGalore_DIR/${SRR}_trimmed.fq"
+	# Single-end patterns (compressed first)
 	elif [[ -f "$TrimGalore_DIR/${SRR}_trimmed.fq.gz" ]]; then
 		trimmed1="$TrimGalore_DIR/${SRR}_trimmed.fq.gz"
+	elif [[ -f "$TrimGalore_DIR/${SRR}_trimmed.fq" ]]; then
+		trimmed1="$TrimGalore_DIR/${SRR}_trimmed.fq"
 	elif compgen -G "$TrimGalore_DIR/${SRR}*trimmed.fq*" >/dev/null 2>&1; then
 		local files=("$TrimGalore_DIR"/${SRR}*trimmed.fq*)
 		trimmed1="${files[0]}"

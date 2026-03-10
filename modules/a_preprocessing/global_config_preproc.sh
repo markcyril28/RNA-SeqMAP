@@ -13,19 +13,20 @@
 export PREPROC_CONFIG_SOURCED="true"
 
 # ==============================================================================
-# IMPORTANT PARAMETERS - MODIFY THESE
+# IMPORTANT PARAMETERS (tweak here)
 # ==============================================================================
 
-# Thread and Job Configuration
+# Total CPU threads available to the pipeline
 THREADS="${THREADS:-12}"
+# Number of parallel jobs (GNU Parallel); THREADS_PER_JOB is auto-calculated
 JOBS="${JOBS:-2}"
 THREADS_PER_JOB="${THREADS_PER_JOB:-$((THREADS / JOBS))}"
 [[ $THREADS_PER_JOB -lt 1 ]] && THREADS_PER_JOB=1
 
-# GNU Parallel Configuration
+# Enable GNU Parallel for parallel sample processing (TRUE/FALSE)
 USE_GNU_PARALLEL="${USE_GNU_PARALLEL:-FALSE}"
 
-# Cleanup Configuration
+# Delete raw SRR files after successful download + trimming (TRUE/FALSE)
 DELETE_RAW_SRR_AFTER_DOWNLOAD_and_TRIMMING="${DELETE_RAW_SRR_AFTER_DOWNLOAD_and_TRIMMING:-FALSE}"
 
 # ==============================================================================

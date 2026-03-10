@@ -16,7 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/shared_utils_preproc.sh"
 
 # ==============================================================================
-# CORE DOWNLOAD FUNCTION
+# PRIMARY: SRA Toolkit (prefetch + fasterq-dump)
 # ==============================================================================
 
 download_srrs() {
@@ -47,7 +47,12 @@ download_srrs() {
 }
 
 # ==============================================================================
-# DOWNLOAD WITH WGET (ENA)
+# ALTERNATIVES
+# ==============================================================================
+# Use these when the primary SRA toolkit is slow or unavailable.
+# Each falls back to download_srrs() on failure.
+
+# ENA FTP via wget (faster for large datasets; falls back to SRA prefetch on error)
 # ==============================================================================
 
 download_srrs_wget() {
@@ -76,8 +81,7 @@ download_srrs_wget() {
 	done
 }
 
-# ==============================================================================
-# DOWNLOAD WITH KINGFISHER
+# Kingfisher (multi-source downloader: ENA, SRA, S3, GCS; falls back to prefetch)
 # ==============================================================================
 
 download_srrs_kingfisher() {
@@ -114,7 +118,7 @@ download_srrs_kingfisher() {
 }
 
 # ==============================================================================
-# PARALLEL DOWNLOAD FUNCTIONS
+# PARALLEL DOWNLOAD (GNU Parallel wrapper for primary SRA download)
 # ==============================================================================
 
 download_srrs_parallel() {

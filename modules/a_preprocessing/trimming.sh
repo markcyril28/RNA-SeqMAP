@@ -27,7 +27,7 @@ SW_SIZE="${SW_SIZE:-4}"
 SW_QUAL="${SW_QUAL:-20}"
 
 # ==============================================================================
-# CORE TRIMMING LOGIC
+# PRIMARY: TrimGalore → Trimmomatic HEADCROP → optional TAILCROP
 # ==============================================================================
 
 # Internal function for trimming a single SRR
@@ -81,7 +81,7 @@ _trim_single_srr() {
 }
 
 # ==============================================================================
-# MAIN TRIMMING FUNCTIONS
+# SEQUENTIAL TRIMMING (primary entry points)
 # ==============================================================================
 
 trim_srrs() {
@@ -97,6 +97,10 @@ trim_srrs() {
 	gzip_trimmed_fastq_files
 	log_info "All trimming completed."
 }
+
+# ==============================================================================
+# ALTERNATIVE: Trimmomatic-only (no TrimGalore pre-step)
+# ==============================================================================
 
 trim_srrs_trimmomatic() {
 	local SRR_LIST=("$@")
@@ -140,8 +144,11 @@ trim_srrs_trimmomatic() {
 }
 
 # ==============================================================================
-# COMBINED DOWNLOAD AND TRIM
+# COMBINED AND PARALLEL VARIANTS
 # ==============================================================================
+# These functions combine download+trim or run either method in parallel via GNU Parallel.
+
+# Combined download + trim in a single pass (sequential)
 
 download_and_trim_srrs() {
 	local SRR_LIST=("$@")
@@ -174,9 +181,7 @@ download_and_trim_srrs() {
 	gzip_trimmed_fastq_files
 }
 
-# ==============================================================================
-# PARALLEL TRIMMING
-# ==============================================================================
+# Combined download + trim with GNU Parallel
 
 download_and_trim_srrs_parallel() {
 	local SRR_LIST=("$@")
@@ -261,6 +266,7 @@ download_and_trim_srrs_parallel() {
 	gzip_trimmed_fastq_files
 }
 
+# Trimmomatic-only with GNU Parallel
 trim_srrs_trimmomatic_parallel() {
 	local SRR_LIST=("$@")
 	[[ ${#SRR_LIST[@]} -eq 0 ]] && { log_error "No SRR IDs provided"; return 1; }
