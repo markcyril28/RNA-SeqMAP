@@ -4,7 +4,7 @@
 # Runs selected analyses across all configured methods and gene groups
 #===============================================================================
 
-#set -euo pipefail
+set -o pipefail   # propagate pipe failures; -e/-u omitted intentionally (sourced functions use boolean returns)
 
 #===============================================================================
 # DIRECTORY PATHS and SOURCE UTILITIES
@@ -13,8 +13,8 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$SCRIPT_DIR"  # HeatSeq is the project root
 ANALYSIS_MODULES_DIR="$BASE_DIR/modules/c_post_processing/analysis_modules"
-GENE_GROUPS_DIR="$BASE_DIR/0_INPUTs/gene_groups"
-SRR_CSV_DIR="$BASE_DIR/0_INPUTs/SRR_csv"
+GENE_GROUPS_DIR="$BASE_DIR/inputs/gene_groups"
+SRR_CSV_DIR="$BASE_DIR/inputs/SRR_csv"
 UTILITIES_DIR="$BASE_DIR/modules/c_post_processing/utilities"
 LOGGING_UTILS="$BASE_DIR/modules/logging/logging_utils.sh"
 
@@ -61,10 +61,7 @@ MASTER_REFERENCES=(
 )
 
 # Extract first enabled reference
-for ref in "${MASTER_REFERENCES[@]}"; do
-    MASTER_REFERENCE="$ref"
-    break
-done
+MASTER_REFERENCE="${MASTER_REFERENCES[0]}"
 
 # Gene groups to analyze
 # NOTE: For HISAT2 methods, ensure these groups have pre-built matrices in
@@ -81,7 +78,7 @@ GENE_GROUPS=(
     #"Selected_GRF_GIF_Genes_vAll_GIFs"
 )
 
-# Each name corresponds to a CSV file in 0_INPUTs/SRR_csv/
+# Each name corresponds to a CSV file in inputs/SRR_csv/
 # CSV format: SRR_ID,Organ,Notes
 SRR_DATASETS=(
     #"PRJNA328564"      # Main Dataset - Eggplant tissue atlas (PRJNA328564)
@@ -111,9 +108,20 @@ METHODS=(
 # 
 # METHOD-SPECIFIC NOTES:
 # ----------------------
-# HISAT2 (M1/M2): Matrices are built by stringtie_matrix_builder.sh during preprocessing.
-#                 Use Stringtie_Matrix for matrix creation. Do NOT use Tximport_Salmon or Tximport_RSEM.
-#                 Heatmaps read from: count_matrices_from_stringtie/
+# HISAT2 M1 (RefGuided): prepde_matrix_linker.sh auto-runs as preprocessing.
+#                        (1) Stages prepDE.py integer counts → deseq2_input/ (for DESeq2)
+#                        (2) Builds TPM/FPKM/Coverage matrices from _ref_guided_gene_abundances.tsv
+#                        Supports: Differential_Expression, Basic_Heatmap.
+#                        Heatmaps read from: count_matrices_from_stringtie/
+#
+# HISAT2 M2 (DeNovo):    stringtie_matrix_builder.sh auto-runs as preprocessing.
+#                        Builds TPM/FPKM/Coverage matrices from StringTie abundance files.
+#                        Supports: Basic_Heatmap, Tissue_Specificity, PCA, etc.
+#                        Heatmaps read from: count_matrices_from_stringtie/
+#
+# STAR+Salmon (M3): Requires Tximport_STAR for matrix creation (auto-run as preprocessing).
+#                   Reads Salmon quant.sf from 2_ALIGNMENT_RESULTs/M3_STAR_Align/{MASTER_REFERENCE}/6_salmon/quant/
+#                   Heatmaps read from: count_matrices_from_STAR/
 #
 # Salmon (M4):    Requires Tximport_Salmon for matrix creation (auto-run as preprocessing).
 #                 Heatmaps read from: count_matrices_from_Salmon_Quant/
@@ -122,11 +130,13 @@ METHODS=(
 #                 Heatmaps read from: count_matrices_from_RSEM_Quant/
 
 ANALYSES=(
-    "Stringtie_Matrix"         # For HISAT2-based methods (M1/M2) - builds matrices from StringTie output
+    #"Stringtie_Matrix"         # For M2 (HISAT2 DeNovo) ONLY - builds TPM/FPKM from StringTie abundance files
+                                # NOTE: Do NOT enable for M1 (handled by prepde_matrix_linker.sh automatically)
 
+    "Tximport_STAR"            # For STAR+Salmon (M3) - auto-run based on method
     "Tximport_Salmon"          # For Salmon-based methods (M4) - auto-run based on method
     "Tximport_RSEM"            # For RSEM-based methods (M5) - auto-run based on method
-    "Matrix_Creation"          # For tximport methods only (M4/M5) - NOT for HISAT2!
+    "Matrix_Creation"          # For tximport methods only (M3/M4/M5) - NOT for HISAT2!
 
     "Basic_Heatmap"             # Works with all methods (auto-detects input path)
     #"Heatmap_with_CV"           # Works with all methods (auto-detects input path)
@@ -200,8 +210,8 @@ get_output_folder_name() {
         "Coexpression_using_WGCNA")         echo "III_Coexpression_WGCNA" ;;
         "Differential_Expression")          echo "V_Differential_Expression" ;;
         "Gene_Set_Enrichment")              echo "VI_Gene_Set_Enrichment" ;;
-        "PCA_Dimensionality_Reduction")     echo "VII_Dimensionality_Reduction" ;;
-        "Sample_Correlation_Clustering")    echo "VIII_Sample_Correlation" ;;
+        "PCA_Dimensionality_Reduction")     echo "VII_PCA" ;;
+        "Sample_Correlation_Clustering")    echo "VIII_Sample_Clustering" ;;
         "Tissue_Specificity")               echo "IX_Tissue_Specificity" ;;
         *)                                  echo "" ;;  # No output folder for preprocessing analyses
     esac
@@ -223,7 +233,7 @@ if [[ "$CLEAR_OUTPUT_FOLDER" == "TRUE" ]]; then
 fi
 
 # Export environment variables for R scripts and subprocesses
-export BASE_DIR THREADS ENABLE_GPU ANALYSIS_MODULES_DIR GENE_GROUPS_DIR UTILITIES_DIR SRR_CSV_DIR
+export BASE_DIR THREADS ENABLE_GPU ANALYSIS_MODULES_DIR GENE_GROUPS_DIR UTILITIES_DIR SRR_CSV_DIR MASTER_REFERENCE
 
 # Export arrays as strings for subprocesses (needed by stringtie_matrix_builder.sh)
 export GENE_GROUPS_STR="${GENE_GROUPS[*]}"

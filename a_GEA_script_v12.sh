@@ -1,7 +1,6 @@
 #!/bin/bash
 # ==============================================================================
 # GENE EXPRESSION ANALYSIS (GEA) PIPELINE
-# ==============================================================================
 # RNA-seq analysis pipeline using multiple alignment/quantification methods
 # Author: Mark Cyril R. Mercado | Version: v12 | Date: December 2025
 # ==============================================================================
@@ -10,130 +9,116 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_ROOT" || exit 1
 
 # ==============================================================================
-# EXECUTION MODE
+# USER CONFIGURATION
 # ==============================================================================
-# skip      - Skip pipeline steps whose output files already exist (default)
-#             Use this to resume an interrupted run without redoing finished work.
-# overwrite - Re-run all steps, overwriting any existing output files.
-#             Use this to force a clean rerun of the entire pipeline.
-OVERWRITE_MODE="${OVERWRITE_MODE:-overwrite}"
+
+# Execution mode:
+#   skip      - Resume interrupted run; skip steps with existing outputs (default)
+#   overwrite - Force clean rerun, overwriting all existing output files
+OVERWRITE_MODE="${OVERWRITE_MODE:-skip}"
 export OVERWRITE_MODE
 
-# ==============================================================================
-# CONFIGURATION FILE SELECTION
-# ==============================================================================
-# Comment/uncomment to select which configuration to load
-# Only ONE config file should be active at a time
-# ==============================================================================
-
+# Active configuration file — uncomment as needed:
 CONFIG_FILES=(
-	# DOWNLOAD, TRIM, 
-	#"config/HPC_full_run_config_DOWNLOAD.sh"
-	
-	# TEST
-	#"config/HPC_full_run_config_TEST.sh"
-	#"config/HPC_full_run_config_HISAT2_TEST.sh" 		# Oks na to
-	#"config/HPC_full_run_config_STAR_TEST.sh"			# Oks na rin 'to'
-	#"config/HPC_full_run_config_SALMON_BOWTIE2_TEST.sh"
+	# --- Test runs (all M1-M5, 3 SRRs) ---
+	"config/HPC_test_genome_M1_M3.sh"			# M1 + M3 (genome FASTA)
+	#"config/HPC_test_transcript_M2_M4_M5.sh"	# M2 + M4 + M5 (transcript FASTA)
 
-	# FULL RUN 
-	"config/HPC_full_run_config_RefGuided.sh"			# Combined 
-	#"config/HPC_full_run_config_Non_RefGuided.sh"
+	# --- Test runs (individual methods) ---
+	#"config/HPC_test_hisat2.sh"
+	#"config/HPC_test_star.sh"
+	#"config/HPC_test_salmon_bowtie2.sh"
+	#"config/HPC_test_genome.sh"
 
-	#"config/HPC_full_run_config.sh"					# Full HPC run configuration
-	#"config/local_test_config.sh"						# Local testing configuration
+	# --- Full runs ---
+	#"config/HPC_full_all_methods.sh"			# All methods (uncomment stages as needed)
+	#"config/HPC_full_ref_guided.sh"			# Reference-guided (M1 + M3)
+	#"config/HPC_full_non_ref_guided.sh"		# Non-reference-guided (M2 + M4 + M5)
+	#"config/HPC_full_hisat2.sh"				# HISAT2 De Novo full SRR list
+
+	# --- Local ---
+	#"config/local_test.sh"						# Local testing
 )
 
 # ==============================================================================
-# MAIN EXECUTION FUNCTIONS
+# PIPELINE FLAG HELPER
 # ==============================================================================
 
-# Convert PIPELINE_STAGES array to boolean flags for backward compatibility
+_has_stage() { printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^$1$" && echo "TRUE" || echo "FALSE"; }
+
 set_pipeline_flags() {
-	RUN_MAMBA_INSTALLATION=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^MAMBA_INSTALLATION$" && echo "TRUE" || echo "FALSE")
-	RUN_DOWNLOAD_SRR=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^DOWNLOAD_SRR$" && echo "TRUE" || echo "FALSE")
-	RUN_TRIM_SRR=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^TRIM_SRR$" && echo "TRUE" || echo "FALSE")
-	RUN_DOWNLOAD_TRIM_and_DELETE_RAW_SRR=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^DOWNLOAD_TRIM_and_DELETE_RAW_SRR$" && echo "TRUE" || echo "FALSE")
-	RUN_GZIP_TRIMMED_FILES=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^GZIP_TRIMMED_FILES$" && echo "TRUE" || echo "FALSE")
-	RUN_DELETE_RAW_SRR=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^DELETE_RAW_SRR$" && echo "TRUE" || echo "FALSE")
-	RUN_QUALITY_CONTROL=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^QUALITY_CONTROL$" && echo "TRUE" || echo "FALSE")
-	RUN_METHOD_1_HISAT2_REF_GUIDED=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^METHOD_1_HISAT2_REF_GUIDED$" && echo "TRUE" || echo "FALSE")
-	RUN_METHOD_2_HISAT2_DE_NOVO=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^METHOD_2_HISAT2_DE_NOVO$" && echo "TRUE" || echo "FALSE")
-	RUN_METHOD_3_STAR_ALIGNMENT=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^METHOD_3_STAR_ALIGNMENT$" && echo "TRUE" || echo "FALSE")
-	RUN_METHOD_4_SALMON_SAF=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^METHOD_4_SALMON_SAF$" && echo "TRUE" || echo "FALSE")
-	RUN_METHOD_5_BOWTIE2_RSEM=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^METHOD_5_BOWTIE2_RSEM$" && echo "TRUE" || echo "FALSE")
-	RUN_HEATMAP_WRAPPER=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^HEATMAP_WRAPPER$" && echo "TRUE" || echo "FALSE")
-	RUN_ZIP_RESULTS=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^ZIP_RESULTS$" && echo "TRUE" || echo "FALSE")
-	RUN_DELETE_TRIMMED_FASTQ_FILES=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^DELETE_TRIMMED_FASTQ_FILES$" && echo "TRUE" || echo "FALSE")
+	RUN_MAMBA_INSTALLATION=$(_has_stage "MAMBA_INSTALLATION")
+	RUN_DOWNLOAD_SRR=$(_has_stage "DOWNLOAD_SRR")
+	RUN_TRIM_SRR=$(_has_stage "TRIM_SRR")
+	RUN_DOWNLOAD_TRIM_and_DELETE_RAW_SRR=$(_has_stage "DOWNLOAD_TRIM_and_DELETE_RAW_SRR")
+	RUN_GZIP_TRIMMED_FILES=$(_has_stage "GZIP_TRIMMED_FILES")
+	RUN_DELETE_RAW_SRR=$(_has_stage "DELETE_RAW_SRR")
+	RUN_QUALITY_CONTROL=$(_has_stage "QUALITY_CONTROL")
+	RUN_METHOD_1_HISAT2_REF_GUIDED=$(_has_stage "METHOD_1_HISAT2_REF_GUIDED")
+	RUN_METHOD_2_HISAT2_DE_NOVO=$(_has_stage "METHOD_2_HISAT2_DE_NOVO")
+	RUN_METHOD_3_STAR_ALIGNMENT=$(_has_stage "METHOD_3_STAR_ALIGNMENT")
+	RUN_METHOD_4_SALMON_SAF=$(_has_stage "METHOD_4_SALMON_SAF")
+	RUN_METHOD_5_BOWTIE2_RSEM=$(_has_stage "METHOD_5_BOWTIE2_RSEM")
+	RUN_HEATMAP_WRAPPER=$(_has_stage "HEATMAP_WRAPPER")
+	RUN_ZIP_RESULTS=$(_has_stage "ZIP_RESULTS")
+	RUN_DELETE_TRIMMED_FASTQ_FILES=$(_has_stage "DELETE_TRIMMED_FASTQ_FILES")
 }
 
+# ==============================================================================
+# MAIN PIPELINE FUNCTION
+# ==============================================================================
+
 run_all() {
-	# Main pipeline entrypoint: runs all steps for each FASTA and RNA-seq list
-	# Steps: Logging, Download and Trim, HISAT2 alignment to Stringtie, and Cleanup. 
-	local fasta=""
-	local rnaseq_list=()
-	# Parse arguments
+	local fasta="" rnaseq_list=()
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
-			--FASTA)
-				fasta="$2"; shift 2;;
+			--FASTA)      fasta="$2"; shift 2 ;;
 			--RNASEQ_LIST)
 				shift
 				while [[ $# -gt 0 && ! "$1" =~ ^-- ]]; do
-					rnaseq_list+=("$1")
-					shift
-				done
-				;;
-			*)
-				shift;;
+					rnaseq_list+=("$1"); shift
+				done ;;
+			*) shift ;;
 		esac
 	done
 
-	local start_time end_time elapsed formatted_elapsed
+	local start_time end_time elapsed
 	start_time=$(date +%s)
 
-	# Configure output directories based on FASTA filename
-	local fasta_base="$(basename "$fasta")"
-	local fasta_tag="${fasta_base%.*}"
+	local fasta_base fasta_tag
+	fasta_base="$(basename "$fasta")"
+	fasta_tag="${fasta_base%.*}"
 	set_fasta_output_dirs "$fasta_tag"
 
 	setup_logging
 	switch_log_stage "1_SRRs"
 	log_configuration
 	log_step "Script started at: $(date -d @$start_time)"
-	
-	# Show pipeline configuration
-	#show_pipeline_configuration
 
 	log_info "SRR samples to process:"
-	for SRR in "${rnaseq_list[@]}"; do
-		log_info "$SRR"
-	done
+	for srr in "${rnaseq_list[@]}"; do log_info "$srr"; done
 
+	# --- Preprocessing ---
 	if [[ $RUN_DOWNLOAD_SRR == "TRUE" ]]; then
 		if [[ $RUN_DOWNLOAD_TRIM_and_DELETE_RAW_SRR == "TRUE" ]]; then
-			log_warn "DOWNLOAD_SRR skipped: DOWNLOAD_TRIM_and_DELETE_RAW_SRR is enabled (use one or the other)"
+			log_warn "DOWNLOAD_SRR skipped: DOWNLOAD_TRIM_and_DELETE_RAW_SRR is enabled"
 		else
 			log_step "STEP 01a: Download RNA-seq data"
-			#download_srrs "${rnaseq_list[@]}"
 			download_srrs_parallel "${rnaseq_list[@]}"
-			#download_srrs_kingfisher "${rnaseq_list[@]}"
 		fi
 	fi
 
 	if [[ $RUN_TRIM_SRR == "TRUE" ]]; then
 		if [[ $RUN_DOWNLOAD_TRIM_and_DELETE_RAW_SRR == "TRUE" ]]; then
-			log_warn "TRIM_SRR skipped: DOWNLOAD_TRIM_and_DELETE_RAW_SRR is enabled (use one or the other)"
+			log_warn "TRIM_SRR skipped: DOWNLOAD_TRIM_and_DELETE_RAW_SRR is enabled"
 		else
 			log_step "STEP 01b: Trim RNA-seq data"
-			#trim_srrs_trimmomatic "${rnaseq_list[@]}"
 			trim_srrs_trimmomatic_parallel "${rnaseq_list[@]}"
 		fi
 	fi
 
 	if [[ $RUN_DOWNLOAD_TRIM_and_DELETE_RAW_SRR == "TRUE" ]]; then
 		log_step "STEP 01ab: Download, Trim, and Delete Raw SRR data"
-		# Enable automatic deletion of raw files after successful trimming
 		export DELETE_RAW_SRR_AFTER_DOWNLOAD_and_TRIMMING="TRUE"
 		download_and_trim_srrs_parallel "${rnaseq_list[@]}"
 	fi
@@ -148,87 +133,69 @@ run_all() {
 		run_quality_control_all "${rnaseq_list[@]}"
 	fi
 
-	# Switch logging to alignment results directory
 	switch_log_stage "2_ALIGNMENT_RESULTs"
 
-	# Method 1: HISAT2 Reference-Guided Pipeline
+	# --- Alignment Methods ---
 	if [[ $RUN_METHOD_1_HISAT2_REF_GUIDED == "TRUE" ]]; then
 		log_step "STEP 02a: HISAT2 Reference-Guided Pipeline"
 		if [[ -z "$gtf_file" || ! -f "$gtf_file" ]]; then
 			log_error "GTF file required for reference-guided alignment: $gtf_file"
-			log_error "Skipping Method 1 - configure gtf_file variable"
+			log_error "Skipping Method 1 — configure gtf_file variable"
 		elif hisat2_ref_guided_pipeline --FASTA "$fasta" --GTF "$gtf_file" --RNASEQ_LIST "${rnaseq_list[@]}"; then
 			log_info "Method 1 completed successfully"
 		else
-			log_error "Method 1 failed (exit code: $?) - continuing with remaining methods"
+			log_error "Method 1 failed (exit code: $?) — continuing"
 		fi
 	fi
 
-	# Method 2: HISAT2 De Novo Pipeline (Main method)
 	if [[ $RUN_METHOD_2_HISAT2_DE_NOVO == "TRUE" ]]; then
 		log_step "STEP 02b: HISAT2 De Novo Pipeline"
 		if hisat2_de_novo_pipeline --FASTA "$fasta" --RNASEQ_LIST "${rnaseq_list[@]}"; then
 			log_info "Method 2 completed successfully"
 		else
-			log_error "Method 2 failed (exit code: $?) - continuing with remaining methods"
+			log_error "Method 2 failed (exit code: $?) — continuing"
 		fi
 	fi
 
-	# Method 3: STAR Alignment Pipeline
 	if [[ $RUN_METHOD_3_STAR_ALIGNMENT == "TRUE" ]]; then
 		log_step "STEP 03: STAR Splice-Aware Alignment"
-		if star_alignment_pipeline --FASTA "$fasta" --RNASEQ_LIST "${rnaseq_list[@]}"; then
-			log_info "Method 3 completed successfully"
-		else
-			log_error "Method 3 failed (exit code: $?) - continuing with remaining methods"
-		fi
+		star_alignment_pipeline --FASTA "$fasta" --RNASEQ_LIST "${rnaseq_list[@]}" \
+			&& log_info "Method 3 completed successfully" \
+			|| log_error "Method 3 failed (exit code: $?) — continuing"
 	fi
 
-	# Method 4: Salmon SAF Quantification
 	if [[ $RUN_METHOD_4_SALMON_SAF == "TRUE" ]]; then
 		log_step "STEP 04: Salmon SAF Quantification"
-		local genome_file="$decoy"
-		if [[ -f "$genome_file" ]]; then
-			if salmon_saf_pipeline --FASTA "$fasta" --GENOME "$genome_file" --RNASEQ_LIST "${rnaseq_list[@]}"; then
-				log_info "Method 4 completed successfully"
-			else
-				log_error "Method 4 failed (exit code: $?) - continuing with remaining methods"
-			fi
+		if [[ ! -f "$decoy" ]]; then
+			log_warn "Genome file '$decoy' not found — skipping Salmon SAF pipeline."
 		else
-			log_warn "Genome file '$genome_file' not found. Skipping Salmon SAF pipeline."
-			log_warn "Please provide genome file for decoy-aware Salmon quantification."
+			salmon_saf_pipeline --FASTA "$fasta" --GENOME "$decoy" --RNASEQ_LIST "${rnaseq_list[@]}" \
+				&& log_info "Method 4 completed successfully" \
+				|| log_error "Method 4 failed (exit code: $?) — continuing"
 		fi
 	fi
 
-	# Method 5: Bowtie2 + RSEM Quantification
 	if [[ $RUN_METHOD_5_BOWTIE2_RSEM == "TRUE" ]]; then
 		log_step "STEP 05: Bowtie2 + RSEM Quantification"
-		if bowtie2_rsem_pipeline --FASTA "$fasta" --RNASEQ_LIST "${rnaseq_list[@]}"; then
-			log_info "Method 5 completed successfully"
-		else
-			log_error "Method 5 failed (exit code: $?) - continuing with remaining methods"
-		fi
+		bowtie2_rsem_pipeline --FASTA "$fasta" --RNASEQ_LIST "${rnaseq_list[@]}" \
+			&& log_info "Method 5 completed successfully" \
+			|| log_error "Method 5 failed (exit code: $?) — continuing"
 	fi
 
-	# Generate cross-method validation summary
 	compare_methods_summary "$fasta_tag"
 
 	end_time=$(date +%s)
+	elapsed=$((end_time - start_time))
 	log_step "Final timing"
 	log_info "Script ended at: $(date -d @$end_time)"
-	elapsed=$((end_time - start_time))
-	formatted_elapsed=$(date -u -d @${elapsed} +%H:%M:%S)
-	log_info "Elapsed time: $formatted_elapsed"
+	log_info "Elapsed time: $(date -u -d @${elapsed} +%H:%M:%S)"
 }
 
 # ==============================================================================
-# SCRIPT EXECUTION — LOOP THROUGH CONFIG FILES
+# EXECUTE
 # ==============================================================================
 
-if [[ ${#CONFIG_FILES[@]} -eq 0 ]]; then
-	echo "ERROR: No configuration files listed in CONFIG_FILES. Uncomment at least one."
-	exit 1
-fi
+[[ ${#CONFIG_FILES[@]} -eq 0 ]] && { echo "ERROR: No configuration files listed in CONFIG_FILES."; exit 1; }
 
 for config_file in "${CONFIG_FILES[@]}"; do
 	echo ""
@@ -236,90 +203,47 @@ for config_file in "${CONFIG_FILES[@]}"; do
 	echo "  LOADING CONFIGURATION: $config_file"
 	echo "=============================================================================="
 
-	# Source the configuration file
-	if [[ -f "$config_file" ]]; then
-		source "$config_file"
-	else
-		echo "ERROR: Configuration file not found: $config_file"
-		exit 1
-	fi
-
-	# Set RUN_* boolean flags from PIPELINE_STAGES
+	[[ -f "$config_file" ]] || { echo "ERROR: Configuration file not found: $config_file"; exit 1; }
+	source "$config_file"
 	set_pipeline_flags
 
-	# Create required preprocessing directories
 	mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT"
-
-	# Initialize logging and route to preprocessing directory
 	setup_logging
 	switch_log_stage "1_SRRs"
 
-	# Call the function if installation is enabled
-	if [[ $RUN_MAMBA_INSTALLATION == "TRUE" ]]; then
-		mamba_install
-	fi
-
+	[[ $RUN_MAMBA_INSTALLATION == "TRUE" ]] && mamba_install
 	if [[ $RUN_GZIP_TRIMMED_FILES == "TRUE" ]]; then
-		log_step "Gzipping trimmed FASTQ files to save space"
+		log_step "Gzipping trimmed FASTQ files"
 		gzip_trimmed_fastq_files
 	fi
 
-	# Execute the pipeline for each FASTA input file
 	for fasta_input in "${ALL_FASTA_FILES[@]}"; do
-		# Run the complete pipeline for each FASTA file with all SRR samples
 		run_all --FASTA "$fasta_input" --RNASEQ_LIST "${SRR_COMBINED_LIST[@]}"
 	done
 
-	# =========================================================================
-	# POST-PROCESSING: HEATMAP WRAPPER EXECUTION
-	# =========================================================================
-
-	# Switch logging to post-processing directory
+	# --- Post-processing ---
 	switch_log_stage "3_POST_PROC"
 
 	if [[ $RUN_HEATMAP_WRAPPER == "TRUE" ]]; then
-		log_step "Heatmap Wrapper post-processing enabled"
-		
-		# Navigate to post-processing directory
+		log_step "Heatmap Wrapper post-processing"
 		if [[ ! -d "$POST_PROC_ROOT" ]]; then
 			log_error "Directory '$POST_PROC_ROOT' not found"
 		else
-			cd "$POST_PROC_ROOT" || {
-				log_error "Failed to change to $POST_PROC_ROOT directory"
-				exit 1
-			}
-			
-			# Execute the Heatmap Wrapper script for post-processing
+			cd "$POST_PROC_ROOT" || { log_error "Failed to cd to $POST_PROC_ROOT"; exit 1; }
 			if [[ -f "run_all_post_processing.sh" ]]; then
-				log_step "Executing Heatmap Wrapper post-processing script"
-				chmod +x ./*.sh
-				chmod +x run_all_post_processing.sh
-				
-				if bash "run_all_post_processing.sh" 2>&1; then
-					log_info "Heatmap Wrapper completed successfully"
-				else
-					exit_code=$?
-					log_error "Heatmap Wrapper failed with exit code $exit_code"
-				fi
+				chmod +x ./*.sh run_all_post_processing.sh
+				bash "run_all_post_processing.sh" 2>&1 \
+					&& log_info "Heatmap Wrapper completed successfully" \
+					|| log_error "Heatmap Wrapper failed with exit code $?"
 			else
-				log_warn "Heatmap Wrapper script 'run_all_post_processing.sh' not found - skipping"
+				log_warn "run_all_post_processing.sh not found — skipping"
 			fi
-			
-			# Return to project root
-			cd "$PROJECT_ROOT" || log_warn "Failed to return to project root"
+			cd "$PROJECT_ROOT" || { log_error "Failed to return to project root"; exit 1; }
 		fi
 	fi
 
-	# =========================================================================
-	# POST-PROCESSING: ZIP RESULTS
-	# =========================================================================
-
 	if [[ $RUN_ZIP_RESULTS == "TRUE" ]]; then
-		# Optional: Archive StringTie results for sharing or backup
-		#tar -czvf "stringtie_results_$(date +%Y%m%d_%H%M%S).tar.gz" "$STRINGTIE_HISAT2_DE_NOVO_ROOT"
-		#tar -czvf HISAT2_DE_NOVO_ROOT_HPC_$(date +%Y%m%d_%H%M%S).tar.gz $HISAT2_DE_NOVO_ROOT
-		#tar -czvf 4b_Method_2_HISAT2_De_Novo_$(date +%Y%m%d_%H%M%S).tar.gz 4b_Method_2_HISAT2_De_Novo/
-		log_step "Creating compressed archive for folders: $POST_PROC_ROOT and logs"
+		log_step "Creating compressed archive: $POST_PROC_ROOT + logs"
 		TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 		tar -c \
 			--exclude="${POST_PROC_ROOT}/M3_STAR_Align" \
@@ -329,31 +253,19 @@ for config_file in "${CONFIG_FILES[@]}"; do
 		log_info "Archive created: CMSC244_${TIMESTAMP}.tar.gz"
 	fi
 
-	# =========================================================================
-	# CLEANUP: DELETE TRIMMED FASTQ FILES
-	# =========================================================================
-
-	# Switch logging back to SRR directory for cleanup
+	# --- Cleanup ---
 	switch_log_stage "1_SRRs"
-
 	if [[ $RUN_DELETE_TRIMMED_FASTQ_FILES == "TRUE" ]]; then
-		log_step "Deleting trimmed FASTQ files for SRR_COMBINED_LIST"
+		log_step "Deleting trimmed FASTQ files"
 		delete_trimmed_fastq_by_srr_list "${SRR_COMBINED_LIST[@]}"
 	fi
 
-	# =========================================================================
-	# SOFTWARE CATALOG
-	# =========================================================================
 	catalog_all_software
 
 	echo ""
 	echo "=============================================================================="
 	echo "  FINISHED CONFIG: $config_file"
 	echo "=============================================================================="
+done
 
-done  # End of CONFIG_FILES loop
-
-# ==============================================================================
-# END OF SCRIPT
-# ==============================================================================
 echo "END OF SCRIPT"
