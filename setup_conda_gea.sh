@@ -79,6 +79,7 @@ ALIGNMENT_TOOLS=(
     "bowtie2"
     "rsem"
     "star"
+    "trinity"
 )
 
 # R base and essentials
@@ -323,6 +324,11 @@ if (!requireNamespace("BiocManager", quietly = TRUE))
     install.packages("BiocManager", repos = "https://cloud.r-project.org")
 
 pkgs_to_check <- c(
+    # Bioconductor packages (critical for pipeline)
+    "tximport", "tximeta", "DESeq2", "ComplexHeatmap",
+    "AnnotationDbi", "ballgown", "clusterProfiler",
+    "enrichplot", "DOSE", "fgsea",
+    # CRAN packages
     "WGCNA", "dynamicTreeCut", "fastcluster",
     "Rtsne", "umap", "factoextra", "ggrepel",
     "pheatmap", "igraph", "reshape2"
