@@ -64,6 +64,14 @@ log_warn() { log WARN "$@"; [[ -n "${ERROR_WARN_FILE:-}" ]] && printf '[%s] [WAR
 log_error() { log ERROR "$@"; [[ -n "${ERROR_WARN_FILE:-}" ]] && printf '[%s] [ERROR] %s\n' "$(timestamp)" "$*" >> "$ERROR_WARN_FILE"; }
 log_step() { log INFO "=============== $* ==============="; }
 
+strip_ansi_stream() {
+	# Strip ANSI escape codes (colors, cursor moves, erase sequences) and
+	# carriage returns from a stream so log files remain human-readable.
+	# CR (\r) is converted to newline so progress-bar overwrites become
+	# separate lines instead of one giant unreadable blob.
+	tr '\r' '\n' | sed -u 's/\x1B\[[0-9;?]*[a-zA-Z]//g; s/\x1B[()][A-Z0-9]//g'
+}
+
 # ==============================================================================
 # LOGGING SETUP
 # ==============================================================================
@@ -117,11 +125,11 @@ setup_logging() {
 	[[ ! -f "$SOFTWARE_FILE" ]] && echo "Software/Tool,Version" > "$SOFTWARE_FILE"
 	[[ ! -f "$GPU_LOG_FILE" ]] && echo "=== GPU Log Started: $(timestamp) ===" > "$GPU_LOG_FILE"
 	
-	# Set up output redirection
+	# Set up output redirection (strip ANSI escape codes from log files)
 	if [[ "$log_choice" == "2" ]]; then
-		exec >"$LOG_FILE" 2>&1
+		exec > >(strip_ansi_stream >> "$LOG_FILE") 2>&1
 	else
-		exec > >(tee -a "$LOG_FILE") 2>&1
+		exec > >(tee >(strip_ansi_stream >> "$LOG_FILE")) 2>&1
 	fi
 	
 	export LOGGING_INITIALIZED="true"
@@ -185,11 +193,11 @@ switch_log_stage() {
 	[[ ! -f "$SOFTWARE_FILE" ]] && echo "Software/Tool,Version" > "$SOFTWARE_FILE"
 	[[ ! -f "$GPU_LOG_FILE" ]] && echo "=== GPU Log Started: $(timestamp) ===" > "$GPU_LOG_FILE"
 
-	# Re-setup output redirection to the new log file
+	# Re-setup output redirection to the new log file (strip ANSI codes)
 	if [[ "$log_choice" == "2" ]]; then
-		exec >"$LOG_FILE" 2>&1
+		exec > >(strip_ansi_stream >> "$LOG_FILE") 2>&1
 	else
-		exec > >(tee -a "$LOG_FILE") 2>&1
+		exec > >(tee >(strip_ansi_stream >> "$LOG_FILE")) 2>&1
 	fi
 
 	log_info "Switched logging to stage: $stage_base"
@@ -287,16 +295,38 @@ run_with_space_time_log() {
 	local input_size_mb="0"
 	if [[ -n "$input_path" && -e "$input_path" ]]; then
 		local input_kb=$(du -sk "$input_path" 2>/dev/null | awk '{print $1}')
-		input_size_mb=$(echo "scale=2; $input_kb / 1024" | bc)
+		input_size_mb=$(awk "BEGIN{printf \"%.2f\", $input_kb / 1024}")
 	fi
 	
 	mkdir -p "$TIME_DIR" || { log_error "Failed to create TIME_DIR: $TIME_DIR"; return 1; }
 	
 	local exit_code=0
-	/usr/bin/time -v "$@" >> "$LOG_FILE" 2> "$TIME_TEMP" || exit_code=$?
-	
-	cat "$TIME_TEMP" >> "$LOG_FILE" 2>&1
-	
+
+	# Log abbreviated command before running (full command saved in CSV)
+	local cmd_abbrev="${cmd_string:0:120}"
+	[[ ${#cmd_string} -gt 120 ]] && cmd_abbrev="${cmd_abbrev}..."
+	log_info "[CMD] $cmd_abbrev"
+
+	# Write begin marker directly to log file (preserves ordering with tool stdout)
+	printf '[%s] [INFO] --- BEGIN TOOL OUTPUT: %s ---\n' "$(timestamp)" "${1##*/}" >> "$LOG_FILE"
+	# Strip ANSI escape codes and carriage returns before writing to log (e.g. Salmon progress bars)
+	/usr/bin/time -v "$@" 2>"$TIME_TEMP" | strip_ansi_stream >> "$LOG_FILE"
+	exit_code=${PIPESTATUS[0]}
+	printf '[%s] [INFO] --- END TOOL OUTPUT: %s (exit=%d) ---\n' "$(timestamp)" "${1##*/}" "$exit_code" >> "$LOG_FILE"
+
+	# Log key resource metrics as a single summary line (replaces 22-line verbose dump)
+	local elapsed_raw cpu_raw rss_raw
+	elapsed_raw=$(grep "Elapsed (wall clock)" "$TIME_TEMP" 2>/dev/null | awk '{print $NF}')
+	cpu_raw=$(grep "Percent of CPU" "$TIME_TEMP" 2>/dev/null | awk '{print $NF}')
+	rss_raw=$(grep "Maximum resident set size" "$TIME_TEMP" 2>/dev/null | awk '{print $NF}')
+	log_info "[RESOURCES] Elapsed: ${elapsed_raw:-N/A} | CPU: ${cpu_raw:-N/A} | MaxRSS: ${rss_raw:-0} KB | Exit: $exit_code"
+
+	# On failure: dump full time output for debugging
+	if [[ $exit_code -ne 0 ]]; then
+		printf '[%s] [DEBUG] --- TIME OUTPUT (failure details) ---\n' "$(timestamp)" >> "$LOG_FILE"
+		cat "$TIME_TEMP" >> "$LOG_FILE" 2>&1
+	fi
+
 	# Capture errors/exceptions to error log
 	if [[ $exit_code -ne 0 ]] || grep -qiE 'exception|error|fatal|failed|traceback|command not found|no such file|cannot find|not installed' "$TIME_TEMP" 2>/dev/null; then
 		{
@@ -304,8 +334,8 @@ run_with_space_time_log() {
 			grep -iE 'exception|error|fatal|failed|traceback|filenotfound|no such file|command not found|cannot find|not installed|permission denied|access denied' "$TIME_TEMP" 2>/dev/null || true
 		} >> "$ERROR_WARN_FILE"
 	fi
-	
-	# Extract key metrics from time output
+
+	# Extract key metrics from time output (for CSV logging)
 	local elapsed_time=$(grep "Elapsed (wall clock)" "$TIME_TEMP" | awk '{print $NF}' | awk -F: '{if (NF==3) print ($1*3600)+($2*60)+$3; else if (NF==2) print ($1*60)+$2; else print $1}')
 	local cpu_percent=$(grep "Percent of CPU" "$TIME_TEMP" | awk '{print $NF}' | tr -d '%')
 	local max_rss=$(grep "Maximum resident set size" "$TIME_TEMP" | awk '{print $NF}')
@@ -316,7 +346,7 @@ run_with_space_time_log() {
 	local output_size_mb="0"
 	if [[ -n "$output_path" && -e "$output_path" ]]; then
 		local output_kb=$(du -sk "$output_path" 2>/dev/null | awk '{print $1}')
-		output_size_mb=$(echo "scale=2; $output_kb / 1024" | bc)
+		output_size_mb=$(awk "BEGIN{printf \"%.2f\", $output_kb / 1024}")
 	fi
 	
 	# Append to CSV files
@@ -342,8 +372,8 @@ log_file_size() {
 	[[ -d "$file_path" ]] && type="DIR"
 	
 	local size_kb=$(du -sk "$file_path" 2>/dev/null | awk '{print $1}')
-	local size_mb=$(echo "scale=2; $size_kb / 1024" | bc)
-	local size_gb=$(echo "scale=2; $size_kb / 1048576" | bc)
+	local size_mb=$(awk "BEGIN{printf \"%.2f\", $size_kb / 1024}")
+	local size_gb=$(awk "BEGIN{printf \"%.2f\", $size_kb / 1048576}")
 	
 	local file_count="-"
 	[[ -d "$file_path" ]] && file_count=$(find "$file_path" -type f 2>/dev/null | wc -l)
@@ -399,7 +429,9 @@ catalog_all_software() {
 		local cmd="${tool_cmd#*:}"
 		
 		if command -v "${cmd%% *}" >/dev/null 2>&1; then
-			local version=$(eval "$cmd" 2>&1 | head -n1 || echo "unknown")
+			# Extract just the version number from the last word of the first output line
+			# Handles: "hisat2-align-s version 2.2.1", "salmon 1.10.3", "FastQC v0.12.1", etc.
+			local version=$(eval "$cmd" 2>&1 | head -n1 | awk '{print $NF}' || echo "unknown")
 			log_software_version "$tool" "$version"
 		fi
 	done
@@ -483,7 +515,7 @@ run_with_gpu_log() {
 	log_gpu_memory "Before: $cmd_string"
 	
 	local exit_code=0
-	"$@" 2>&1 | tee -a "$GPU_LOG_FILE" || exit_code=$?
+	"$@" 2>&1 | tee >(strip_ansi_stream >> "$GPU_LOG_FILE") || exit_code=$?
 	
 	log_gpu_memory "After: $cmd_string"
 	log_gpu "Finished command (exit=$exit_code): $cmd_string"
