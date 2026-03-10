@@ -33,7 +33,7 @@ keep_bam_global="${keep_bam_global:-n}"  # y = keep BAM files, n = delete after 
 # ==============================================================================
 
 # Bowtie2 alignment mode (options: very-sensitive-local, sensitive-local, fast-local, very-fast-local)
-BOWTIE2_MODE="${BOWTIE2_MODE:-very-sensitive-local}"
+BOWTIE2_MODE="${BOWTIE2_MODE:-sensitive}"
 
 # ==============================================================================
 # STAR CONFIGURATION
@@ -41,7 +41,7 @@ BOWTIE2_MODE="${BOWTIE2_MODE:-very-sensitive-local}"
 
 STAR_GENOME_LOAD="${STAR_GENOME_LOAD:-NoSharedMemory}"
 STAR_READ_LENGTH="${STAR_READ_LENGTH:-100}"
-STAR_STRAND_SPECIFIC="${STAR_STRAND_SPECIFIC:-intronMotif}"
+STAR_STRAND_SPECIFIC="${STAR_STRAND_SPECIFIC:-None}"
 
 # ==============================================================================
 # POST PROCESSING ROOT

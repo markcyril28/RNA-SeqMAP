@@ -155,7 +155,7 @@ create_gene_trans_map() {
 	local fasta="$1"
 	local output_file="${2:-${fasta}.gene_trans_map}"
 	
-	if [[ -f "$output_file" ]]; then
+	if [[ -f "$output_file" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 		log_info "Gene-transcript map already exists: $output_file"
 		return 0
 	fi

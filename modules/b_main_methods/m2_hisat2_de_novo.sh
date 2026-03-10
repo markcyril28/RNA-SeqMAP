@@ -48,7 +48,7 @@ hisat2_de_novo_pipeline() {
 
 	# BUILD HISAT2 INDEX
 	mkdir -p "$HISAT2_DE_NOVO_INDEX_DIR"
-	if ls "${index_prefix}".*.ht2 >/dev/null 2>&1; then
+	if ls "${index_prefix}".*.ht2 >/dev/null 2>&1 && [[ "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 		log_info "[HISAT2 INDEX] De novo index exists - skipping build"
 	else
 		log_step "Building HISAT2 de novo index from $fasta"
@@ -84,22 +84,24 @@ hisat2_de_novo_pipeline() {
 			local bam="$HISAT2_DIR/${SRR}_${fasta_tag}_trimmed_mapped_sorted.bam"
 			local sam="$HISAT2_DIR/${SRR}_${fasta_tag}_trimmed_mapped.sam"
 
-			if [[ -f "$bam" && -f "${bam}.bai" ]]; then
+			if [[ -f "$bam" && -f "${bam}.bai" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 				_parallel_log HISAT2_DN "$SRR" INFO "BAM exists - skipping alignment"
 			else
 				_parallel_log HISAT2_DN "$SRR" INFO "Aligning with $threads_per_job threads"
 				local align_exit=0
 				if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
 					hisat2 -p "$threads_per_job" -x "$index_prefix" \
-						-1 "$trimmed1" -2 "$trimmed2" -S "$sam" 2>&1 || align_exit=$?
+						-1 "$trimmed1" -2 "$trimmed2" -S "$sam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
+					align_exit=${PIPESTATUS[0]}
 				else
 					hisat2 -p "$threads_per_job" -x "$index_prefix" \
-						-U "$trimmed1" -S "$sam" 2>&1 || align_exit=$?
+						-U "$trimmed1" -S "$sam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
+					align_exit=${PIPESTATUS[0]}
 				fi
 				[[ $align_exit -ne 0 ]] && { _parallel_log HISAT2_DN "$SRR" ERROR "HISAT2 failed (exit=$align_exit)"; return $align_exit; }
 
-				samtools sort -@ "$threads_per_job" -o "$bam" "$sam" 2>&1 || { _parallel_log HISAT2_DN "$SRR" ERROR "samtools sort failed"; return 1; }
-				samtools index -@ "$threads_per_job" "$bam" 2>&1 || true
+				samtools sort -@ "$threads_per_job" -o "$bam" "$sam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g' || { _parallel_log HISAT2_DN "$SRR" ERROR "samtools sort failed"; return 1; }
+				samtools index -@ "$threads_per_job" "$bam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g' || true
 				rm -f "$sam"
 			fi
 
@@ -108,7 +110,7 @@ hisat2_de_novo_pipeline() {
 			local out_gtf="$out_dir/${SRR}_${fasta_tag}_trimmed_mapped_sorted_stringtie_assembled_de_novo.gtf"
 			mkdir -p "$out_dir"
 
-			if [[ -f "$out_gtf" ]]; then
+			if [[ -f "$out_gtf" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 				_parallel_log HISAT2_DN "$SRR" INFO "De novo assembly exists - skipping"
 			else
 				_parallel_log HISAT2_DN "$SRR" INFO "Assembling transcripts (de novo)"
@@ -130,6 +132,7 @@ hisat2_de_novo_pipeline() {
 			--env abs_trim_dir_root --env abs_error_warn_file --env keep_bam_global \
 			--env fasta_tag --env index_prefix --env threads_per_job \
 			--env abs_hisat2_dn_root --env abs_stringtie_dn_root \
+			--env OVERWRITE_MODE \
 			-j "$parallel_jobs" \
 			--halt soon,fail=1 \
 			--joblog "$HISAT2_DE_NOVO_ROOT/parallel_hisat2_denovo.log" \
@@ -145,12 +148,12 @@ hisat2_de_novo_pipeline() {
 			mkdir -p "$HISAT2_DIR"
 
 			find_trimmed_fastq "$SRR"
-			[[ -z "$trimmed1" || -z "$trimmed2" ]] && { log_warn "Trimmed FASTQ for $SRR not found - skipping"; continue; }
+			[[ -z "$trimmed1" ]] && { log_warn "Trimmed FASTQ for $SRR not found - skipping"; continue; }
 
 			local bam="$HISAT2_DIR/${SRR}_${fasta_tag}_trimmed_mapped_sorted.bam"
 			local sam="$HISAT2_DIR/${SRR}_${fasta_tag}_trimmed_mapped.sam"
 
-			if [[ -f "$bam" && -f "${bam}.bai" ]]; then
+			if [[ -f "$bam" && -f "${bam}.bai" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 				log_info "[HISAT2 ALIGN] BAM exists for $SRR - skipping alignment"
 			else
 				log_step "Aligning $SRR using HISAT2 De Novo"
@@ -173,7 +176,7 @@ hisat2_de_novo_pipeline() {
 			local out_gtf="$out_dir/${SRR}_${fasta_tag}_trimmed_mapped_sorted_stringtie_assembled_de_novo.gtf"
 			mkdir -p "$out_dir"
 
-			if [[ -f "$out_gtf" ]]; then
+			if [[ -f "$out_gtf" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 				log_info "[STRINGTIE] De novo assembly exists for $SRR - skipping"
 			else
 				log_step "Assembling transcripts for $SRR (de novo)"

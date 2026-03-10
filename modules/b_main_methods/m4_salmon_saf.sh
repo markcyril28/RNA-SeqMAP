@@ -53,7 +53,7 @@ salmon_saf_pipeline() {
 	mkdir -p "$SALMON_INDEX_ROOT" "$quant_root" "$matrix_dir" "$work"
 
 	# BUILD DECOY-AWARE INDEX
-	if [[ -f "$idx_dir/versionInfo.json" ]]; then
+	if [[ -f "$idx_dir/versionInfo.json" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 		log_info "[SALMON INDEX] Decoy index already exists. Skipping."
 	else
 		log_step "Building decoy-aware Salmon index for $tag"
@@ -91,7 +91,7 @@ salmon_saf_pipeline() {
 
 			local out_dir="$quant_root/$SRR"
 			mkdir -p "$out_dir"
-			[[ -f "$out_dir/quant.sf" ]] && { _parallel_log SALMON "$SRR" INFO "Already quantified - skipping"; return 0; }
+			[[ -f "$out_dir/quant.sf" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]] && { _parallel_log SALMON "$SRR" INFO "Already quantified - skipping"; return 0; }
 
 			_parallel_log SALMON "$SRR" INFO "Quantifying with $threads_per_job threads"
 			local salmon_exit=0
@@ -99,12 +99,14 @@ salmon_saf_pipeline() {
 				salmon quant -i "$idx_dir" -l A \
 					-1 "$trimmed1" -2 "$trimmed2" \
 					-p "$threads_per_job" \
-					-o "$out_dir" 2>&1 || salmon_exit=$?
+					-o "$out_dir" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
+				salmon_exit=${PIPESTATUS[0]}
 			else
 				salmon quant -i "$idx_dir" -l A \
 					-r "$trimmed1" \
 					-p "$threads_per_job" \
-					-o "$out_dir" 2>&1 || salmon_exit=$?
+					-o "$out_dir" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
+				salmon_exit=${PIPESTATUS[0]}
 			fi
 
 			[[ $salmon_exit -ne 0 ]] && { _parallel_log SALMON "$SRR" ERROR "Salmon failed (exit=$salmon_exit)"; return $salmon_exit; }
@@ -118,6 +120,7 @@ salmon_saf_pipeline() {
 			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
 			--env abs_trim_dir_root --env abs_error_warn_file --env keep_bam_global \
 			--env idx_dir --env quant_root --env threads_per_job --env salmon_num_bootstraps \
+			--env OVERWRITE_MODE \
 			-j "$parallel_jobs" \
 			--halt soon,fail=1 \
 			--joblog "$quant_root/parallel_salmon_saf.log" \
@@ -133,7 +136,7 @@ salmon_saf_pipeline() {
 			local out_dir="$quant_root/$SRR"
 			mkdir -p "$out_dir"
 
-			[[ -f "$out_dir/quant.sf" ]] && { log_info "[SALMON QUANT] Quantification for $SRR already exists. Skipping."; continue; }
+			[[ -f "$out_dir/quant.sf" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]] && { log_info "[SALMON QUANT] Quantification for $SRR already exists. Skipping."; continue; }
 
 			find_trimmed_fastq "$SRR"
 			[[ -z "$trimmed1" ]] && { log_warn "Missing trimmed reads for $SRR. Skipping."; continue; }
@@ -174,7 +177,12 @@ _create_salmon_matrices() {
 	local tag="$2"
 	local quant_root="$3"
 	local matrix_dir="$4"
-	local -n srr_list=$5
+	local _arr_name="${5:-}"
+	local srr_list=()
+	if [[ -n "$_arr_name" ]]; then
+		local _tmp=("${!_arr_name}")
+		for _s in "${_tmp[@]}"; do [[ -n "$_s" ]] && srr_list+=("$_s"); done
+	fi
 
 	log_step "Generating gene and transcript matrices (Salmon)"
 	
@@ -189,17 +197,20 @@ _create_salmon_matrices() {
 	if command -v abundance_estimates_to_matrix.pl >/dev/null 2>&1; then
 		log_info "[SALMON MATRIX] Running abundance_estimates_to_matrix.pl..."
 		run_with_space_time_log abundance_estimates_to_matrix.pl \
-			--est_method salmon \
+			--est_method kallisto \
 			--gene_trans_map "$gene_trans_map" \
 			--out_prefix "$matrix_dir/genes" \
-			--name_sample_by_basedir "$quant_root"/*/quant.sf
+			--name_sample_by_basedir "$quant_root"/*/quant.sf || {
+			log_warn "abundance_estimates_to_matrix.pl failed. Creating manual count matrix..."
+			_create_manual_salmon_matrix "$quant_root" "$matrix_dir" srr_list[@]
+		}
 	else
 		log_warn "abundance_estimates_to_matrix.pl not found. Creating manual count matrix..."
-		_create_manual_salmon_matrix "$quant_root" "$matrix_dir" srr_list
+		_create_manual_salmon_matrix "$quant_root" "$matrix_dir" srr_list[@]
 	fi
-	
+
 	# Prepare DESeq2-compatible outputs
-	_prepare_salmon_deseq2_output "$tag" "$quant_root" "$matrix_dir" srr_list
+	_prepare_salmon_deseq2_output "$tag" "$quant_root" "$matrix_dir" srr_list[@]
 }
 
 _create_gene_trans_map() {
@@ -236,7 +247,19 @@ _create_gene_trans_map() {
 _create_manual_salmon_matrix() {
 	local quant_root="$1"
 	local matrix_dir="$2"
-	local -n srr_list=$3
+	local _arr_name="${3:-}"
+	local srr_list=()
+	if [[ -n "$_arr_name" ]]; then
+		local _tmp=("${!_arr_name}")
+		for _s in "${_tmp[@]}"; do [[ -n "$_s" ]] && srr_list+=("$_s"); done
+	fi
+
+	# Fallback: discover samples from quant.sf files if SRR list is empty
+	if [[ ${#srr_list[@]} -eq 0 ]]; then
+		while IFS= read -r _qf; do
+			srr_list+=("$(basename "$(dirname "$_qf")")");
+		done < <(find "$quant_root" -name "quant.sf" 2>/dev/null)
+	fi
 	
 	local temp_gene_ids="$matrix_dir/temp_gene_ids.txt"
 	local temp_counts="$matrix_dir/temp_counts.txt"
@@ -277,7 +300,19 @@ _prepare_salmon_deseq2_output() {
 	local tag="$1"
 	local quant_root="$2"
 	local matrix_dir="$3"
-	local -n srr_list=$4
+	local _arr_name="${4:-}"
+	local srr_list=()
+	if [[ -n "$_arr_name" ]]; then
+		local _tmp=("${!_arr_name}")
+		for _s in "${_tmp[@]}"; do [[ -n "$_s" ]] && srr_list+=("$_s"); done
+	fi
+
+	# Fallback: discover samples from quant.sf files if SRR list is empty
+	if [[ ${#srr_list[@]} -eq 0 ]]; then
+		while IFS= read -r _qf; do
+			srr_list+=("$(basename "$(dirname "$_qf")")");
+		done < <(find "$quant_root" -name "quant.sf" 2>/dev/null)
+	fi
 
 	log_step "Preparing DESeq2-compatible count matrix for Salmon pipeline"
 	
@@ -302,20 +337,20 @@ _prepare_salmon_deseq2_output() {
 	fi
 	
 	# Create sample metadata
-	[[ ! -f "$sample_metadata" ]] && create_sample_metadata "$sample_metadata" srr_list
-	
+	[[ ! -f "$sample_metadata" ]] && create_sample_metadata "$sample_metadata" srr_list[@]
+
 	# Generate tximport script
 	local tximport_script="$deseq2_dir/run_tximport_salmon.R"
 	[[ ! -f "$tximport_script" ]] && generate_tximport_script "salmon" "$quant_root" "$tximport_script" "$sample_metadata"
-	
+
 	# Create TPM matrix
 	if [[ -f "$matrix_dir/genes.TPM.not_cross_norm" ]]; then
 		local tpm_matrix="$deseq2_dir/gene_tpm_matrix.csv"
 		[[ ! -f "$tpm_matrix" ]] && sed 's/\t/,/g' "$matrix_dir/genes.TPM.not_cross_norm" | sed '1s/gene_id/Gene_ID/' > "$tpm_matrix"
 	fi
-	
+
 	# Create summary
-	_create_salmon_summary "$tag" "$quant_root" "$deseq2_dir" srr_list
+	_create_salmon_summary "$tag" "$quant_root" "$deseq2_dir" srr_list[@]
 	
 	# Validate
 	[[ -f "$gene_count_matrix" ]] && validate_count_matrix "$gene_count_matrix" "gene" 2
@@ -329,7 +364,12 @@ _create_salmon_summary() {
 	local tag="$1"
 	local quant_root="$2"
 	local deseq2_dir="$3"
-	local -n srr_list=$4
+	local _arr_name="${4:-}"
+	local srr_list=()
+	if [[ -n "$_arr_name" ]]; then
+		local _tmp=("${!_arr_name}")
+		for _s in "${_tmp[@]}"; do [[ -n "$_s" ]] && srr_list+=("$_s"); done
+	fi
 	
 	local summary_file="$deseq2_dir/salmon_summary.txt"
 	[[ -f "$summary_file" ]] && return 0

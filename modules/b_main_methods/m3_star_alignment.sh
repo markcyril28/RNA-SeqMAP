@@ -3,7 +3,6 @@
 # METHOD 3: STAR SPLICE-AWARE ALIGNMENT PIPELINE
 # ==============================================================================
 # STAR splice-aware alignment with Salmon quantification and tximport for DESeq2
-# Uses 2-pass mode for better junction detection
 # ==============================================================================
 
 #set -euo pipefail
@@ -23,8 +22,6 @@ source "$SCRIPT_DIR/shared_utils_method.sh"
 # STAR-specific settings (GPU-aware defaults)
 STAR_GENOME_LOAD="${STAR_GENOME_LOAD:-$(get_star_genome_load 2>/dev/null || echo NoSharedMemory)}"
 STAR_READ_LENGTH="${STAR_READ_LENGTH:-100}"
-STAR_STRAND_SPECIFIC="${STAR_STRAND_SPECIFIC:-None}"
-
 # Delete transient big files after alignment (saves disk space)
 # Set to "true" to delete intermediate files (2-pass genome, unsorted BAM, etc.)
 # Set to "false" to keep all files for debugging
@@ -32,6 +29,11 @@ STAR_DELETE_TRANSIENT="${STAR_DELETE_TRANSIENT:-true}"
 
 # GTF annotation file for splice junction detection (required for --sjdbOverhang)
 # NOTE: Resolved at runtime inside star_alignment_pipeline() to ensure gtf_file is set
+
+# Transcriptome FASTA for Salmon quantification (auto-detected if not set)
+# When using a genome FASTA for STAR, set this to the transcript-level FASTA
+# e.g. STAR_TRANSCRIPTOME_FASTA="0_INPUTs/fasta/reference_genomes/GPE001970_transcripts.fa"
+# If unset, auto-detects <genome_basename>_transcripts.fa, else falls back to --FASTA
 
 # STAR temp directory configuration
 # Set to "system" to use /tmp, "local" to use output dir, "cwd" for current directory, "none" to let STAR manage, or a specific path
@@ -110,7 +112,7 @@ star_alignment_pipeline() {
 	# Resolve GTF at runtime so the config's gtf_file is available
 	STAR_GTF_FILE="${STAR_GTF_FILE:-$gtf_file}"
 
-	local fasta="" rnaseq_list=() tissue_tag=""
+	local fasta="" transcriptome_fasta="" rnaseq_list=() tissue_tag=""
 	
 	# Check for GNU parallel
 	if ! command -v parallel >/dev/null 2>&1; then
@@ -120,6 +122,7 @@ star_alignment_pipeline() {
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
 			--FASTA) fasta="$2"; shift 2;;
+			--TRANSCRIPTOME) transcriptome_fasta="$2"; shift 2;;
 			--TISSUE_TAG) tissue_tag="$2"; shift 2;;
 			--RNASEQ_LIST)
 				shift
@@ -132,6 +135,29 @@ star_alignment_pipeline() {
 	
 	[[ -z "$fasta" ]] && { log_error "No FASTA file specified. Use --FASTA <fasta_file>."; return 1; }
 	[[ ! -f "$fasta" ]] && { log_error "FASTA file '$fasta' not found."; return 1; }
+
+	# Resolve transcriptome FASTA for Salmon: explicit arg > config var > auto-detect > fallback to genome
+	if [[ -z "$transcriptome_fasta" ]]; then
+		transcriptome_fasta="${STAR_TRANSCRIPTOME_FASTA:-}"
+	fi
+	if [[ -z "$transcriptome_fasta" ]]; then
+		# Auto-detect: look for <basename>_transcripts.fa alongside the genome FASTA
+		local auto_tx="$(dirname "$fasta")/$(basename "${fasta%.*}")_transcripts.fa"
+		if [[ -f "$auto_tx" ]]; then
+			transcriptome_fasta="$auto_tx"
+			log_info "[STAR] Auto-detected transcriptome FASTA: $transcriptome_fasta"
+		else
+			transcriptome_fasta="$fasta"
+			log_warn "[STAR] No transcriptome FASTA found. Salmon will index the genome FASTA."
+			log_warn "[STAR] Set STAR_TRANSCRIPTOME_FASTA or use --TRANSCRIPTOME to fix this."
+		fi
+	else
+		if [[ ! -f "$transcriptome_fasta" ]]; then
+			log_error "Transcriptome FASTA '$transcriptome_fasta' not found."
+			return 1
+		fi
+		log_info "[STAR] Using transcriptome FASTA for Salmon: $transcriptome_fasta"
+	fi
 	[[ ${#rnaseq_list[@]} -eq 0 ]] && rnaseq_list=("${SRR_COMBINED_LIST[@]}")
 	[[ ${#rnaseq_list[@]} -eq 0 ]] && { log_error "No RNA-seq samples provided."; return 1; }
 
@@ -194,14 +220,14 @@ star_alignment_pipeline() {
 	# STEP 1: BUILD STAR GENOME INDEX
 	log_step "STAR genome index generation for $fasta_tag"
 	
-	if [[ -f "$star_index_dir/SAindex" ]]; then
+	if [[ -f "$star_index_dir/SAindex" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 		log_info "[STAR INDEX] Index for $fasta_tag already exists. Skipping."
 	else
-		log_info "[STAR INDEX] Building STAR genome index from transcriptome..."
+		log_info "[STAR INDEX] Building STAR genome index from genome FASTA..."
 		mkdir -p "$star_index_dir"
-		
-		log_file_size "$fasta" "Input transcriptome FASTA for STAR indexing"
-		
+
+		log_file_size "$fasta" "Input genome FASTA for STAR indexing"
+
 		# Validate GTF file exists
 		if [[ ! -f "$STAR_GTF_FILE" ]]; then
 			log_error "GTF annotation file not found: $STAR_GTF_FILE"
@@ -209,21 +235,38 @@ star_alignment_pipeline() {
 			return 1
 		fi
 		log_info "[STAR INDEX] Using GTF annotation: $STAR_GTF_FILE"
-		
+
+		# Compute recommended SAindex size: min(14, floor(log2(GenomeLength)/2 - 1))
+		local genome_sa_index=14
+		local genome_chr_bin=18
+		local genome_bp num_seqs
+		genome_bp=$(awk '!/^>/{total+=length($0)} END{printf "%d", total+0}' "$fasta" 2>/dev/null)
+		num_seqs=$(grep -c '^>' "$fasta" 2>/dev/null || echo "1")
+		if [[ -n "$genome_bp" && "$genome_bp" -gt 0 ]]; then
+			genome_sa_index=$(awk "BEGIN{v=int(log($genome_bp)/log(2)/2-1); print (v<14)?v:14}")
+			[[ "$genome_sa_index" -lt 1 ]] && genome_sa_index=1
+			# genomeChrBinNbits: min(18, floor(log2(GenomeLength/NumberOfSequences) - 1))
+			# Required for genomes with many scaffolds (e.g., draft assemblies)
+			genome_chr_bin=$(awk "BEGIN{v=int(log($genome_bp/$num_seqs)/log(2)-1); print (v<18)?v:18}")
+			[[ "$genome_chr_bin" -lt 1 ]] && genome_chr_bin=1
+		fi
+		log_info "[STAR INDEX] Genome size: ${genome_bp:-unknown} bp, $num_seqs sequences -> genomeSAindexNbases=$genome_sa_index, genomeChrBinNbits=$genome_chr_bin"
+
 		run_with_space_time_log --input "$fasta" --output "$star_index_dir" \
 			STAR --runMode genomeGenerate \
 				--genomeDir "$star_index_dir" \
 				--genomeFastaFiles "$fasta" \
 				--sjdbGTFfile "$STAR_GTF_FILE" \
 				--sjdbOverhang "$star_overhang" \
-				--genomeSAindexNbases 14 \
+				--genomeSAindexNbases "$genome_sa_index" \
+				--genomeChrBinNbits "$genome_chr_bin" \
 				--runThreadN "$THREADS"
 		
 		[[ ! -f "$star_index_dir/SAindex" ]] && { log_error "STAR index generation failed"; return 1; }
 		log_info "[STAR INDEX] Index built successfully: $star_index_dir"
 	fi
 	
-	# STEP 2: ALIGN READS WITH STAR (2-PASS MODE)
+	# STEP 2: ALIGN READS WITH STAR
 	mkdir -p "$star_genome_dir"
 	
 	# Verify directory exists and is writable
@@ -248,9 +291,9 @@ star_alignment_pipeline() {
 		log_warn "[PARALLEL] STAR is memory-intensive (~30GB/instance). Ensure sufficient RAM for $parallel_jobs concurrent jobs."
 		_prepare_parallel_env
 
-		export fasta_tag threads_per_job star_overhang
+		export fasta_tag threads_per_job
 		export star_index_dir star_genome_dir
-		export STAR_STRAND_SPECIFIC STAR_DELETE_TRANSIENT PROJECT_ROOT
+		export STAR_DELETE_TRANSIENT PROJECT_ROOT
 
 		_m3_star_parallel_worker() {
 			local SRR="$1"
@@ -260,7 +303,7 @@ star_alignment_pipeline() {
 			local bam_output="$star_genome_dir/${SRR}_Aligned.sortedByCoord.out.bam"
 
 			# Check if BAM exists and has content
-			if [[ -f "$bam_output" ]]; then
+			if [[ -f "$bam_output" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 				local bam_size
 				bam_size=$(stat -c%s "$bam_output" 2>/dev/null || stat -f%z "$bam_output" 2>/dev/null || echo "0")
 				if [[ "$bam_size" -gt 1000 ]]; then
@@ -276,11 +319,9 @@ star_alignment_pipeline() {
 			rm -rf "${star_genome_dir}/${SRR}__STARgenome" "${star_genome_dir}/${SRR}__STARpass1" \
 				"${star_genome_dir}/${SRR}_STARtmp" "${star_genome_dir}/_STARtmp_${SRR}" 2>/dev/null || true
 
-			local star_reads=""
+			local star_reads_args=("$trimmed1")
 			if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
-				star_reads="$trimmed1 $trimmed2"
-			else
-				star_reads="$trimmed1"
+				star_reads_args+=("$trimmed2")
 			fi
 
 			local star_tmp_dir="${star_genome_dir}/_STARtmp_${SRR}"
@@ -291,28 +332,19 @@ star_alignment_pipeline() {
 			local unsorted_bam="${out_prefix}Aligned.out.bam"
 
 			_parallel_log STAR "$SRR" INFO "Aligning with $threads_per_job threads"
+			_parallel_log STAR "$SRR" INFO "--- BEGIN STAR OUTPUT ---"
 
 			STAR --runMode alignReads \
 				--genomeDir "$star_index_dir" \
-				--readFilesIn $star_reads \
-				--readFilesCommand zcat \
+				--readFilesIn "${star_reads_args[@]}" \
+				--readFilesCommand "zcat -f" \
 				--outFileNamePrefix "$out_prefix" \
 				--outTmpDir "$star_tmp_dir" \
 				--outSAMtype BAM Unsorted \
-				--outSAMstrandField "$STAR_STRAND_SPECIFIC" \
-				--outSAMunmapped None \
-				--outFilterType Normal \
-				--outFilterMultimapNmax 10 \
-				--alignSJoverhangMin 5 \
-				--alignSJDBoverhangMin 1 \
-				--outFilterMismatchNmax 10 \
-				--outFilterMismatchNoverReadLmax 1 \
-				--alignIntronMin 21 \
-				--alignIntronMax 0 \
-				--alignMatesGapMax 0 \
-				--twopassMode None \
 				--runThreadN "$threads_per_job" 2>&1 || \
-				{ _parallel_log STAR "$SRR" ERROR "STAR alignment failed"; return 1; }
+				{ _parallel_log STAR "$SRR" ERROR "--- END STAR OUTPUT (FAILED) ---"; _parallel_log STAR "$SRR" ERROR "STAR alignment failed"; return 1; }
+
+			_parallel_log STAR "$SRR" INFO "--- END STAR OUTPUT ---"
 
 			if [[ ! -f "$unsorted_bam" ]]; then
 				_parallel_log STAR "$SRR" ERROR "Unsorted BAM not created"
@@ -327,8 +359,9 @@ star_alignment_pipeline() {
 			fi
 
 			_parallel_log STAR "$SRR" INFO "Sorting BAM with samtools"
-			samtools sort -@ "$threads_per_job" -m 2G -o "$bam_output" "$unsorted_bam" 2>&1 || \
-				{ _parallel_log STAR "$SRR" ERROR "samtools sort failed"; return 1; }
+			samtools sort -@ "$threads_per_job" -m 2G -o "$bam_output" "$unsorted_bam" 2>&1 | sed 's/^/\t/'
+			local sort_exit=${PIPESTATUS[0]}
+			[[ $sort_exit -ne 0 ]] && { _parallel_log STAR "$SRR" ERROR "samtools sort failed"; return 1; }
 
 			local final_bam_size
 			final_bam_size=$(stat -c%s "$bam_output" 2>/dev/null || stat -f%z "$bam_output" 2>/dev/null || echo "0")
@@ -356,9 +389,10 @@ star_alignment_pipeline() {
 		printf '%s\n' "${rnaseq_list[@]}" | parallel \
 			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
 			--env abs_trim_dir_root --env abs_error_warn_file --env keep_bam_global \
-			--env fasta_tag --env threads_per_job --env star_overhang \
+			--env fasta_tag --env threads_per_job \
 			--env star_index_dir --env star_genome_dir \
-			--env STAR_STRAND_SPECIFIC --env STAR_DELETE_TRANSIENT --env PROJECT_ROOT \
+			--env STAR_DELETE_TRANSIENT --env PROJECT_ROOT \
+			--env OVERWRITE_MODE \
 			-j "$parallel_jobs" \
 			--halt soon,fail=1 \
 			--joblog "$star_genome_dir/parallel_star_align.log" \
@@ -373,7 +407,7 @@ star_alignment_pipeline() {
 			local bam_output="$star_genome_dir/${SRR}_Aligned.sortedByCoord.out.bam"
 			
 			# Check if BAM exists AND has content (not 0 bytes from failed run)
-			if [[ -f "$bam_output" ]]; then
+			if [[ -f "$bam_output" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 				local bam_size
 				bam_size=$(stat -c%s "$bam_output" 2>/dev/null || stat -f%z "$bam_output" 2>/dev/null || echo "0")
 				if [[ "$bam_size" -gt 1000 ]]; then
@@ -398,20 +432,23 @@ star_alignment_pipeline() {
 			
 			log_info "[STAR] Aligning: $SRR"
 			
-			local star_reads=""
+			local star_reads_args=("$trimmed1")
 			if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
-				star_reads="$trimmed1 $trimmed2"
+				star_reads_args+=("$trimmed2")
 				log_info "[STAR] Processing paired-end reads for $SRR"
 			else
-				star_reads="$trimmed1"
 				log_info "[STAR] Processing single-end reads for $SRR"
 			fi
 			
 			# CRITICAL: Ensure output directory exists and is writable RIGHT BEFORE STAR runs
 			# This fixes "could not create output file" errors on HPC/server environments
 			mkdir -p "$star_genome_dir"
-			sync  # Force filesystem sync on HPC/NFS
-			sleep 1  # Brief pause for filesystem consistency
+			# On NFS/HPC systems, sync and a brief pause help avoid race conditions.
+			# Set STAR_NFS_SYNC=true in your config if running on NFS storage.
+			if [[ "${STAR_NFS_SYNC:-false}" == "true" ]]; then
+				sync
+				sleep 1
+			fi
 			
 			if [[ ! -d "$star_genome_dir" ]]; then
 				log_error "[STAR] FATAL: Cannot create output directory: $star_genome_dir"
@@ -434,97 +471,35 @@ star_alignment_pipeline() {
 			# Also clean up any stray temp dirs
 			rm -rf "${PROJECT_ROOT}/_STARtmp" 2>/dev/null || true
 			rm -rf "${PROJECT_ROOT}/_STARtmp_${SRR}" 2>/dev/null || true
-			local star_tmp_arg="--outTmpDir $star_tmp_dir"
-			
-			log_info "[STAR DEBUG] Using temp directory: $star_tmp_dir"
+			log_info "[STAR] Using temp directory: $star_tmp_dir"
 			
 			# Construct output prefix - ensure no double slashes and path is clean
 			local out_prefix="${star_genome_dir}/${SRR}_"
 			# Remove any double slashes
 			out_prefix="${out_prefix//\/\//\/}"
 			
-			# ======================================================================
-			# DEBUG INFO - Output to error log for troubleshooting
-			# ======================================================================
-			log_info "[STAR DEBUG] ============================================"
-			log_info "[STAR DEBUG] Sample: $SRR"
-			log_info "[STAR DEBUG] Output prefix: $out_prefix"
-			log_info "[STAR DEBUG] Expected BAM: ${out_prefix}Aligned.sortedByCoord.out.bam"
-			log_info "[STAR DEBUG] Output directory: $star_genome_dir"
-			log_info "[STAR DEBUG] Index directory: $star_index_dir"
-			log_info "[STAR DEBUG] Temp mode: ${STAR_TMP_MODE:-cwd}"
-			[[ -n "$star_tmp_dir" ]] && log_info "[STAR DEBUG] Temp directory: $star_tmp_dir"
-			log_info "[STAR DEBUG] Input reads: $star_reads"
-			log_info "[STAR DEBUG] Current working dir: $(pwd)"
-			log_info "[STAR DEBUG] PROJECT_ROOT: $PROJECT_ROOT"
-			
-			# Check and log disk space
-			local available_space disk_info
-			disk_info=$(df -Ph "$star_genome_dir" 2>&1) || disk_info="df command failed"
-			log_info "[STAR DEBUG] Disk info for output dir:"
-			log_info "$disk_info"
-			
+			# Check disk space before running STAR (needs ~30GB per run)
+			local available_space
 			available_space=$(df -P "$star_genome_dir" 2>/dev/null | awk 'NR==2 {print $4}')
 			if [[ -n "$available_space" ]]; then
 				local available_gb=$((available_space / 1024 / 1024))
-				log_info "[STAR DEBUG] Available disk space: ${available_gb} GB"
-				if [[ $available_gb -lt 10 ]]; then
-					log_error "[STAR] FATAL: Less than 10GB available - STAR needs more disk space"
+				if [[ $available_gb -lt 30 ]]; then
+					log_error "[STAR] FATAL: Less than 30GB available in $star_genome_dir - STAR needs ~30GB per run"
 					return 1
 				fi
 			fi
-			
-			# Verify paths exist and are accessible
-			log_info "[STAR DEBUG] Checking paths..."
-			log_info "[STAR DEBUG] star_genome_dir exists: $([[ -d "$star_genome_dir" ]] && echo YES || echo NO)"
-			log_info "[STAR DEBUG] star_genome_dir writable: $([[ -w "$star_genome_dir" ]] && echo YES || echo NO)"
-			log_info "[STAR DEBUG] star_index_dir exists: $([[ -d "$star_index_dir" ]] && echo YES || echo NO)"
-			log_info "[STAR DEBUG] Index SAindex exists: $([[ -f "$star_index_dir/SAindex" ]] && echo YES || echo NO)"
-			
-			# List output directory contents
-			log_info "[STAR DEBUG] Output dir contents:"
-			ls -la "$star_genome_dir" 2>&1 | head -20 | while read line; do log_info "  $line"; done
-			
-			# Test creating the exact BAM filename
-			local test_bam="${out_prefix}Aligned.sortedByCoord.out.bam.test"
-			if touch "$test_bam" 2>/dev/null; then
-				log_info "[STAR DEBUG] Test BAM creation: SUCCESS"
-				rm -f "$test_bam"
-			else
-				log_info "[STAR DEBUG] Test BAM creation: FAILED - cannot create $test_bam"
-			fi
-			
-			log_info "[STAR DEBUG] ============================================"
-			# ======================================================================
-			
+
 			# Run STAR alignment - output UNSORTED BAM first, then sort with samtools
-			# This is more reliable than STAR's internal BAM sorting which can fail
 			local unsorted_bam="${out_prefix}Aligned.out.bam"
-			
-			log_info "[STAR DEBUG] Running STAR with unsorted BAM output..."
-			log_info "[STAR DEBUG] Unsorted BAM will be: $unsorted_bam"
-			log_info "[STAR DEBUG] Will sort to: $bam_output"
 			
 			run_with_space_time_log --input "$TRIM_DIR_ROOT/$SRR" --output "$star_genome_dir" \
 				STAR --runMode alignReads \
 					--genomeDir "$star_index_dir" \
-					--readFilesIn $star_reads \
-					--readFilesCommand zcat \
+					--readFilesIn "${star_reads_args[@]}" \
+					--readFilesCommand "zcat -f" \
 					--outFileNamePrefix "$out_prefix" \
-					$star_tmp_arg \
+					--outTmpDir "$star_tmp_dir" \
 					--outSAMtype BAM Unsorted \
-					--outSAMstrandField "$STAR_STRAND_SPECIFIC" \
-					--outSAMunmapped None \
-					--outFilterType Normal \
-					--outFilterMultimapNmax 10 \
-					--alignSJoverhangMin 5 \
-					--alignSJDBoverhangMin 1 \
-					--outFilterMismatchNmax 10 \
-					--outFilterMismatchNoverReadLmax 1 \
-					--alignIntronMin 21 \
-					--alignIntronMax 0 \
-					--alignMatesGapMax 0 \
-					--twopassMode None \
 					--runThreadN "$THREADS"
 			
 			# Check if unsorted BAM was created
@@ -533,24 +508,21 @@ star_alignment_pipeline() {
 				log_error "[STAR] Check STAR log: ${out_prefix}Log.out"
 				# Show last 30 lines of STAR log
 				log_error "[STAR] Last 30 lines of STAR log:"
-				tail -30 "${out_prefix}Log.out" 2>/dev/null | while read line; do log_error "  $line"; done
+				tail -30 "${out_prefix}Log.out" 2>/dev/null | while IFS= read -r line; do log_error "  $line"; done
 				return 1
 			fi
 			
 			local unsorted_size
 			unsorted_size=$(stat -c%s "$unsorted_bam" 2>/dev/null || stat -f%z "$unsorted_bam" 2>/dev/null || echo "0")
-			log_info "[STAR DEBUG] Unsorted BAM size: $unsorted_size bytes"
-			
 			if [[ "$unsorted_size" -lt 1000 ]]; then
 				log_error "[STAR] FATAL: Unsorted BAM is empty/corrupt for $SRR (${unsorted_size} bytes)"
 				log_error "[STAR] Last 30 lines of STAR log:"
-				tail -30 "${out_prefix}Log.out" 2>/dev/null | while read line; do log_error "  $line"; done
+				tail -30 "${out_prefix}Log.out" 2>/dev/null | while IFS= read -r line; do log_error "  $line"; done
 				return 1
 			fi
-			
-			# Sort BAM with samtools (more reliable than STAR's internal sorting)
+
+			# Sort BAM with samtools
 			log_info "[STAR] Sorting BAM with samtools..."
-			log_info "[STAR DEBUG] Running samtools sort..."
 			
 			if ! samtools sort -@ "$THREADS" -m 2G -o "$bam_output" "$unsorted_bam" 2>&1; then
 				log_error "[STAR] FATAL: samtools sort failed for $SRR"
@@ -614,13 +586,14 @@ star_alignment_pipeline() {
 	quant_root="${quant_root//\/\//\/}"
 	mkdir -p "$quant_root"
 	
-	# Build Salmon index
-	if [[ -f "$salmon_idx/versionInfo.json" ]]; then
+	# Build Salmon index (using transcriptome FASTA, not genome)
+	if [[ -f "$salmon_idx/versionInfo.json" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 		log_info "[SALMON INDEX] STAR Salmon index exists - skipping build"
 	else
 		log_step "Building Salmon index for transcriptome"
-		run_with_space_time_log --input "$fasta" --output "$salmon_idx" \
-			salmon index -t "$fasta" -i "$salmon_idx" -k 31 --threads "$THREADS"
+		log_info "[SALMON INDEX] Indexing: $transcriptome_fasta"
+		run_with_space_time_log --input "$transcriptome_fasta" --output "$salmon_idx" \
+			salmon index -t "$transcriptome_fasta" -i "$salmon_idx" -k 31 --threads "$THREADS"
 	fi
 	
 	# Quantify samples
@@ -638,18 +611,23 @@ star_alignment_pipeline() {
 			[[ -z "$trimmed1" ]] && { _parallel_log SALMON_STAR "$SRR" WARN "Trimmed FASTQ not found - skipping"; return 0; }
 
 			local quant_dir="$quant_root/$SRR"
-			[[ -f "$quant_dir/quant.sf" ]] && { _parallel_log SALMON_STAR "$SRR" INFO "quant.sf exists - skipping"; return 0; }
+			[[ -f "$quant_dir/quant.sf" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]] && { _parallel_log SALMON_STAR "$SRR" INFO "quant.sf exists - skipping"; return 0; }
 
 			mkdir -p "$quant_dir"
 			_parallel_log SALMON_STAR "$SRR" INFO "Quantifying with $threads_per_job threads"
 
 			local quant_exit=0
+			# Strip ANSI escape codes and carriage returns (Salmon uses colored progress bars)
 			if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
 				salmon quant -p "$threads_per_job" -i "$salmon_idx" -o "$quant_dir" \
-					--validateMappings -l A -1 "$trimmed1" -2 "$trimmed2" 2>&1 || quant_exit=$?
+					--validateMappings -l A -1 "$trimmed1" -2 "$trimmed2" 2>&1 | \
+					sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
+				quant_exit=${PIPESTATUS[0]}
 			else
 				salmon quant -p "$threads_per_job" -i "$salmon_idx" -o "$quant_dir" \
-					--validateMappings -l A -r "$trimmed1" 2>&1 || quant_exit=$?
+					--validateMappings -l A -r "$trimmed1" 2>&1 | \
+					sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
+				quant_exit=${PIPESTATUS[0]}
 			fi
 			[[ $quant_exit -ne 0 ]] && { _parallel_log SALMON_STAR "$SRR" ERROR "Salmon quant failed (exit=$quant_exit)"; return $quant_exit; }
 
@@ -662,6 +640,7 @@ star_alignment_pipeline() {
 			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
 			--env abs_trim_dir_root --env abs_error_warn_file --env keep_bam_global \
 			--env fasta_tag --env threads_per_job --env salmon_idx --env quant_root \
+			--env OVERWRITE_MODE \
 			-j "$parallel_jobs" \
 			--halt soon,fail=1 \
 			--joblog "$quant_root/parallel_salmon_star_quant.log" \
@@ -675,7 +654,7 @@ star_alignment_pipeline() {
 		for SRR in "${rnaseq_list[@]}"; do
 			local quant_dir="$quant_root/$SRR"
 
-			[[ -f "$quant_dir/quant.sf" ]] && { log_info "[SALMON] Quantification for $SRR exists - skipping"; continue; }
+			[[ -f "$quant_dir/quant.sf" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]] && { log_info "[SALMON] Quantification for $SRR exists - skipping"; continue; }
 
 			find_trimmed_fastq "$SRR"
 			[[ -z "$trimmed1" ]] && { log_warn "No trimmed reads for $SRR - skipping"; continue; }
@@ -704,11 +683,22 @@ star_alignment_pipeline() {
 	local sample_metadata="$matrix_dir/sample_info.tsv"
 	local tx2gene_file="$matrix_dir/tx2gene_${fasta_tag}${ref_suffix:+_${ref_suffix}}.tsv"
 	
-	# Create tx2gene mapping
+	# Create tx2gene mapping from GTF (transcript_id -> gene_id attributes)
+	# This correctly handles multi-transcript genes; version-stripping FASTA headers is not reliable.
 	if [[ ! -f "$tx2gene_file" ]]; then
-		log_info "[TXIMPORT] Creating transcript-to-gene mapping"
-		awk '/^>/{tx=$1; gsub(/^>/, "", tx); gene=tx; gsub(/\.[0-9]+$/, "", gene); print tx "\t" gene}' "$fasta" > "$tx2gene_file"
-		log_info "[TXIMPORT] Created tx2gene mapping: $(wc -l < "$tx2gene_file") transcripts"
+		log_info "[TXIMPORT] Creating transcript-to-gene mapping from GTF: $STAR_GTF_FILE"
+		awk '$3=="transcript" {
+			match($0, /transcript_id "([^"]+)"/, t)
+			match($0, /gene_id "([^"]+)"/, g)
+			if (t[1] && g[1]) print t[1] "\t" g[1]
+		}' "$STAR_GTF_FILE" | sort -u > "$tx2gene_file"
+		local tx2gene_count
+		tx2gene_count=$(wc -l < "$tx2gene_file")
+		if [[ "$tx2gene_count" -eq 0 ]]; then
+			log_error "[TXIMPORT] tx2gene mapping is empty - check GTF has 'transcript' features with transcript_id/gene_id attributes"
+			return 1
+		fi
+		log_info "[TXIMPORT] Created tx2gene mapping: $tx2gene_count transcripts"
 	fi
 	
 	# Verify quantifications
@@ -731,12 +721,14 @@ star_alignment_pipeline() {
 	# Run tximport if R is available
 	if command -v Rscript >/dev/null 2>&1; then
 		log_step "Running tximport to import Salmon quantifications"
-		if Rscript "$tximport_script" "$quant_root" "$sample_metadata" "$tx2gene_file" "$matrix_dir" 2>&1 | tee -a "$LOG_FILE"; then
+		# Note: stdout already goes through tee via exec redirect; do NOT pipe to tee -a "$LOG_FILE" (causes double-logging)
+		if Rscript "$tximport_script" "$quant_root" "$sample_metadata" "$tx2gene_file" "$matrix_dir" 2>&1; then
 			log_info "[TXIMPORT] Successfully imported counts for DESeq2"
 			local count_matrix="$matrix_dir/gene_counts_tximport.tsv"
 			[[ -f "$count_matrix" ]] && validate_count_matrix "$count_matrix" "gene" 2
 		else
 			log_warn "[TXIMPORT] tximport failed - check R dependencies"
+			log_warn "[TXIMPORT] Install missing packages: Rscript -e \"BiocManager::install('tximport')\""
 		fi
 	else
 		log_warn "[TXIMPORT] Rscript not found - run manually: Rscript $tximport_script"

@@ -20,10 +20,6 @@ source "$SCRIPT_DIR/shared_utils_method.sh"
 # RSEM CONFIGURATION - IMPORTANT PARAMETERS AT TOP
 # ==============================================================================
 
-# Bowtie2 alignment mode for RSEM (options: very_sensitive, sensitive, fast, very_fast)
-# Note: RSEM uses end-to-end mode by default, not local mode
-BOWTIE2_MODE="${BOWTIE2_MODE:-sensitive}"
-
 # Parallel sample processing configuration
 # MAX_PARALLEL_SAMPLES: Number of samples to process in parallel (default: 2)
 # THREADS_PER_RSEM_JOB: Threads allocated per RSEM job (auto-calculated if not set)
@@ -50,14 +46,13 @@ _rsem_process_single_sample() {
 	local SRR="$1"
 	local rsem_idx="$2"
 	local quant_root="$3"
-	local bowtie2_mode="$4"
-	local threads_to_use="$5"
+	local threads_to_use="$4"
 	
 	local out_dir="$quant_root/$SRR"
 	mkdir -p "$out_dir"
 	
 	# Skip if already processed
-	if [[ -f "$out_dir/${SRR}.genes.results" ]]; then
+	if [[ -f "$out_dir/${SRR}.genes.results" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 		log_info "[RSEM QUANT] RSEM results for $SRR already exist. Skipping."
 		return 0
 	fi
@@ -72,7 +67,7 @@ _rsem_process_single_sample() {
 		return 1
 	fi
 	
-	log_step "Running Bowtie2 ($bowtie2_mode) + RSEM for $SRR (threads: $threads_to_use)"
+	log_step "Running Bowtie2 (default) + RSEM for $SRR (threads: $threads_to_use)"
 	log_info "[RSEM DEBUG] trimmed1=$trimmed1"
 	[[ -n "$trimmed2" ]] && log_info "[RSEM DEBUG] trimmed2=$trimmed2"
 	log_info "[RSEM DEBUG] rsem_idx=$rsem_idx"
@@ -84,7 +79,6 @@ _rsem_process_single_sample() {
 		rsem-calculate-expression \
 			--paired-end \
 			--bowtie2 \
-			--bowtie2-sensitivity-level "$bowtie2_mode" \
 			--num-threads "$threads_to_use" \
 			"$trimmed1" "$trimmed2" "$rsem_idx" "$out_dir/$SRR" 2>&1 | tee "$out_dir/${SRR}.rsem.log" || rsem_exit_code=$?
 	else
@@ -92,7 +86,6 @@ _rsem_process_single_sample() {
 		log_info "[RSEM QUANT] Using single-end reads for $SRR"
 		rsem-calculate-expression \
 			--bowtie2 \
-			--bowtie2-sensitivity-level "$bowtie2_mode" \
 			--num-threads "$threads_to_use" \
 			"$trimmed1" "$rsem_idx" "$out_dir/$SRR" 2>&1 | tee "$out_dir/${SRR}.rsem.log" || rsem_exit_code=$?
 	fi
@@ -125,11 +118,10 @@ _rsem_process_single_sample() {
 # ==============================================================================
 
 bowtie2_rsem_pipeline() {
-	local fasta="" rnaseq_list=() bowtie2_mode="${BOWTIE2_MODE}"
+	local fasta="" rnaseq_list=()
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
 			--FASTA) fasta="$2"; shift 2;;
-			--BOWTIE2_MODE) bowtie2_mode="$2"; shift 2;;
 			--RNASEQ_LIST)
 				shift
 				while [[ $# -gt 0 && ! "$1" =~ ^-- ]]; do rnaseq_list+=("$1"); shift; done;;
@@ -137,30 +129,9 @@ bowtie2_rsem_pipeline() {
 		esac
 	done
 
-	[[ -z "$fasta" ]] && { log_error "Usage: --FASTA genes.fa [--BOWTIE2_MODE sensitive]"; return 1; }
+	[[ -z "$fasta" ]] && { log_error "Usage: --FASTA genes.fa"; return 1; }
 	[[ ${#rnaseq_list[@]} -eq 0 ]] && rnaseq_list=("${SRR_COMBINED_LIST[@]}")
 	
-	# Validate bowtie2 mode - RSEM accepts: very_sensitive, sensitive, fast, very_fast
-	# Convert hyphenated/local modes to underscore format for RSEM compatibility
-	case "$bowtie2_mode" in
-		very-sensitive-local|very-sensitive|very_sensitive)
-			bowtie2_mode="very_sensitive"
-			;;
-		sensitive-local|sensitive)
-			bowtie2_mode="sensitive"
-			;;
-		fast-local|fast)
-			bowtie2_mode="fast"
-			;;
-		very-fast-local|very-fast|very_fast)
-			bowtie2_mode="very_fast"
-			;;
-		*)
-			log_warn "[BOWTIE2] Unknown mode '$bowtie2_mode', defaulting to 'sensitive'"
-			bowtie2_mode="sensitive"
-			;;
-	esac
-	log_info "[BOWTIE2] Using RSEM alignment mode: $bowtie2_mode"
 	
 	# Convert line endings if dos2unix is available
 	command -v dos2unix >/dev/null 2>&1 && dos2unix "$fasta" 2>/dev/null || true
@@ -173,7 +144,7 @@ bowtie2_rsem_pipeline() {
 	mkdir -p "$RSEM_INDEX_ROOT" "$quant_root" "$matrix_dir"
 
 	# BUILD RSEM REFERENCE
-	if [[ -f "${rsem_idx}.grp" ]]; then
+	if [[ -f "${rsem_idx}.grp" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 		log_info "[RSEM INDEX] RSEM reference already exists. Skipping."
 	else
 		log_step "Building RSEM reference for $tag"
@@ -185,15 +156,15 @@ bowtie2_rsem_pipeline() {
 
 	# QUANTIFY SAMPLES - PARALLEL OR SEQUENTIAL
 	if _rsem_should_use_parallel && [[ ${#rnaseq_list[@]} -gt 1 ]]; then
-		_rsem_quantify_parallel "$rsem_idx" "$quant_root" "$bowtie2_mode" rnaseq_list[@]
+		_rsem_quantify_parallel "$rsem_idx" "$quant_root" rnaseq_list[@]
 	else
-		_rsem_quantify_sequential "$rsem_idx" "$quant_root" "$bowtie2_mode" rnaseq_list[@]
+		_rsem_quantify_sequential "$rsem_idx" "$quant_root" rnaseq_list[@]
 	fi
 
 	# GENERATE MATRICES
-	_create_rsem_matrices "$fasta" "$tag" "$quant_root" "$matrix_dir" "$bowtie2_mode" rnaseq_list[@]
+	_create_rsem_matrices "$fasta" "$tag" "$quant_root" "$matrix_dir" rnaseq_list[@]
 	
-	log_step "COMPLETED: Bowtie2-RSEM pipeline for $tag (mode: $bowtie2_mode)"
+	log_step "COMPLETED: Bowtie2-RSEM pipeline for $tag"
 }
 
 # ==============================================================================
@@ -203,8 +174,7 @@ bowtie2_rsem_pipeline() {
 _rsem_quantify_sequential() {
 	local rsem_idx="$1"
 	local quant_root="$2"
-	local bowtie2_mode="$3"
-	local arr_name="${4:-}"
+	local arr_name="${3:-}"
 	
 	# Expand array from indirect reference
 	local samples=()
@@ -218,7 +188,7 @@ _rsem_quantify_sequential() {
 	log_info "[RSEM QUANT] Running SEQUENTIAL quantification for ${#samples[@]} samples (threads per job: $THREADS)"
 	
 	for SRR in "${samples[@]}"; do
-		_rsem_process_single_sample "$SRR" "$rsem_idx" "$quant_root" "$bowtie2_mode" "$THREADS"
+		_rsem_process_single_sample "$SRR" "$rsem_idx" "$quant_root" "$THREADS"
 	done
 }
 
@@ -229,13 +199,11 @@ _rsem_quantify_sequential() {
 _rsem_quantify_parallel() {
 	local rsem_idx="$1"
 	local quant_root="$2"
-	local bowtie2_mode="$3"
-	local arr_name="${4:-}"
+	local arr_name="${3:-}"
 	
 	# Debug: Log received parameters
 	log_info "[RSEM DEBUG] rsem_idx=$rsem_idx"
 	log_info "[RSEM DEBUG] quant_root=$quant_root"
-	log_info "[RSEM DEBUG] bowtie2_mode=$bowtie2_mode"
 	log_info "[RSEM DEBUG] arr_name='$arr_name'"
 	
 	# Expand array from indirect reference
@@ -279,7 +247,7 @@ _rsem_quantify_parallel() {
 	local abs_error_warn_file="${ERROR_WARN_FILE:-}"
 	[[ -n "$abs_error_warn_file" && "$abs_error_warn_file" != /* ]] && abs_error_warn_file="$(pwd)/$abs_error_warn_file"
 	
-	export rsem_idx quant_root bowtie2_mode threads_per_job abs_trim_dir_root abs_error_warn_file
+	export rsem_idx quant_root threads_per_job abs_trim_dir_root abs_error_warn_file OVERWRITE_MODE
 	
 	# Note: We inline find_trimmed_fastq logic in the worker to avoid function export issues
 	
@@ -311,7 +279,7 @@ _rsem_quantify_parallel() {
 		mkdir -p "$out_dir"
 		
 		# Skip if already processed
-		if [[ -f "$out_dir/${SRR}.genes.results" ]]; then
+		if [[ -f "$out_dir/${SRR}.genes.results" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 			echo "[RSEM QUANT] Results for $SRR already exist. Skipping."
 			return 0
 		fi
@@ -366,13 +334,11 @@ _rsem_quantify_parallel() {
 			rsem-calculate-expression \
 				--paired-end \
 				--bowtie2 \
-				--bowtie2-sensitivity-level "$bowtie2_mode" \
 				--num-threads "$threads_per_job" \
 				"$trimmed1" "$trimmed2" "$rsem_idx" "$out_dir/$SRR" 2>&1 | tee "$rsem_log" || rsem_exit_code=$?
 		else
 			rsem-calculate-expression \
 				--bowtie2 \
-				--bowtie2-sensitivity-level "$bowtie2_mode" \
 				--num-threads "$threads_per_job" \
 				"$trimmed1" "$rsem_idx" "$out_dir/$SRR" 2>&1 | tee "$rsem_log" || rsem_exit_code=$?
 		fi
@@ -425,8 +391,8 @@ _rsem_quantify_parallel() {
 		--env keep_bam_global \
 		--env rsem_idx \
 		--env quant_root \
-		--env bowtie2_mode \
 		--env threads_per_job \
+		--env OVERWRITE_MODE \
 		-j "$parallel_jobs" \
 		--joblog "$quant_root/parallel_rsem.log" \
 		--progress \
@@ -455,8 +421,7 @@ _create_rsem_matrices() {
 	local tag="$2"
 	local quant_root="$3"
 	local matrix_dir="$4"
-	local bowtie2_mode="$5"
-	local arr_name="${6:-}"
+	local arr_name="${5:-}"
 
 	# Expand array from indirect reference
 	local samples=()
@@ -492,7 +457,7 @@ _create_rsem_matrices() {
 	fi
 	
 	# Prepare DESeq2 outputs
-	_prepare_rsem_deseq2_output "$tag" "$quant_root" "$matrix_dir" "$bowtie2_mode" samples[@]
+	_prepare_rsem_deseq2_output "$tag" "$quant_root" "$matrix_dir" samples[@]
 }
 
 _create_gene_trans_map_rsem() {
@@ -591,8 +556,7 @@ _prepare_rsem_deseq2_output() {
 	local tag="$1"
 	local quant_root="$2"
 	local matrix_dir="$3"
-	local bowtie2_mode="$4"
-	local arr_name="${5:-}"
+	local arr_name="${4:-}"
 
 	# Expand array from indirect reference
 	local srr_list=()
@@ -645,7 +609,7 @@ _prepare_rsem_deseq2_output() {
 	fi
 	
 	# Create summary
-	_create_rsem_summary "$tag" "$quant_root" "$deseq2_dir" "$bowtie2_mode" srr_list[@]
+	_create_rsem_summary "$tag" "$quant_root" "$deseq2_dir" srr_list[@]
 	
 	# Validate
 	[[ -f "$gene_count_matrix" ]] && validate_count_matrix "$gene_count_matrix" "gene" 2
@@ -659,8 +623,7 @@ _create_rsem_summary() {
 	local tag="$1"
 	local quant_root="$2"
 	local deseq2_dir="$3"
-	local bowtie2_mode="$4"
-	local arr_name="${5:-}"
+	local arr_name="${4:-}"
 	
 	# Expand array from indirect reference
 	local srr_list=()
@@ -680,13 +643,7 @@ _create_rsem_summary() {
 		echo "==================================================================="
 		echo "Date: $(date)"
 		echo "Samples processed: ${#srr_list[@]}"
-		echo "Method: RSEM with Bowtie2 alignment ($bowtie2_mode)"
-		echo ""
-		echo "Bowtie2 mode options (RSEM uses end-to-end mode):"
-		echo "  very_sensitive: Most thorough (slower, best accuracy)"
-		echo "  sensitive: Balanced (default)"
-		echo "  fast: Faster"
-		echo "  very_fast: Fastest (less accurate)"
+		echo "Method: RSEM with Bowtie2 alignment (default parameters)"
 		echo ""
 		echo "Per-sample statistics:"
 		echo "-------------------------------------------------------------------"

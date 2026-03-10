@@ -51,7 +51,7 @@ hisat2_ref_guided_pipeline() {
 
 	# BUILD HISAT2 REFERENCE-GUIDED INDEX
 	mkdir -p "$HISAT2_REF_GUIDED_INDEX_DIR"
-	if ls "${index_prefix}".*.ht2 >/dev/null 2>&1; then
+	if ls "${index_prefix}".*.ht2 >/dev/null 2>&1 && [[ "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 		log_info "[INDEX] Ref-Guided index exists - skipping build"
 	else
 		log_step "Building HISAT2 Ref-Guided index: $fasta_base"
@@ -133,22 +133,24 @@ hisat2_ref_guided_pipeline() {
 			local bam="$HISAT2_DIR/${SRR}_${fasta_tag}_ref_guided_mapped_sorted.bam"
 			local sam="$HISAT2_DIR/${SRR}_${fasta_tag}_ref_guided_mapped.sam"
 
-			if [[ -f "$bam" && -f "${bam}.bai" ]]; then
+			if [[ -f "$bam" && -f "${bam}.bai" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 				_parallel_log HISAT2_RG "$SRR" INFO "BAM exists - skipping alignment"
 			else
 				_parallel_log HISAT2_RG "$SRR" INFO "Aligning with $threads_per_job threads"
 				local align_exit=0
 				if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
 					hisat2 -p "$threads_per_job" -x "$index_prefix" \
-						-1 "$trimmed1" -2 "$trimmed2" -S "$sam" 2>&1 || align_exit=$?
+						-1 "$trimmed1" -2 "$trimmed2" -S "$sam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
+					align_exit=${PIPESTATUS[0]}
 				else
 					hisat2 -p "$threads_per_job" -x "$index_prefix" \
-						-U "$trimmed1" -S "$sam" 2>&1 || align_exit=$?
+						-U "$trimmed1" -S "$sam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
+					align_exit=${PIPESTATUS[0]}
 				fi
 				[[ $align_exit -ne 0 ]] && { _parallel_log HISAT2_RG "$SRR" ERROR "HISAT2 failed (exit=$align_exit)"; return $align_exit; }
 
-				samtools sort -@ "$threads_per_job" -o "$bam" "$sam" 2>&1 || { _parallel_log HISAT2_RG "$SRR" ERROR "samtools sort failed"; return 1; }
-				samtools index -@ "$threads_per_job" "$bam" 2>&1 || true
+				samtools sort -@ "$threads_per_job" -o "$bam" "$sam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g' || { _parallel_log HISAT2_RG "$SRR" ERROR "samtools sort failed"; return 1; }
+				samtools index -@ "$threads_per_job" "$bam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g' || true
 				rm -f "$sam"
 			fi
 
@@ -158,7 +160,7 @@ hisat2_ref_guided_pipeline() {
 			local out_gtf="$out_dir/${SRR}_${fasta_tag}_ref_guided_stringtie_assembled.gtf"
 			mkdir -p "$out_dir" "$ballgown_dir"
 
-			if [[ -f "$out_gtf" ]]; then
+			if [[ -f "$out_gtf" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 				_parallel_log HISAT2_RG "$SRR" INFO "Assembly exists - skipping"
 			else
 				_parallel_log HISAT2_RG "$SRR" INFO "Assembling transcripts (ref-guided)"
@@ -178,6 +180,7 @@ hisat2_ref_guided_pipeline() {
 			--env abs_trim_dir_root --env abs_error_warn_file --env keep_bam_global \
 			--env fasta_tag --env index_prefix --env threads_per_job \
 			--env abs_hisat2_rg_root --env abs_stringtie_rg_root --env abs_gtf \
+			--env OVERWRITE_MODE \
 			-j "$parallel_jobs" \
 			--halt soon,fail=1 \
 			--joblog "$HISAT2_REF_GUIDED_ROOT/parallel_hisat2_refguided_align.log" \
@@ -198,7 +201,7 @@ hisat2_ref_guided_pipeline() {
 			local bam="$HISAT2_DIR/${SRR}_${fasta_tag}_ref_guided_mapped_sorted.bam"
 			local sam="$HISAT2_DIR/${SRR}_${fasta_tag}_ref_guided_mapped.sam"
 
-			if [[ -f "$bam" && -f "${bam}.bai" ]]; then
+			if [[ -f "$bam" && -f "${bam}.bai" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 				log_info "[ALIGN] BAM exists for $SRR/$fasta_tag - skipping"
 			else
 				log_step "Aligning: $SRR -> $fasta_tag (HISAT2 Ref-Guided)"
@@ -222,7 +225,7 @@ hisat2_ref_guided_pipeline() {
 			local ballgown_dir="$out_dir/ballgown"
 			mkdir -p "$out_dir" "$ballgown_dir"
 
-			if [[ -f "$out_gtf" ]]; then
+			if [[ -f "$out_gtf" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 				log_info "[STRINGTIE] Assembly exists for $SRR/$fasta_tag - skipping"
 			else
 				log_step "Assembling transcripts: $SRR -> $fasta_tag"
@@ -247,7 +250,7 @@ hisat2_ref_guided_pipeline() {
 		[[ -f "$out_gtf" ]] && echo "$out_gtf" >> "$gtf_list"
 	done
 	
-	if [[ ! -f "$merged_gtf" ]]; then
+	if [[ ! -f "$merged_gtf" || "${OVERWRITE_MODE:-skip}" == "overwrite" ]]; then
 		log_info "[STRINGTIE MERGE] Merging GTF files..."
 		run_with_space_time_log stringtie --merge -p "$THREADS" -G "$gtf" -o "$merged_gtf" "$gtf_list"
 	fi
@@ -303,6 +306,7 @@ hisat2_ref_guided_pipeline() {
 			--env abs_error_warn_file --env keep_bam_global \
 			--env fasta_tag --env threads_per_job \
 			--env abs_hisat2_rg_root --env abs_stringtie_rg_root --env abs_merged_gtf \
+			--env OVERWRITE_MODE \
 			-j "$parallel_jobs" \
 			--halt soon,fail=1 \
 			--joblog "$HISAT2_REF_GUIDED_ROOT/parallel_hisat2_refguided_reestimate.log" \
