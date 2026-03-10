@@ -10,6 +10,16 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_ROOT" || exit 1
 
 # ==============================================================================
+# EXECUTION MODE
+# ==============================================================================
+# skip      - Skip pipeline steps whose output files already exist (default)
+#             Use this to resume an interrupted run without redoing finished work.
+# overwrite - Re-run all steps, overwriting any existing output files.
+#             Use this to force a clean rerun of the entire pipeline.
+OVERWRITE_MODE="${OVERWRITE_MODE:-overwrite}"
+export OVERWRITE_MODE
+
+# ==============================================================================
 # CONFIGURATION FILE SELECTION
 # ==============================================================================
 # Comment/uncomment to select which configuration to load
@@ -17,61 +27,45 @@ cd "$PROJECT_ROOT" || exit 1
 # ==============================================================================
 
 CONFIG_FILES=(
-	#"config/HPC_full_run_config_TEST.sh"
+	# DOWNLOAD, TRIM, 
 	#"config/HPC_full_run_config_DOWNLOAD.sh"
-	"config/HPC_full_run_config_STAR_TEST.sh"
-	#"config/HPC_full_run_config.sh"		# Full HPC run configuration
-	#"config/local_test_config.sh"		# Local testing configuration
+	
+	# TEST
+	#"config/HPC_full_run_config_TEST.sh"
+	#"config/HPC_full_run_config_HISAT2_TEST.sh" 		# Oks na to
+	#"config/HPC_full_run_config_STAR_TEST.sh"			# Oks na rin 'to'
+	#"config/HPC_full_run_config_SALMON_BOWTIE2_TEST.sh"
+
+	# FULL RUN 
+	"config/HPC_full_run_config_RefGuided.sh"			# Combined 
+	#"config/HPC_full_run_config_Non_RefGuided.sh"
+
+	#"config/HPC_full_run_config.sh"					# Full HPC run configuration
+	#"config/local_test_config.sh"						# Local testing configuration
 )
-
-# Source the selected configuration file(s)
-for config_file in "${CONFIG_FILES[@]}"; do
-	if [[ -f "$config_file" ]]; then
-		echo "Loading configuration: $config_file"
-		source "$config_file"
-	else
-		echo "ERROR: Configuration file not found: $config_file"
-		exit 1
-	fi
-done
-
-# ==============================================================================
-# DIRECTORY STRUCTURE AND OUTPUT PATHS
-# ==============================================================================
-
-# Create required preprocessing directories (method dirs created dynamically by set_fasta_output_dirs)
-mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT"
-
-# ==============================================================================
-# CLEANUP OPTIONS AND TESTING ESSENTIALS
-# ==============================================================================
-
-#rm -rf "$RAW_DIR_ROOT"                   # Remove previous raw SRR files
-#rm -rf "$FASTQC_ROOT"                   # Remove previous FastQC results
-#rm -rf "$HISAT2_DE_NOVO_ROOT"           # Remove previous HISAT2 results
-#rm -rf "$HISAT2_DE_NOVO_INDEX_DIR"      # Remove previous HISAT2 index
-#rm -rf "$STRINGTIE_HISAT2_DE_NOVO_ROOT" # Remove previous StringTie results
 
 # ==============================================================================
 # MAIN EXECUTION FUNCTIONS
 # ==============================================================================
 
-# Convert array to boolean flags for backward compatibility
-RUN_MAMBA_INSTALLATION=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^MAMBA_INSTALLATION$" && echo "TRUE" || echo "FALSE")
-RUN_DOWNLOAD_SRR=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^DOWNLOAD_SRR$" && echo "TRUE" || echo "FALSE")
-RUN_TRIM_SRR=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^TRIM_SRR$" && echo "TRUE" || echo "FALSE")
-RUN_DOWNLOAD_TRIM_and_DELETE_RAW_SRR=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^DOWNLOAD_TRIM_and_DELETE_RAW_SRR$" && echo "TRUE" || echo "FALSE")
-RUN_GZIP_TRIMMED_FILES=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^GZIP_TRIMMED_FILES$" && echo "TRUE" || echo "FALSE")
-RUN_DELETE_RAW_SRR=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^DELETE_RAW_SRR$" && echo "TRUE" || echo "FALSE")
-RUN_QUALITY_CONTROL=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^QUALITY_CONTROL$" && echo "TRUE" || echo "FALSE")
-RUN_METHOD_1_HISAT2_REF_GUIDED=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^METHOD_1_HISAT2_REF_GUIDED$" && echo "TRUE" || echo "FALSE")
-RUN_METHOD_2_HISAT2_DE_NOVO=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^METHOD_2_HISAT2_DE_NOVO$" && echo "TRUE" || echo "FALSE")
-RUN_METHOD_3_STAR_ALIGNMENT=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^METHOD_3_STAR_ALIGNMENT$" && echo "TRUE" || echo "FALSE")
-RUN_METHOD_4_SALMON_SAF=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^METHOD_4_SALMON_SAF$" && echo "TRUE" || echo "FALSE")
-RUN_METHOD_5_BOWTIE2_RSEM=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^METHOD_5_BOWTIE2_RSEM$" && echo "TRUE" || echo "FALSE")
-RUN_HEATMAP_WRAPPER=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^HEATMAP_WRAPPER$" && echo "TRUE" || echo "FALSE")
-RUN_ZIP_RESULTS=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^ZIP_RESULTS$" && echo "TRUE" || echo "FALSE")
-RUN_DELETE_TRIMMED_FASTQ_FILES=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^DELETE_TRIMMED_FASTQ_FILES$" && echo "TRUE" || echo "FALSE")
+# Convert PIPELINE_STAGES array to boolean flags for backward compatibility
+set_pipeline_flags() {
+	RUN_MAMBA_INSTALLATION=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^MAMBA_INSTALLATION$" && echo "TRUE" || echo "FALSE")
+	RUN_DOWNLOAD_SRR=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^DOWNLOAD_SRR$" && echo "TRUE" || echo "FALSE")
+	RUN_TRIM_SRR=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^TRIM_SRR$" && echo "TRUE" || echo "FALSE")
+	RUN_DOWNLOAD_TRIM_and_DELETE_RAW_SRR=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^DOWNLOAD_TRIM_and_DELETE_RAW_SRR$" && echo "TRUE" || echo "FALSE")
+	RUN_GZIP_TRIMMED_FILES=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^GZIP_TRIMMED_FILES$" && echo "TRUE" || echo "FALSE")
+	RUN_DELETE_RAW_SRR=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^DELETE_RAW_SRR$" && echo "TRUE" || echo "FALSE")
+	RUN_QUALITY_CONTROL=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^QUALITY_CONTROL$" && echo "TRUE" || echo "FALSE")
+	RUN_METHOD_1_HISAT2_REF_GUIDED=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^METHOD_1_HISAT2_REF_GUIDED$" && echo "TRUE" || echo "FALSE")
+	RUN_METHOD_2_HISAT2_DE_NOVO=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^METHOD_2_HISAT2_DE_NOVO$" && echo "TRUE" || echo "FALSE")
+	RUN_METHOD_3_STAR_ALIGNMENT=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^METHOD_3_STAR_ALIGNMENT$" && echo "TRUE" || echo "FALSE")
+	RUN_METHOD_4_SALMON_SAF=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^METHOD_4_SALMON_SAF$" && echo "TRUE" || echo "FALSE")
+	RUN_METHOD_5_BOWTIE2_RSEM=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^METHOD_5_BOWTIE2_RSEM$" && echo "TRUE" || echo "FALSE")
+	RUN_HEATMAP_WRAPPER=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^HEATMAP_WRAPPER$" && echo "TRUE" || echo "FALSE")
+	RUN_ZIP_RESULTS=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^ZIP_RESULTS$" && echo "TRUE" || echo "FALSE")
+	RUN_DELETE_TRIMMED_FASTQ_FILES=$(printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^DELETE_TRIMMED_FASTQ_FILES$" && echo "TRUE" || echo "FALSE")
+}
 
 run_all() {
 	# Main pipeline entrypoint: runs all steps for each FASTA and RNA-seq list
@@ -228,104 +222,136 @@ run_all() {
 }
 
 # ==============================================================================
-# SCRIPT EXECUTION
+# SCRIPT EXECUTION — LOOP THROUGH CONFIG FILES
 # ==============================================================================
 
-# Initialize logging and route to preprocessing directory
-setup_logging
-switch_log_stage "1_SRRs"
-
-# Call the function if installation is enabled
-if [[ $RUN_MAMBA_INSTALLATION == "TRUE" ]]; then
-	mamba_install
+if [[ ${#CONFIG_FILES[@]} -eq 0 ]]; then
+	echo "ERROR: No configuration files listed in CONFIG_FILES. Uncomment at least one."
+	exit 1
 fi
 
-if [[ $RUN_GZIP_TRIMMED_FILES == "TRUE" ]]; then
-	log_step "Gzipping trimmed FASTQ files to save space"
-	gzip_trimmed_fastq_files
-fi
+for config_file in "${CONFIG_FILES[@]}"; do
+	echo ""
+	echo "=============================================================================="
+	echo "  LOADING CONFIGURATION: $config_file"
+	echo "=============================================================================="
 
-# Execute the pipeline for each FASTA input file
-for fasta_input in "${ALL_FASTA_FILES[@]}"; do
-	# Run the complete pipeline for each FASTA file with all SRR samples
-	run_all --FASTA "$fasta_input" --RNASEQ_LIST "${SRR_COMBINED_LIST[@]}"
-done
-
-# ==============================================================================
-# POST-PROCESSING: HEATMAP WRAPPER EXECUTION for HISAT2 DE NOVO
-# ==============================================================================
-
-# Switch logging to post-processing directory
-switch_log_stage "3_POST_PROC"
-
-if [[ $RUN_HEATMAP_WRAPPER == "TRUE" ]]; then
-	log_step "Heatmap Wrapper post-processing enabled"
-	
-	# Navigate to post-processing directory
-	if [[ ! -d "$POST_PROC_ROOT" ]]; then
-		log_error "Directory '$POST_PROC_ROOT' not found"
+	# Source the configuration file
+	if [[ -f "$config_file" ]]; then
+		source "$config_file"
 	else
-		cd "$POST_PROC_ROOT" || {
-			log_error "Failed to change to $POST_PROC_ROOT directory"
-			exit 1
-		}
-		
-		# Execute the Heatmap Wrapper script for post-processing
-		if [[ -f "run_all_post_processing.sh" ]]; then
-			log_step "Executing Heatmap Wrapper post-processing script"
-			chmod +x ./*.sh
-			chmod +x run_all_post_processing.sh
-			
-			if bash "run_all_post_processing.sh" 2>&1; then
-				log_info "Heatmap Wrapper completed successfully"
-			else
-				exit_code=$?
-				log_error "Heatmap Wrapper failed with exit code $exit_code"
-			fi
-		else
-			log_warn "Heatmap Wrapper script 'run_all_post_processing.sh' not found - skipping"
-		fi
-		
-		# Return to original directory
-		cd - > /dev/null || log_warn "Failed to return to previous directory"
+		echo "ERROR: Configuration file not found: $config_file"
+		exit 1
 	fi
-fi
 
-# ==============================================================================
-# POST-PROCESSING OPTIONS (COMMENTED OUT)
-# ==============================================================================
+	# Set RUN_* boolean flags from PIPELINE_STAGES
+	set_pipeline_flags
 
-if [[ $RUN_ZIP_RESULTS == "TRUE" ]]; then
-	# Optional: Archive StringTie results for sharing or backup
-	#tar -czvf "stringtie_results_$(date +%Y%m%d_%H%M%S).tar.gz" "$STRINGTIE_HISAT2_DE_NOVO_ROOT"
-	#tar -czvf HISAT2_DE_NOVO_ROOT_HPC_$(date +%Y%m%d_%H%M%S).tar.gz $HISAT2_DE_NOVO_ROOT
-	#tar -czvf 4b_Method_2_HISAT2_De_Novo_$(date +%Y%m%d_%H%M%S).tar.gz 4b_Method_2_HISAT2_De_Novo/
-	log_step "Creating compressed archive for folders: $POST_PROC_ROOT and logs"
-	TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-	tar -c \
-		--exclude="${POST_PROC_ROOT}/M3_STAR_Align" \
-		"$POST_PROC_ROOT" \
-		1_SRRs/logs 2_ALIGNMENT_RESULTs/logs 3_POST_PROC/logs \
-		| pigz -p "$THREADS" > "CMSC244_${TIMESTAMP}.tar.gz"
-	log_info "Archive created: CMSC244_${TIMESTAMP}.tar.gz"
-fi
+	# Create required preprocessing directories
+	mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT"
 
-# ==============================================================================
-# CLEANUP: DELETE TRIMMED FASTQ FILES
-# ==============================================================================
+	# Initialize logging and route to preprocessing directory
+	setup_logging
+	switch_log_stage "1_SRRs"
 
-# Switch logging back to SRR directory for cleanup
-switch_log_stage "1_SRRs"
+	# Call the function if installation is enabled
+	if [[ $RUN_MAMBA_INSTALLATION == "TRUE" ]]; then
+		mamba_install
+	fi
 
-if [[ $RUN_DELETE_TRIMMED_FASTQ_FILES == "TRUE" ]]; then
-	log_step "Deleting trimmed FASTQ files for SRR_COMBINED_LIST"
-	delete_trimmed_fastq_by_srr_list "${SRR_COMBINED_LIST[@]}"
-fi
+	if [[ $RUN_GZIP_TRIMMED_FILES == "TRUE" ]]; then
+		log_step "Gzipping trimmed FASTQ files to save space"
+		gzip_trimmed_fastq_files
+	fi
 
-# ==============================================================================
-# SOFTWARE CATALOG
-# ==============================================================================
-catalog_all_software
+	# Execute the pipeline for each FASTA input file
+	for fasta_input in "${ALL_FASTA_FILES[@]}"; do
+		# Run the complete pipeline for each FASTA file with all SRR samples
+		run_all --FASTA "$fasta_input" --RNASEQ_LIST "${SRR_COMBINED_LIST[@]}"
+	done
+
+	# =========================================================================
+	# POST-PROCESSING: HEATMAP WRAPPER EXECUTION
+	# =========================================================================
+
+	# Switch logging to post-processing directory
+	switch_log_stage "3_POST_PROC"
+
+	if [[ $RUN_HEATMAP_WRAPPER == "TRUE" ]]; then
+		log_step "Heatmap Wrapper post-processing enabled"
+		
+		# Navigate to post-processing directory
+		if [[ ! -d "$POST_PROC_ROOT" ]]; then
+			log_error "Directory '$POST_PROC_ROOT' not found"
+		else
+			cd "$POST_PROC_ROOT" || {
+				log_error "Failed to change to $POST_PROC_ROOT directory"
+				exit 1
+			}
+			
+			# Execute the Heatmap Wrapper script for post-processing
+			if [[ -f "run_all_post_processing.sh" ]]; then
+				log_step "Executing Heatmap Wrapper post-processing script"
+				chmod +x ./*.sh
+				chmod +x run_all_post_processing.sh
+				
+				if bash "run_all_post_processing.sh" 2>&1; then
+					log_info "Heatmap Wrapper completed successfully"
+				else
+					exit_code=$?
+					log_error "Heatmap Wrapper failed with exit code $exit_code"
+				fi
+			else
+				log_warn "Heatmap Wrapper script 'run_all_post_processing.sh' not found - skipping"
+			fi
+			
+			# Return to project root
+			cd "$PROJECT_ROOT" || log_warn "Failed to return to project root"
+		fi
+	fi
+
+	# =========================================================================
+	# POST-PROCESSING: ZIP RESULTS
+	# =========================================================================
+
+	if [[ $RUN_ZIP_RESULTS == "TRUE" ]]; then
+		# Optional: Archive StringTie results for sharing or backup
+		#tar -czvf "stringtie_results_$(date +%Y%m%d_%H%M%S).tar.gz" "$STRINGTIE_HISAT2_DE_NOVO_ROOT"
+		#tar -czvf HISAT2_DE_NOVO_ROOT_HPC_$(date +%Y%m%d_%H%M%S).tar.gz $HISAT2_DE_NOVO_ROOT
+		#tar -czvf 4b_Method_2_HISAT2_De_Novo_$(date +%Y%m%d_%H%M%S).tar.gz 4b_Method_2_HISAT2_De_Novo/
+		log_step "Creating compressed archive for folders: $POST_PROC_ROOT and logs"
+		TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+		tar -c \
+			--exclude="${POST_PROC_ROOT}/M3_STAR_Align" \
+			"$POST_PROC_ROOT" \
+			1_SRRs/logs 2_ALIGNMENT_RESULTs/logs 3_POST_PROC/logs \
+			| pigz -p "$THREADS" > "CMSC244_${TIMESTAMP}.tar.gz"
+		log_info "Archive created: CMSC244_${TIMESTAMP}.tar.gz"
+	fi
+
+	# =========================================================================
+	# CLEANUP: DELETE TRIMMED FASTQ FILES
+	# =========================================================================
+
+	# Switch logging back to SRR directory for cleanup
+	switch_log_stage "1_SRRs"
+
+	if [[ $RUN_DELETE_TRIMMED_FASTQ_FILES == "TRUE" ]]; then
+		log_step "Deleting trimmed FASTQ files for SRR_COMBINED_LIST"
+		delete_trimmed_fastq_by_srr_list "${SRR_COMBINED_LIST[@]}"
+	fi
+
+	# =========================================================================
+	# SOFTWARE CATALOG
+	# =========================================================================
+	catalog_all_software
+
+	echo ""
+	echo "=============================================================================="
+	echo "  FINISHED CONFIG: $config_file"
+	echo "=============================================================================="
+
+done  # End of CONFIG_FILES loop
 
 # ==============================================================================
 # END OF SCRIPT
