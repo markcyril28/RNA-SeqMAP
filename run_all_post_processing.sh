@@ -119,23 +119,29 @@ METHODS=(
 #                        Supports: Basic_Heatmap, Tissue_Specificity, PCA, etc.
 #                        Heatmaps read from: count_matrices_from_stringtie/
 #
-# STAR+Salmon (M3): Requires Tximport_STAR for matrix creation (auto-run as preprocessing).
+# STAR+Salmon (M3): Matrix_Creation (3_Matrix_Creation_STAR.R) handles import when enabled.
+#                   Tximport_STAR preprocessing is skipped when Matrix_Creation is active.
 #                   Reads Salmon quant.sf from 2_ALIGNMENT_RESULTs/M3_STAR_Align/{MASTER_REFERENCE}/6_salmon/quant/
 #                   Heatmaps read from: count_matrices_from_STAR/
 #
-# Salmon (M4):    Requires Tximport_Salmon for matrix creation (auto-run as preprocessing).
+# Salmon (M4):    Matrix_Creation (3_Matrix_Creation_Salmon.R) handles import when enabled.
+#                 Tximport_Salmon preprocessing is skipped when Matrix_Creation is active.
 #                 Heatmaps read from: count_matrices_from_Salmon_Quant/
 #
-# RSEM (M5):      Requires Tximport_RSEM for matrix creation (auto-run as preprocessing).
+# RSEM (M5):      Matrix_Creation (3_Matrix_Creation_RSEM.R) handles import when enabled.
+#                 Tximport_RSEM preprocessing is skipped when Matrix_Creation is active.
 #                 Heatmaps read from: count_matrices_from_RSEM_Quant/
 
 ANALYSES=(
     #"Stringtie_Matrix"         # For M2 (HISAT2 DeNovo) ONLY - builds TPM/FPKM from StringTie abundance files
                                 # NOTE: Do NOT enable for M1 (handled by prepde_matrix_linker.sh automatically)
 
-    "Tximport_STAR"            # For STAR+Salmon (M3) - auto-run based on method
-    "Tximport_Salmon"          # For Salmon-based methods (M4) - auto-run based on method
-    "Tximport_RSEM"            # For RSEM-based methods (M5) - auto-run based on method
+    # NOTE: Tximport_* entries below are no-ops when Matrix_Creation is also enabled for the
+    # same method (M3/M4/M5) — preprocessing is skipped and Matrix_Creation handles import.
+    # Keep these entries for documentation or to run tximport standalone (without Matrix_Creation).
+    "Tximport_STAR"            # For STAR+Salmon (M3) - standalone tximport (skipped if Matrix_Creation active)
+    "Tximport_Salmon"          # For Salmon-based methods (M4) - standalone tximport (skipped if Matrix_Creation active)
+    "Tximport_RSEM"            # For RSEM-based methods (M5) - standalone tximport (skipped if Matrix_Creation active)
     "Matrix_Creation"          # For tximport methods only (M3/M4/M5) - NOT for HISAT2!
 
     "Basic_Heatmap"             # Works with all methods (auto-detects input path)

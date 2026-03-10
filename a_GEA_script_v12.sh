@@ -20,24 +20,25 @@ export OVERWRITE_MODE
 
 # Active configuration file — uncomment as needed:
 CONFIG_FILES=(
+	# --- Download & Trim ---
+	#"config/1_download_and_trim/HPC_download_and_trim.sh"		# Download + trim all SRRs
+
 	# --- Test runs (all M1-M5, 3 SRRs) ---
-	"config/HPC_test_genome_M1_M3.sh"			# M1 + M3 (genome FASTA)
-	#"config/HPC_test_transcript_M2_M4_M5.sh"	# M2 + M4 + M5 (transcript FASTA)
+	"config/2_alignment/HPC_test_genome_M1_M3.sh"				# M1 + M3 (genome FASTA)
+	#"config/2_alignment/HPC_test_transcript_M2_M4_M5.sh"		# M2 + M4 + M5 (transcript FASTA)
 
 	# --- Test runs (individual methods) ---
-	#"config/HPC_test_hisat2.sh"
-	#"config/HPC_test_star.sh"
-	#"config/HPC_test_salmon_bowtie2.sh"
-	#"config/HPC_test_genome.sh"
+	#"config/2_alignment/HPC_test_hisat2.sh"
+	#"config/2_alignment/HPC_test_star.sh"
+	#"config/2_alignment/HPC_test_salmon_bowtie2.sh"
+	#"config/2_alignment/HPC_test_genome.sh"
 
 	# --- Full runs ---
-	#"config/HPC_full_all_methods.sh"			# All methods (uncomment stages as needed)
-	#"config/HPC_full_ref_guided.sh"			# Reference-guided (M1 + M3)
-	#"config/HPC_full_non_ref_guided.sh"		# Non-reference-guided (M2 + M4 + M5)
-	#"config/HPC_full_hisat2.sh"				# HISAT2 De Novo full SRR list
+	#"config/2_alignment/HPC_full_ref_guided.sh"				# Reference-guided (M1 + M3)
+	#"config/2_alignment/HPC_full_non_ref_guided.sh"			# Non-reference-guided (M2 + M4 + M5)
 
 	# --- Local ---
-	#"config/local_test.sh"						# Local testing
+	#"config/2_alignment/local_test.sh"							# Local testing
 )
 
 # ==============================================================================
@@ -141,7 +142,7 @@ run_all() {
 		if [[ -z "$gtf_file" || ! -f "$gtf_file" ]]; then
 			log_error "GTF file required for reference-guided alignment: $gtf_file"
 			log_error "Skipping Method 1 — configure gtf_file variable"
-		elif hisat2_ref_guided_pipeline --FASTA "$fasta" --GTF "$gtf_file" --RNASEQ_LIST "${rnaseq_list[@]}"; then
+		elif hisat2_ref_guided_pipeline --FASTA "$fasta" --GTF "$gtf_file" --STRANDNESS FR --RNASEQ_LIST "${rnaseq_list[@]}"; then
 			log_info "Method 1 completed successfully"
 		else
 			log_error "Method 1 failed (exit code: $?) — continuing"
@@ -183,6 +184,7 @@ run_all() {
 	fi
 
 	compare_methods_summary "$fasta_tag"
+	catalog_all_software
 
 	end_time=$(date +%s)
 	elapsed=$((end_time - start_time))
@@ -226,19 +228,17 @@ for config_file in "${CONFIG_FILES[@]}"; do
 
 	if [[ $RUN_HEATMAP_WRAPPER == "TRUE" ]]; then
 		log_step "Heatmap Wrapper post-processing"
-		if [[ ! -d "$POST_PROC_ROOT" ]]; then
-			log_error "Directory '$POST_PROC_ROOT' not found"
+		# run_all_post_processing.sh lives at the project root, not in POST_PROC_ROOT.
+		# NOTE: For M3, MASTER_REFERENCE in run_all_post_processing.sh must match the
+		# fasta_tag derived from the genome FASTA used during STAR alignment
+		# (e.g., "Eggplant_V4.1" from Eggplant_V4.1.fa), which differs from the
+		# transcript FASTA tag used by M4/M5. Set accordingly before running.
+		if [[ ! -f "$PROJECT_ROOT/run_all_post_processing.sh" ]]; then
+			log_warn "run_all_post_processing.sh not found at $PROJECT_ROOT — skipping"
 		else
-			cd "$POST_PROC_ROOT" || { log_error "Failed to cd to $POST_PROC_ROOT"; exit 1; }
-			if [[ -f "run_all_post_processing.sh" ]]; then
-				chmod +x ./*.sh run_all_post_processing.sh
-				bash "run_all_post_processing.sh" 2>&1 \
-					&& log_info "Heatmap Wrapper completed successfully" \
-					|| log_error "Heatmap Wrapper failed with exit code $?"
-			else
-				log_warn "run_all_post_processing.sh not found — skipping"
-			fi
-			cd "$PROJECT_ROOT" || { log_error "Failed to return to project root"; exit 1; }
+			bash "$PROJECT_ROOT/run_all_post_processing.sh" 2>&1 \
+				&& log_info "Heatmap Wrapper completed successfully" \
+				|| log_error "Heatmap Wrapper failed with exit code $?"
 		fi
 	fi
 
@@ -259,8 +259,6 @@ for config_file in "${CONFIG_FILES[@]}"; do
 		log_step "Deleting trimmed FASTQ files"
 		delete_trimmed_fastq_by_srr_list "${SRR_COMBINED_LIST[@]}"
 	fi
-
-	catalog_all_software
 
 	echo ""
 	echo "=============================================================================="
