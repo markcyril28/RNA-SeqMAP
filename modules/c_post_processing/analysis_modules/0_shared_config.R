@@ -59,18 +59,29 @@ GPU_BACKEND <- "cpu"  # "cpu", "cuda", or "torch"
 # Use get_matrices_dir() for method-specific directory names
 CONSOLIDATED_BASE_DIR <- "Figure_Outputs"
 
-# Gene groups directory - use environment variable if set, otherwise compute from script location
+# Gene groups directory - use environment variable if set, otherwise derive from BASE_DIR
 GENE_GROUPS_DIR <- Sys.getenv("GENE_GROUPS_DIR", unset = "")
 if (GENE_GROUPS_DIR == "") {
-  ANALYSIS_MODULES_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", unset = ".")
-  GENE_GROUPS_DIR <- file.path(dirname(ANALYSIS_MODULES_DIR), "gene_groups")
+  base_dir_fallback <- Sys.getenv("BASE_DIR", unset = "")
+  if (nzchar(base_dir_fallback)) {
+    GENE_GROUPS_DIR <- file.path(base_dir_fallback, "inputs", "gene_groups")
+  } else {
+    # Last-resort: walk up two levels from ANALYSIS_MODULES_DIR to reach project root
+    ANALYSIS_MODULES_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", unset = ".")
+    GENE_GROUPS_DIR <- file.path(dirname(dirname(dirname(ANALYSIS_MODULES_DIR))), "inputs", "gene_groups")
+  }
 }
 
 # SRR CSV directory for sample labels
 SRR_CSV_DIR <- Sys.getenv("SRR_CSV_DIR", unset = "")
 if (SRR_CSV_DIR == "") {
-  ANALYSIS_MODULES_DIR_TMP <- Sys.getenv("ANALYSIS_MODULES_DIR", unset = ".")
-  SRR_CSV_DIR <- file.path(dirname(ANALYSIS_MODULES_DIR_TMP), "SRR_csv")
+  base_dir_fallback <- Sys.getenv("BASE_DIR", unset = "")
+  if (nzchar(base_dir_fallback)) {
+    SRR_CSV_DIR <- file.path(base_dir_fallback, "inputs", "SRR_csv")
+  } else {
+    ANALYSIS_MODULES_DIR_TMP <- Sys.getenv("ANALYSIS_MODULES_DIR", unset = ".")
+    SRR_CSV_DIR <- file.path(dirname(dirname(dirname(ANALYSIS_MODULES_DIR_TMP))), "inputs", "SRR_csv")
+  }
 }
 
 # Output subdirectories (include MASTER_REFERENCE as leaf for per-reference isolation)
@@ -82,8 +93,8 @@ OUTPUT_SUBDIRS <- list(
   WGCNA = file.path("III_Coexpression_WGCNA", MASTER_REFERENCE),
   DEA = file.path("V_Differential_Expression", MASTER_REFERENCE),
   GSEA = file.path("VI_Gene_Set_Enrichment", MASTER_REFERENCE),
-  DIM_REDUCTION = file.path("VII_Dimensionality_Reduction", MASTER_REFERENCE),
-  CORRELATION = file.path("VIII_Sample_Correlation", MASTER_REFERENCE),
+  DIM_REDUCTION = file.path("VII_PCA", MASTER_REFERENCE),
+  CORRELATION = file.path("VIII_Sample_Clustering", MASTER_REFERENCE),
   TISSUE_SPEC = file.path("IX_Tissue_Specificity", MASTER_REFERENCE)
 )
 
@@ -295,6 +306,8 @@ get_count_types <- function(method = CURRENT_METHOD) {
     "salmon" = c("tpm", "NumReads"),
     # RSEM: TPM for visualization, expected_count for DESeq2
     "rsem" = c("tpm", "expected_count"),
+    # STAR+Salmon: TPM for visualization, NumReads (Salmon offset counts) for DESeq2
+    "star" = c("tpm", "NumReads"),
     c("tpm")  # default
   )
 }

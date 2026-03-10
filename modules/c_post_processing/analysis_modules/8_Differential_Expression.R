@@ -202,29 +202,84 @@ create_de_heatmap <- function(dds, res_df, contrast_name, output_dir, n_top = 50
 }
 
 # ===============================================
+# M1-SPECIFIC INPUT FUNCTIONS
+# ===============================================
+
+# For M1 HISAT2 RefGuided: load the whole-genome integer count matrix produced by prepDE.py
+# (staged by prepde_matrix_linker.sh), then filter down to the requested gene group.
+load_m1_gene_group_counts <- function(gene_group, matrices_dir, master_ref) {
+  # Full genome matrix staged by prepde_matrix_linker.sh
+  deseq2_csv <- file.path(matrices_dir, master_ref, "deseq2_input", "gene_count_matrix.csv")
+  if (!file.exists(deseq2_csv)) {
+    return(list(success = FALSE, reason = paste("M1 count matrix not found:", deseq2_csv)))
+  }
+
+  full_matrix <- tryCatch(
+    as.matrix(read.csv(deseq2_csv, row.names = 1, check.names = FALSE)),
+    error = function(e) NULL
+  )
+  if (is.null(full_matrix) || nrow(full_matrix) == 0) {
+    return(list(success = FALSE, reason = "failed to read M1 count matrix"))
+  }
+
+  # Filter to gene group if a gene group CSV exists
+  gene_group_csv <- file.path(GENE_GROUPS_DIR, paste0(gene_group, ".csv"))
+  if (file.exists(gene_group_csv)) {
+    gdf <- tryCatch(read.csv(gene_group_csv, stringsAsFactors = FALSE, header = TRUE),
+                   error = function(e) NULL)
+    if (!is.null(gdf) && nrow(gdf) > 0) {
+      gene_ids <- if ("Gene_ID" %in% colnames(gdf)) trimws(gdf$Gene_ID) else trimws(gdf[[1]])
+      gene_ids <- gene_ids[nzchar(gene_ids)]
+      matched <- rownames(full_matrix)[rownames(full_matrix) %in% gene_ids]
+      if (length(matched) == 0) {
+        return(list(success = FALSE, reason = paste("no gene IDs matched in M1 matrix for", gene_group)))
+      }
+      full_matrix <- full_matrix[matched, , drop = FALSE]
+      cat("  M1: filtered to", nrow(full_matrix), "genes for", gene_group, "\n")
+    }
+  }
+
+  if (nrow(full_matrix) < MIN_GENES_DEA) {
+    return(list(success = FALSE,
+                reason = paste0("too few genes after filtering (", nrow(full_matrix),
+                                " < ", MIN_GENES_DEA, ")")))
+  }
+  list(success = TRUE, data = full_matrix, n_genes = nrow(full_matrix))
+}
+
+# ===============================================
 # MAIN DEA FUNCTION
 # ===============================================
 
 run_differential_expression <- function(config = NULL, matrices_dir = NULL) {
   if (is.null(config)) config <- load_runtime_config()
   ensure_output_dir(DEA_OUT_DIR)
-  
+
+  if (is.null(matrices_dir)) matrices_dir <- get_matrices_dir(CURRENT_METHOD)
+
   print_config_summary("DIFFERENTIAL EXPRESSION ANALYSIS", config)
-  
+
+  # M1 RefGuided: use prepDE.py integer count matrix from deseq2_input/
+  is_m1 <- grepl("M1_HISAT2_RefGuided", CURRENT_METHOD)
+
   successful <- 0
   total <- 0
-  
+
   for (gene_group in config$gene_groups) {
     cat("Processing:", gene_group, "\n")
-    
+
     output_dir <- file.path(DEA_OUT_DIR, gene_group)
     ensure_output_dir(output_dir)
-    
-    input_file <- build_input_path(gene_group, PROCESSING_LEVELS[1],
-                                   COUNT_TYPES[1], "geneID",
-                                   matrices_dir, config$master_reference)
-    
-    validation <- validate_and_read_matrix(input_file, MIN_GENES_DEA)
+
+    if (is_m1) {
+      validation <- load_m1_gene_group_counts(gene_group, matrices_dir, config$master_reference)
+    } else {
+      input_file <- build_input_path(gene_group, PROCESSING_LEVELS[1],
+                                     COUNT_TYPES[1], "geneID",
+                                     matrices_dir, config$master_reference)
+      validation <- validate_and_read_matrix(input_file, MIN_GENES_DEA)
+    }
+
     if (!validation$success) {
       cat("  Skipped:", validation$reason, "\n")
       next
