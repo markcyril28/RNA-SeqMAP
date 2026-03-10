@@ -67,7 +67,7 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 # ==============================================================================
 
 # Genome-based references (used by M1: HISAT2 Ref-Guided, M3: STAR)
-ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="0_INPUTs/gtf/reference/GPE001970.gtf"
+ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="0_INPUTs/gtf/reference/GPE001970_genome.gtf"
 
 gtf_file="${ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE}"
 
