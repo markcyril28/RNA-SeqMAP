@@ -1,6 +1,6 @@
 #!/bin/bash
 
-git stash && git pull
+#git stash && git pull
 
 # Init Setup - Convert to Unix line endings & set executable permissions
 
