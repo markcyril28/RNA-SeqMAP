@@ -66,14 +66,14 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 # INPUT FILES AND DATA SOURCES
 # ==============================================================================
 
-ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="0_INPUTs/gtf/reference/GPE001970_transcripts.gtf"
+ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="inputs/gtf/reference/GPE001970_transcripts.gtf"
 
-decoy="0_INPUTs/fasta/experimental/TEST.fasta"
+decoy="inputs/fasta/experimental/TEST.fasta"
 gtf_file="${ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE}"
 
 # FASTA Files for Analysis (transcripts, required for M4 and M5)
 ALL_FASTA_FILES=(
-	"0_INPUTs/fasta/reference_genomes/GPE001970_transcripts.fa"
+	"inputs/fasta/reference_genomes/GPE001970_transcripts.fa"
 )
 
 # ==============================================================================
@@ -125,16 +125,19 @@ mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT" \
 # CLEANUP OPTIONS AND TESTING ESSENTIALS
 # ==============================================================================
 # Uncomment lines below to remove previous results before re-running.
+# WARNING: These are destructive operations — verify before uncommenting.
 # ==============================================================================
 
+ACTIVATE_RM=FALSE
+
 # --- Method 4: Salmon SAF ---
-#rm -rf "$SALMON_SAF_ROOT"
-#rm -rf "$SALMON_INDEX_ROOT"
-#rm -rf "$SALMON_QUANT_ROOT"
-#rm -rf "$SALMON_SAF_MATRIX_ROOT"
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$SALMON_SAF_ROOT"
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$SALMON_INDEX_ROOT"
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$SALMON_QUANT_ROOT"
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$SALMON_SAF_MATRIX_ROOT"
 
 # --- Method 5: Bowtie2 + RSEM ---
-#rm -rf "$BOWTIE2_RSEM_ROOT"
-#rm -rf "$RSEM_INDEX_ROOT"
-#rm -rf "$RSEM_QUANT_ROOT"
-#rm -rf "$RSEM_MATRIX_ROOT"
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$BOWTIE2_RSEM_ROOT"
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$RSEM_INDEX_ROOT"
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$RSEM_QUANT_ROOT"
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$RSEM_MATRIX_ROOT"

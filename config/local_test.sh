@@ -65,25 +65,25 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 # ==============================================================================
 
 # Legacy GTF and FASTA references (commented out)
-#All_SmelGIF_GTF_FILE="0_INPUTs/All_SmelDMP_Head_Gene_Name_v4.gtf"
-Eggplant_V4_1_transcripts_function_FASTA_FILE="0_INPUTs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
-ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="0_INPUTs/gtf/reference/All_Smel_Genes_Full_Name_reformatted.gtf"
-decoy="0_INPUTs/fasta/experimental/TEST.fasta"
+#All_SmelGIF_GTF_FILE="inputs/All_SmelDMP_Head_Gene_Name_v4.gtf"
+Eggplant_V4_1_transcripts_function_FASTA_FILE="inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
+ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="inputs/gtf/reference/All_Smel_Genes_Full_Name_reformatted.gtf"
+decoy="inputs/fasta/experimental/TEST.fasta"
 gtf_file="${ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE}"
 
 # FASTA Files for Analysis
 ALL_FASTA_FILES=(
 	# List of FASTA files to process
-	#"0_INPUTs/fasta/reference_genomes/All_Smel_Genes.fasta"
-	"0_INPUTs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
-	#"0_INPUTs/fasta/experimental/TEST.fasta"
-	#"0_INPUTs/fasta/experimental/SmelGIF_with_Cell_Cycle_Control_genes.fasta"
-	#"0_INPUTs/fasta/experimental/SmelDMP_CDS_Control_Best.fasta"
-	#"0_INPUTs/fasta/experimental/SmelGIF_with_Best_Control_Cyclo.fasta"
-	#"0_INPUTs/fasta/experimental/SmelGRF_with_Best_Control_Cyclo.fasta"
-	#"0_INPUTs/fasta/experimental/SmelGRF-GIF_with_Best_Control_Cyclo.fasta"
-	#"0_INPUTs/fasta/control_genes/Control_Genes_Puta.fasta"
-	#"0_INPUTs/fasta/experimental/SmelGRF_with_Cell_Cycle_Control_genes.fasta"
+	#"inputs/fasta/reference_genomes/All_Smel_Genes.fasta"
+	"inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
+	#"inputs/fasta/experimental/TEST.fasta"
+	#"inputs/fasta/experimental/SmelGIF_with_Cell_Cycle_Control_genes.fasta"
+	#"inputs/fasta/experimental/SmelDMP_CDS_Control_Best.fasta"
+	#"inputs/fasta/experimental/SmelGIF_with_Best_Control_Cyclo.fasta"
+	#"inputs/fasta/experimental/SmelGRF_with_Best_Control_Cyclo.fasta"
+	#"inputs/fasta/experimental/SmelGRF-GIF_with_Best_Control_Cyclo.fasta"
+	#"inputs/fasta/control_genes/Control_Genes_Puta.fasta"
+	#"inputs/fasta/experimental/SmelGRF_with_Cell_Cycle_Control_genes.fasta"
 )
 
 # ==============================================================================
@@ -215,9 +215,17 @@ mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT" \
 # ==============================================================================
 # CLEANUP OPTIONS AND TESTING ESSENTIALS
 # ==============================================================================
+# Uncomment lines below to remove previous results before re-running.
+# WARNING: These are destructive operations — verify before uncommenting.
+# ==============================================================================
 
-#rm -rf "$RAW_DIR_ROOT"                   # Remove previous raw SRR files
-#rm -rf "$FASTQC_ROOT"                   # Remove previous FastQC results
-#rm -rf "$HISAT2_DE_NOVO_ROOT"           # Remove previous HISAT2 results
-#rm -rf "$HISAT2_DE_NOVO_INDEX_DIR"      # Remove previous HISAT2 index
-#rm -rf "$STRINGTIE_HISAT2_DE_NOVO_ROOT" # Remove previous StringTie results
+ACTIVATE_RM=FALSE
+
+# --- Preprocessing ---
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$RAW_DIR_ROOT"                   # Remove previous raw SRR files
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$FASTQC_ROOT"                    # Remove previous FastQC results
+
+# --- Method 2: HISAT2 De Novo ---
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_DE_NOVO_ROOT"            # Remove previous HISAT2 results
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_DE_NOVO_INDEX_DIR"       # Remove previous HISAT2 index
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STRINGTIE_HISAT2_DE_NOVO_ROOT"  # Remove previous StringTie results

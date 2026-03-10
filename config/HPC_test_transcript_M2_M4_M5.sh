@@ -1,16 +1,28 @@
 #!/bin/bash
 
 # ==============================================================================
+# TEST CONFIG: TRANSCRIPT-BASED METHODS (M2, M4, M5) — 3 SRRs
+# ==============================================================================
+# Methods tested:
+#   M2 — HISAT2 De Novo (transcript FASTA)
+#   M4 — Salmon SAF Quantification (transcript FASTA + genome decoy)
+#   M5 — Bowtie2 + RSEM (transcript FASTA)
+#
+# Part 2 of 2 for full M1-M5 test run.
+# Pair with HPC_test_genome_M1_M3.sh (M1, M3).
+# ==============================================================================
+
+# ==============================================================================
 # IMPORTANT PARAMETERS
 # ==============================================================================
 
 # Runtime Configuration
-THREADS=48                              # Threads for parallel operations
+THREADS=72                              # Threads for parallel operations
 JOBS=3									# Parallel jobs for GNU Parallel
 USE_GNU_PARALLEL="TRUE"                 # TRUE/FALSE for GNU Parallel
 keep_bam_global="n"                     # y=keep BAM files, n=delete after
 
-# Pipeline Stages (comment/uncomment to enable/disable)
+# Pipeline Stages
 PIPELINE_STAGES=(
 	#"MAMBA_INSTALLATION"
 
@@ -30,8 +42,8 @@ PIPELINE_STAGES=(
 	#"METHOD_1_HISAT2_REF_GUIDED"
 	"METHOD_2_HISAT2_DE_NOVO"
 	#"METHOD_3_STAR_ALIGNMENT"
-	#"METHOD_4_SALMON_SAF"
-	#"METHOD_5_BOWTIE2_RSEM"
+	"METHOD_4_SALMON_SAF"
+	"METHOD_5_BOWTIE2_RSEM"
 
 	#"HEATMAP_WRAPPER"
 	#"ZIP_RESULTS"
@@ -46,8 +58,6 @@ conda activate gea
 
 # ==============================================================================
 # SOURCE MODULES
-# ==============================================================================
-# Structure: logging/, a_preprocessing/, b_main_methods/, 0_input_information/
 # ==============================================================================
 
 source "modules/modules_loader.sh"
@@ -66,42 +76,31 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 # INPUT FILES AND DATA SOURCES
 # ==============================================================================
 
-ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="0_INPUTs/gtf/reference/GPE001970_transcripts.gtf"
-
+# Transcript-based references
+ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="inputs/gtf/reference/GPE001970_transcripts.gtf"
 gtf_file="${ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE}"
 
-# FASTA Files for Analysis
+# Genome file used as decoy for Salmon SAF (M4)
+decoy="inputs/fasta/experimental/TEST.fasta"
+
+# FASTA Files for Analysis (transcripts, required for M2, M4, and M5)
 ALL_FASTA_FILES=(
-	"0_INPUTs/fasta/reference_genomes/GPE001970_transcripts.fa"
+	"inputs/fasta/reference_genomes/GPE001970_transcripts.fa"
 )
 
 # ==============================================================================
-# RNA-SEQ DATA SOURCES (SRR LISTS)
+# RNA-SEQ DATA SOURCES (SRR LISTS) — 3 samples for testing
 # ==============================================================================
 
-SRR_LIST_PRJNA328564=(
+SRR_LIST_TEST=(
 	# Source: https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA328564&o=acc_s%3Aa
-	SRR3884686	# Buds_0.7cm (flower bud initiation) [MAIN INTEREST]
-	SRR3884687	# Opened_Buds (flower development) 	 [MAIN INTEREST]
-	SRR3884597	# Flowers (anthesis)/				 [MAIN INTEREST]
-)
-
-SRR_LIST_SAMN28540077=(
-	# Source: https://www.ncbi.nlm.nih.gov/Traces/study/?acc=SAMN28540077&o=acc_s%3Aa
-	SRR20722234	# Flowers
-	SRR4243802 # Buds, Adopted Dataset from ID: PRJNA341784
-)
-
-SRR_LIST_SAMN28540068=(
-	#Source: https://www.ncbi.nlm.nih.gov/Traces/study/?acc=SAMN28540068&o=acc_s%3Aa
-	SRR3884597 	# Flower
-	SRR20722297 # flower_buds
+	SRR3884686	# Buds_0.7cm (flower bud initiation)
+	SRR3884687	# Opened_Buds (flower development)
+	SRR3884597	# Flowers (anthesis)
 )
 
 SRR_COMBINED_LIST=(
-	"${SRR_LIST_PRJNA328564[@]}"	# Main Dataset for GEA.
-	#"${SRR_LIST_SAMN28540077[@]}"	# Chinese Dataset for replicability.
-	#"${SRR_LIST_SAMN28540068[@]}"	# Chinese Dataset for replicability.
+	"${SRR_LIST_TEST[@]}"
 )
 
 # ==============================================================================
@@ -111,23 +110,29 @@ SRR_COMBINED_LIST=(
 POST_PROC_ROOT="3_POST_PROC"
 export POST_PROC_ROOT
 
-# Create required directories
-mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT" \
-	"$HISAT2_REF_GUIDED_ROOT" "$HISAT2_REF_GUIDED_INDEX_DIR" "$STRINGTIE_HISAT2_REF_GUIDED_ROOT" \
-	"$HISAT2_DE_NOVO_ROOT" "$HISAT2_DE_NOVO_INDEX_DIR" "$STRINGTIE_HISAT2_DE_NOVO_ROOT" \
-	"$STAR_ALIGN_ROOT" "$STAR_INDEX_ROOT" "$STAR_GENOME_DIR" \
-	"$SALMON_SAF_ROOT" "$SALMON_INDEX_ROOT" "$SALMON_QUANT_ROOT" "$SALMON_SAF_MATRIX_ROOT" \
-	"$BOWTIE2_RSEM_ROOT" "$RSEM_INDEX_ROOT" "$RSEM_QUANT_ROOT" "$RSEM_MATRIX_ROOT" \
-	"$HISAT2_REF_GUIDED_MATRIX_ROOT" "$HISAT2_DE_NOVO_MATRIX_ROOT" "$STAR_MATRIX_ROOT"
-
 # ==============================================================================
 # CLEANUP OPTIONS AND TESTING ESSENTIALS
 # ==============================================================================
 # Uncomment lines below to remove previous results before re-running.
+# WARNING: These are destructive operations — verify before uncommenting.
 # ==============================================================================
 
+ACTIVATE_RM=FALSE
+
 # --- Method 2: HISAT2 De Novo ---
-#rm -rf "$HISAT2_DE_NOVO_ROOT"
-#rm -rf "$HISAT2_DE_NOVO_INDEX_DIR"
-#rm -rf "$STRINGTIE_HISAT2_DE_NOVO_ROOT"
-#rm -rf "$HISAT2_DE_NOVO_MATRIX_ROOT"
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_DE_NOVO_ROOT"
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_DE_NOVO_INDEX_DIR"
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STRINGTIE_HISAT2_DE_NOVO_ROOT"
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_DE_NOVO_MATRIX_ROOT"
+
+# --- Method 4: Salmon SAF ---
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$SALMON_SAF_ROOT"
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$SALMON_INDEX_ROOT"
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$SALMON_QUANT_ROOT"
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$SALMON_SAF_MATRIX_ROOT"
+
+# --- Method 5: Bowtie2 + RSEM ---
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$BOWTIE2_RSEM_ROOT"
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$RSEM_INDEX_ROOT"
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$RSEM_QUANT_ROOT"
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$RSEM_MATRIX_ROOT"

@@ -67,22 +67,22 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 # ==============================================================================
 
 # Legacy GTF and FASTA references (commented out)
-#All_SmelGIF_GTF_FILE="0_INPUTs/All_SmelDMP_Head_Gene_Name_v4.gtf"
-#Eggplant_V4_1_transcripts_function_FASTA_FILE="0_INPUTs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
-#ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="0_INPUTs/gtf/reference/Eggplant_V4.1_function_IPR_reformatted_v4.gtf"
-#ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="0_INPUTs/gtf/reference/GPE001970_transcripts.gtf"
-ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="0_INPUTs/gtf/reference/GPE001970.gtf"
+#All_SmelGIF_GTF_FILE="inputs/All_SmelDMP_Head_Gene_Name_v4.gtf"
+#Eggplant_V4_1_transcripts_function_FASTA_FILE="inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
+#ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="inputs/gtf/reference/Eggplant_V4.1_function_IPR_reformatted_v4.gtf"
+#ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="inputs/gtf/reference/GPE001970_transcripts.gtf"
+ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="inputs/gtf/reference/GPE001970.gtf"
 
-#decoy="0_INPUTs/fasta/experimental/TEST.fasta"
+#decoy="inputs/fasta/experimental/TEST.fasta"
 #gtf_file="${Eggplant_V4_1_transcripts_function_FASTA_FILE}"
 gtf_file="${ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE}"
 
 # FASTA Files for Analysis
 ALL_FASTA_FILES=(
 	# List of FASTA files to process
-	#"0_INPUTs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
-	#"0_INPUTs/fasta/reference_genomes/GPE001970_transcripts.fa"
-	"0_INPUTs/fasta/reference_genomes/GPE001970.fa"
+	#"inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
+	#"inputs/fasta/reference_genomes/GPE001970_transcripts.fa"
+	"inputs/fasta/reference_genomes/GPE001970.fa"
 )
 
 # ==============================================================================
@@ -206,7 +206,7 @@ export POST_PROC_ROOT
 mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT" \
 	"$HISAT2_REF_GUIDED_ROOT" "$HISAT2_REF_GUIDED_INDEX_DIR" "$STRINGTIE_HISAT2_REF_GUIDED_ROOT" \
 	"$HISAT2_DE_NOVO_ROOT" "$HISAT2_DE_NOVO_INDEX_DIR" "$STRINGTIE_HISAT2_DE_NOVO_ROOT" \
-	"$STAR_ALIGN_ROOT" "$STAR_INDEX_ROOT" "$STAR_GENOME_DIR" \
+	"$STAR_ALIGN_ROOT" "$STAR_INDEX_ROOT" \
 	"$SALMON_SAF_ROOT" "$SALMON_INDEX_ROOT" "$SALMON_QUANT_ROOT" "$SALMON_SAF_MATRIX_ROOT" \
 	"$BOWTIE2_RSEM_ROOT" "$RSEM_INDEX_ROOT" "$RSEM_QUANT_ROOT" "$RSEM_MATRIX_ROOT" \
 	"$HISAT2_REF_GUIDED_MATRIX_ROOT" "$HISAT2_DE_NOVO_MATRIX_ROOT" "$STAR_MATRIX_ROOT"
@@ -218,37 +218,38 @@ mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT" \
 # WARNING: These are destructive operations — verify before uncommenting.
 # ==============================================================================
 
+ACTIVATE_RM=FALSE
+
 # --- Preprocessing ---
-#rm -rf "$RAW_DIR_ROOT"                          # Raw SRR downloads
-#rm -rf "$TRIM_DIR_ROOT"                         # Trimmed FASTQ files
-#rm -rf "$FASTQC_ROOT"                           # FastQC reports
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$RAW_DIR_ROOT"                          # Raw SRR downloads
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$TRIM_DIR_ROOT"                         # Trimmed FASTQ files
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$FASTQC_ROOT"                           # FastQC reports
 
 # --- Method 1: HISAT2 Reference-Guided ---
-#rm -rf "$HISAT2_REF_GUIDED_ROOT"                # HISAT2 ref-guided alignments
-#rm -rf "$HISAT2_REF_GUIDED_INDEX_DIR"           # HISAT2 ref-guided index
-#rm -rf "$STRINGTIE_HISAT2_REF_GUIDED_ROOT"      # StringTie (ref-guided) assemblies
-#rm -rf "$HISAT2_REF_GUIDED_MATRIX_ROOT"         # Count matrices (ref-guided)
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_REF_GUIDED_ROOT"                # HISAT2 ref-guided alignments
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_REF_GUIDED_INDEX_DIR"           # HISAT2 ref-guided index
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STRINGTIE_HISAT2_REF_GUIDED_ROOT"      # StringTie (ref-guided) assemblies
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_REF_GUIDED_MATRIX_ROOT"         # Count matrices (ref-guided)
 
 # --- Method 2: HISAT2 De Novo ---
-#rm -rf "$HISAT2_DE_NOVO_ROOT"                   # HISAT2 de novo alignments
-#rm -rf "$HISAT2_DE_NOVO_INDEX_DIR"              # HISAT2 de novo index
-#rm -rf "$STRINGTIE_HISAT2_DE_NOVO_ROOT"         # StringTie (de novo) assemblies
-#rm -rf "$HISAT2_DE_NOVO_MATRIX_ROOT"            # Count matrices (de novo)
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_DE_NOVO_ROOT"                   # HISAT2 de novo alignments
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_DE_NOVO_INDEX_DIR"              # HISAT2 de novo index
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STRINGTIE_HISAT2_DE_NOVO_ROOT"         # StringTie (de novo) assemblies
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_DE_NOVO_MATRIX_ROOT"            # Count matrices (de novo)
 
 # --- Method 3: STAR Alignment ---
-rm -rf "$STAR_ALIGN_ROOT"                       # STAR alignment results
-rm -rf "$STAR_INDEX_ROOT"                       # STAR genome index
-rm -rf "$STAR_GENOME_DIR"                       # STAR genome directory
-rm -rf "$STAR_MATRIX_ROOT"                      # Count matrices (STAR)
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STAR_ALIGN_ROOT"                       # STAR alignment results (removes index + BAMs)
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STAR_INDEX_ROOT"                       # STAR genome index only
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$STAR_MATRIX_ROOT"                      # Count matrices (STAR)
 
 # --- Method 4: Salmon SAF ---
-#rm -rf "$SALMON_SAF_ROOT"                       # Salmon SAF root
-#rm -rf "$SALMON_INDEX_ROOT"                     # Salmon index
-#rm -rf "$SALMON_QUANT_ROOT"                     # Salmon quantification
-#rm -rf "$SALMON_SAF_MATRIX_ROOT"                # Count matrices (Salmon)
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$SALMON_SAF_ROOT"                       # Salmon SAF root
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$SALMON_INDEX_ROOT"                     # Salmon index
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$SALMON_QUANT_ROOT"                     # Salmon quantification
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$SALMON_SAF_MATRIX_ROOT"                # Count matrices (Salmon)
 
 # --- Method 5: Bowtie2 + RSEM ---
-#rm -rf "$BOWTIE2_RSEM_ROOT"                     # Bowtie2/RSEM root
-#rm -rf "$RSEM_INDEX_ROOT"                       # RSEM index
-#rm -rf "$RSEM_QUANT_ROOT"                       # RSEM quantification
-#rm -rf "$RSEM_MATRIX_ROOT"                      # Count matrices (RSEM)
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$BOWTIE2_RSEM_ROOT"                     # Bowtie2/RSEM root
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$RSEM_INDEX_ROOT"                       # RSEM index
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$RSEM_QUANT_ROOT"                       # RSEM quantification
+[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$RSEM_MATRIX_ROOT"                      # Count matrices (RSEM)
