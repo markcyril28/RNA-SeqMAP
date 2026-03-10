@@ -13,34 +13,36 @@
 export METHOD_CONFIG_SOURCED="true"
 
 # ==============================================================================
-# IMPORTANT PARAMETERS - MODIFY THESE AT TOP
+# IMPORTANT PARAMETERS (tweak here)
 # ==============================================================================
 
-# Thread Configuration
+# Total CPU threads available to the pipeline
 THREADS="${THREADS:-12}"
+# Base parallel job count; PARALLEL_JOBS inherits this if not set separately
 JOBS="${JOBS:-2}"
 
-# GNU Parallel Configuration
-# Number of concurrent sample processing jobs (requires GNU Parallel)
-# Each job receives THREADS/PARALLEL_JOBS threads
+# Concurrent sample jobs for GNU Parallel; each job gets THREADS/PARALLEL_JOBS threads
 PARALLEL_JOBS="${PARALLEL_JOBS:-${JOBS:-2}}"
 
-# BAM File Retention
-keep_bam_global="${keep_bam_global:-n}"  # y = keep BAM files, n = delete after processing
+# BAM retention: "y" = keep BAM files after processing, "n" = delete to save disk space
+keep_bam_global="${keep_bam_global:-n}"
 
 # ==============================================================================
 # BOWTIE2/RSEM CONFIGURATION
 # ==============================================================================
 
-# Bowtie2 alignment mode (options: very-sensitive-local, sensitive-local, fast-local, very-fast-local)
+# Alignment sensitivity (options: very-sensitive-local, sensitive-local, fast-local, very-fast-local)
 BOWTIE2_MODE="${BOWTIE2_MODE:-sensitive}"
 
 # ==============================================================================
 # STAR CONFIGURATION
 # ==============================================================================
 
+# Genome loading: NoSharedMemory (safe default), LoadAndKeep (faster multi-run on HPC)
 STAR_GENOME_LOAD="${STAR_GENOME_LOAD:-NoSharedMemory}"
+# Used to compute sjdbOverhang = read_length - 1; set to actual sequencing read length
 STAR_READ_LENGTH="${STAR_READ_LENGTH:-100}"
+# Strandedness: None (unstranded), Forward, Reverse
 STAR_STRAND_SPECIFIC="${STAR_STRAND_SPECIFIC:-None}"
 
 # ==============================================================================

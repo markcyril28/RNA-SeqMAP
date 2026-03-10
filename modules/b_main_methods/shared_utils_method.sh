@@ -292,38 +292,3 @@ _prepare_parallel_env() {
 	export abs_error_warn_file
 }
 
-# ==============================================================================
-# CROSS-METHOD VALIDATION
-# ==============================================================================
-
-compare_methods_summary() {
-	local fasta_tag="$1"
-	
-	log_step "Cross-Method Validation Summary for $fasta_tag"
-	log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-	
-	# Check each method's output
-	local methods=(
-		"Method 1 (HISAT2 Ref-Guided):$STRINGTIE_HISAT2_REF_GUIDED_ROOT/deseq2_input/gene_count_matrix.csv"
-		"Method 3 (STAR):$STAR_MATRIX_ROOT/gene_counts_tximport.tsv"
-		"Method 4 (Salmon SAF):$SALMON_SAF_MATRIX_ROOT/deseq2_input/gene_count_matrix.csv"
-		"Method 5 (Bowtie2+RSEM):$RSEM_MATRIX_ROOT/deseq2_input/gene_count_matrix.csv"
-	)
-	
-	for method_info in "${methods[@]}"; do
-		local method_name="${method_info%%:*}"
-		local matrix_file="${method_info#*:}"
-		
-		if [[ -f "$matrix_file" ]]; then
-			local genes=$(tail -n +2 "$matrix_file" | wc -l)
-			local delim=","
-			[[ "$matrix_file" == *.tsv ]] && delim=$'\t'
-			local samples=$(head -n1 "$matrix_file" | tr "$delim" '\n' | tail -n +2 | wc -l)
-			log_info "✅ $method_name: $genes genes, $samples samples"
-		else
-			log_info "❌ $method_name: Not found"
-		fi
-	done
-	
-	log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-}

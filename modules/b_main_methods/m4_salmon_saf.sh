@@ -17,11 +17,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/shared_utils_method.sh"
 
 # ==============================================================================
-# SALMON CONFIGURATION - IMPORTANT PARAMETERS AT TOP
+# SALMON CONFIGURATION - IMPORTANT PARAMETERS (tweak here)
 # ==============================================================================
 
-# Salmon quantification settings
+# k-mer size for Salmon index (31 is standard; reduce to 21 for very short reads)
 SALMON_KMER_SIZE="${SALMON_KMER_SIZE:-31}"
+# Number of bootstraps for uncertainty estimation (0 = off; 100 for sleuth/Swish)
 SALMON_NUM_BOOTSTRAPS="${SALMON_NUM_BOOTSTRAPS:-0}"
 
 # ==============================================================================
@@ -190,14 +191,14 @@ _create_salmon_matrices() {
 	local gene_trans_map="${fasta}.gene_trans_map"
 	if [[ ! -f "$gene_trans_map" ]]; then
 		log_info "[SALMON MATRIX] Creating gene-transcript mapping file..."
-		_create_gene_trans_map "$fasta" "$gene_trans_map"
+		create_gene_trans_map "$fasta" "$gene_trans_map"
 	fi
 	
 	# Generate matrices using Trinity's script or manual creation
 	if command -v abundance_estimates_to_matrix.pl >/dev/null 2>&1; then
 		log_info "[SALMON MATRIX] Running abundance_estimates_to_matrix.pl..."
 		run_with_space_time_log abundance_estimates_to_matrix.pl \
-			--est_method kallisto \
+			--est_method salmon \
 			--gene_trans_map "$gene_trans_map" \
 			--out_prefix "$matrix_dir/genes" \
 			--name_sample_by_basedir "$quant_root"/*/quant.sf || {
@@ -211,37 +212,6 @@ _create_salmon_matrices() {
 
 	# Prepare DESeq2-compatible outputs
 	_prepare_salmon_deseq2_output "$tag" "$quant_root" "$matrix_dir" srr_list[@]
-}
-
-_create_gene_trans_map() {
-	local fasta="$1"
-	local output="$2"
-	
-	local is_trinity=false
-	grep -q "^>TRINITY_" "$fasta" 2>/dev/null && is_trinity=true
-	
-	if [[ "$is_trinity" == "true" ]]; then
-		log_info "[SALMON MATRIX] Detected Trinity assembly format"
-		awk '/^>/ {
-			trans = $1; gsub(/^>/, "", trans)
-			gene = trans
-			if (match(gene, /^(.+)_i[0-9]+$/, arr)) { gene = arr[1] }
-			print gene "\t" trans
-		}' "$fasta" > "$output"
-	else
-		grep "^>" "$fasta" | sed 's/^>//' | awk '{
-			trans=$1
-			if (match($0, /gene=([^ ]+)/, arr)) { gene=arr[1] }
-			else if (match($0, /gene_id[=:]([^ ]+)/, arr)) { gene=arr[1] }
-			else if (match(trans, /^([^|]+)\|/, arr)) { gene=arr[1] }
-			else { gene=trans }
-			print gene "\t" trans
-		}' > "$output"
-	fi
-	
-	local unique_genes=$(cut -f1 "$output" | sort -u | wc -l)
-	local total_transcripts=$(wc -l < "$output")
-	log_info "[SALMON MATRIX] Created gene-transcript map: $unique_genes genes, $total_transcripts transcripts"
 }
 
 _create_manual_salmon_matrix() {

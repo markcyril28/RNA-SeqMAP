@@ -16,93 +16,29 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/shared_utils_method.sh"
 
 # ==============================================================================
-# STAR CONFIGURATION - IMPORTANT PARAMETERS AT TOP
+# STAR CONFIGURATION - IMPORTANT PARAMETERS (tweak here)
 # ==============================================================================
 
-# STAR-specific settings (GPU-aware defaults)
+# Genome loading mode: NoSharedMemory (default/safe), LoadAndKeep (multi-run HPC)
 STAR_GENOME_LOAD="${STAR_GENOME_LOAD:-$(get_star_genome_load 2>/dev/null || echo NoSharedMemory)}"
+
+# sjdbOverhang = read_length - 1; set to actual read length for best splice detection
 STAR_READ_LENGTH="${STAR_READ_LENGTH:-100}"
-# Delete transient big files after alignment (saves disk space)
-# Set to "true" to delete intermediate files (2-pass genome, unsorted BAM, etc.)
-# Set to "false" to keep all files for debugging
+
+# Delete intermediate STAR files after alignment to save disk space (true/false)
+# Set to "false" to keep 2-pass genome, unsorted BAM, etc. for debugging
 STAR_DELETE_TRANSIENT="${STAR_DELETE_TRANSIENT:-true}"
 
-# GTF annotation file for splice junction detection (required for --sjdbOverhang)
-# NOTE: Resolved at runtime inside star_alignment_pipeline() to ensure gtf_file is set
+# GTF annotation file for splice junction detection (resolved at runtime in pipeline)
+# NOTE: STAR_GTF_FILE is resolved inside star_alignment_pipeline() from $gtf_file
 
-# Transcriptome FASTA for Salmon quantification (auto-detected if not set)
-# When using a genome FASTA for STAR, set this to the transcript-level FASTA
+# Transcriptome FASTA for Salmon quantification step (auto-detected if not set)
+# When using a genome FASTA for STAR, point this to the transcript-level FASTA.
 # e.g. STAR_TRANSCRIPTOME_FASTA="0_INPUTs/fasta/reference_genomes/GPE001970_transcripts.fa"
-# If unset, auto-detects <genome_basename>_transcripts.fa, else falls back to --FASTA
+# Auto-detect: looks for <genome_basename>_transcripts.fa; falls back to --FASTA if absent.
 
-# STAR temp directory configuration
-# Set to "system" to use /tmp, "local" to use output dir, "cwd" for current directory, "none" to let STAR manage, or a specific path
+# STAR temp directory: "system"=/tmp, "local"=output dir, "cwd"=current dir, "none"=STAR default
 STAR_TMP_MODE="${STAR_TMP_MODE:-cwd}"
-
-# ==============================================================================
-# STAR TISSUE-SPECIFIC PIPELINE
-# ==============================================================================
-
-star_tissue_specific_pipeline() {
-	local fasta="" rnaseq_list=() metadata_file=""
-	while [[ $# -gt 0 ]]; do
-		case "$1" in
-			--FASTA) fasta="$2"; shift 2;;
-			--METADATA) metadata_file="$2"; shift 2;;
-			--RNASEQ_LIST)
-				shift
-				while [[ $# -gt 0 && ! "$1" =~ ^-- ]]; do
-					rnaseq_list+=("$1"); shift
-				done;;
-			*) log_error "Unknown option: $1"; return 1;;
-		esac
-	done
-	
-	[[ -z "$fasta" || ! -f "$fasta" ]] && { log_error "Valid FASTA required"; return 1; }
-	[[ ${#rnaseq_list[@]} -eq 0 ]] && rnaseq_list=("${SRR_COMBINED_LIST[@]}")
-	
-	declare -A sample_metadata
-	if [[ -n "$metadata_file" && -f "$metadata_file" ]]; then
-		load_sample_metadata "$metadata_file" sample_metadata || {
-			log_warn "Metadata load failed - running pooled alignment"
-			star_alignment_pipeline --FASTA "$fasta" --RNASEQ_LIST "${rnaseq_list[@]}"
-			return $?
-		}
-	else
-		log_warn "No metadata - running pooled alignment"
-		star_alignment_pipeline --FASTA "$fasta" --RNASEQ_LIST "${rnaseq_list[@]}"
-		return $?
-	fi
-	
-	# Group samples by tissue
-	declare -A tissue_samples
-	for SRR in "${rnaseq_list[@]}"; do
-		local tissue="${sample_metadata[${SRR}_condition]:-unknown}"
-		tissue_samples["$tissue"]+="$SRR "
-	done
-	
-	local tissue_count=${#tissue_samples[@]}
-	log_info "[STAR TISSUE] Found $tissue_count tissue types"
-	
-	if [[ $tissue_count -lt 2 ]]; then
-		log_warn "Single tissue detected - using pooled alignment"
-		star_alignment_pipeline --FASTA "$fasta" --RNASEQ_LIST "${rnaseq_list[@]}"
-		return $?
-	fi
-	
-	log_info "[STAR TISSUE] Running tissue-specific alignments for better isoform detection"
-	
-	# Run STAR per tissue
-	for tissue in "${!tissue_samples[@]}"; do
-		local tissue_srrs=(${tissue_samples[$tissue]})
-		log_step "STAR alignment for tissue: $tissue (${#tissue_srrs[@]} samples)"
-		
-		star_alignment_pipeline \
-			--FASTA "$fasta" \
-			--RNASEQ_LIST "${tissue_srrs[@]}" \
-			--TISSUE_TAG "$tissue"
-	done
-}
 
 # ==============================================================================
 # MAIN STAR ALIGNMENT PIPELINE
@@ -113,12 +49,12 @@ star_alignment_pipeline() {
 	STAR_GTF_FILE="${STAR_GTF_FILE:-$gtf_file}"
 
 	local fasta="" transcriptome_fasta="" rnaseq_list=() tissue_tag=""
-	
+
 	# Check for GNU parallel
 	if ! command -v parallel >/dev/null 2>&1; then
 		log_warn "[PERFORMANCE] GNU parallel not found - Salmon quantification will run sequentially"
 	fi
-	
+
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
 			--FASTA) fasta="$2"; shift 2;;
@@ -132,7 +68,7 @@ star_alignment_pipeline() {
 			*) log_error "Unknown option: $1"; return 1;;
 		esac
 	done
-	
+
 	[[ -z "$fasta" ]] && { log_error "No FASTA file specified. Use --FASTA <fasta_file>."; return 1; }
 	[[ ! -f "$fasta" ]] && { log_error "FASTA file '$fasta' not found."; return 1; }
 
@@ -164,19 +100,19 @@ star_alignment_pipeline() {
 	local fasta_base fasta_tag star_index_dir star_genome_dir
 	fasta_base="$(basename "$fasta")"
 	fasta_tag="${fasta_base%.*}"
-	
+
 	# Get absolute paths - using realpath for robustness, fallback to manual resolution
 	local abs_star_index_root abs_star_align_root
-	
+
 	# First ensure the directories exist
 	mkdir -p "$STAR_INDEX_ROOT" "$STAR_ALIGN_ROOT" 2>/dev/null || true
-	
+
 	# Get absolute paths using realpath if available, otherwise use cd/pwd
 	if command -v realpath >/dev/null 2>&1; then
 		abs_star_index_root="$(realpath -m "$STAR_INDEX_ROOT" 2>/dev/null)" || abs_star_index_root=""
 		abs_star_align_root="$(realpath -m "$STAR_ALIGN_ROOT" 2>/dev/null)" || abs_star_align_root=""
 	fi
-	
+
 	# Fallback: use cd/pwd method
 	if [[ -z "$abs_star_index_root" ]]; then
 		abs_star_index_root="$(cd "$STAR_INDEX_ROOT" 2>/dev/null && pwd)" || abs_star_index_root="$STAR_INDEX_ROOT"
@@ -184,15 +120,15 @@ star_alignment_pipeline() {
 	if [[ -z "$abs_star_align_root" ]]; then
 		abs_star_align_root="$(cd "$STAR_ALIGN_ROOT" 2>/dev/null && pwd)" || abs_star_align_root="$STAR_ALIGN_ROOT"
 	fi
-	
+
 	# If still relative, prepend PROJECT_ROOT
 	[[ "$abs_star_index_root" != /* ]] && abs_star_index_root="${PROJECT_ROOT}/${abs_star_index_root}"
 	[[ "$abs_star_align_root" != /* ]] && abs_star_align_root="${PROJECT_ROOT}/${abs_star_align_root}"
-	
+
 	# Clean up any double slashes
 	abs_star_index_root="${abs_star_index_root//\/\//\/}"
 	abs_star_align_root="${abs_star_align_root//\/\//\/}"
-	
+
 	# Set directories based on tissue tag (using absolute paths)
 	# fasta_tag is already embedded in STAR_ALIGN_ROOT/STAR_INDEX_ROOT via set_fasta_output_dirs
 	# Only append tissue_tag subdirectory when doing tissue-specific runs
@@ -205,21 +141,21 @@ star_alignment_pipeline() {
 		star_genome_dir="${abs_star_align_root}/5_star/alignments"
 		log_info "[STAR] Pooled alignment: ${#rnaseq_list[@]} samples"
 	fi
-	
+
 	# Clean up any double slashes in final paths
 	star_index_dir="${star_index_dir//\/\//\/}"
 	star_genome_dir="${star_genome_dir//\/\//\/}"
-	
+
 	# Log resolved paths for debugging
 	log_info "[STAR] Index directory (absolute): $star_index_dir"
 	log_info "[STAR] Output directory (absolute): $star_genome_dir"
-	
+
 	local star_overhang=$((STAR_READ_LENGTH - 1))
 	log_info "[STAR] CPU allocation: Total=$THREADS threads"
 
 	# STEP 1: BUILD STAR GENOME INDEX
 	log_step "STAR genome index generation for $fasta_tag"
-	
+
 	if [[ -f "$star_index_dir/SAindex" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 		log_info "[STAR INDEX] Index for $fasta_tag already exists. Skipping."
 	else
@@ -261,14 +197,14 @@ star_alignment_pipeline() {
 				--genomeSAindexNbases "$genome_sa_index" \
 				--genomeChrBinNbits "$genome_chr_bin" \
 				--runThreadN "$THREADS"
-		
+
 		[[ ! -f "$star_index_dir/SAindex" ]] && { log_error "STAR index generation failed"; return 1; }
 		log_info "[STAR INDEX] Index built successfully: $star_index_dir"
 	fi
-	
+
 	# STEP 2: ALIGN READS WITH STAR
 	mkdir -p "$star_genome_dir"
-	
+
 	# Verify directory exists and is writable
 	if [[ ! -d "$star_genome_dir" ]]; then
 		log_error "Failed to create STAR output directory: $star_genome_dir"
@@ -279,7 +215,7 @@ star_alignment_pipeline() {
 		return 1
 	fi
 	log_info "[STAR] Output directory verified: $star_genome_dir"
-	
+
 	log_step "STAR splice-aware alignment for $fasta_tag samples"
 
 	local parallel_jobs="${PARALLEL_JOBS:-${JOBS:-2}}"
@@ -405,7 +341,7 @@ star_alignment_pipeline() {
 		# Sequential fallback
 		for SRR in "${rnaseq_list[@]}"; do
 			local bam_output="$star_genome_dir/${SRR}_Aligned.sortedByCoord.out.bam"
-			
+
 			# Check if BAM exists AND has content (not 0 bytes from failed run)
 			if [[ -f "$bam_output" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 				local bam_size
@@ -418,7 +354,7 @@ star_alignment_pipeline() {
 					rm -f "$bam_output"
 				fi
 			fi
-			
+
 			# Clean up stale files from previous failed STAR runs
 			log_info "[STAR] Cleaning up stale files for $SRR..."
 			rm -f "${star_genome_dir}/${SRR}_Log.out" "${star_genome_dir}/${SRR}_Log.progress.out" \
@@ -426,12 +362,12 @@ star_alignment_pipeline() {
 			rm -rf "${star_genome_dir}/${SRR}__STARgenome" "${star_genome_dir}/${SRR}__STARpass1" \
 				"${star_genome_dir}/${SRR}_STARtmp" "${star_genome_dir}/${SRR}_"*.tmp \
 				"${star_genome_dir}/_STARtmp_${SRR}" "${PROJECT_ROOT}/_STARtmp" 2>/dev/null || true
-			
+
 			find_trimmed_fastq "$SRR"
 			[[ -z "$trimmed1" ]] && { log_warn "Trimmed FASTQ for $SRR not found; skipping."; continue; }
-			
+
 			log_info "[STAR] Aligning: $SRR"
-			
+
 			local star_reads_args=("$trimmed1")
 			if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
 				star_reads_args+=("$trimmed2")
@@ -439,7 +375,7 @@ star_alignment_pipeline() {
 			else
 				log_info "[STAR] Processing single-end reads for $SRR"
 			fi
-			
+
 			# CRITICAL: Ensure output directory exists and is writable RIGHT BEFORE STAR runs
 			# This fixes "could not create output file" errors on HPC/server environments
 			mkdir -p "$star_genome_dir"
@@ -449,12 +385,12 @@ star_alignment_pipeline() {
 				sync
 				sleep 1
 			fi
-			
+
 			if [[ ! -d "$star_genome_dir" ]]; then
 				log_error "[STAR] FATAL: Cannot create output directory: $star_genome_dir"
 				return 1
 			fi
-			
+
 			# Test write permissions by creating a test file with the exact output name pattern
 			local test_file="${star_genome_dir}/${SRR}_test_write_$$"
 			if ! touch "$test_file" 2>/dev/null; then
@@ -463,7 +399,7 @@ star_alignment_pipeline() {
 				return 1
 			fi
 			rm -f "$test_file"
-			
+
 			# Configure STAR temp directory - ALWAYS use output directory for temp
 			# This ensures all STAR operations happen on the same filesystem
 			local star_tmp_dir="${star_genome_dir}/_STARtmp_${SRR}"
@@ -472,12 +408,12 @@ star_alignment_pipeline() {
 			rm -rf "${PROJECT_ROOT}/_STARtmp" 2>/dev/null || true
 			rm -rf "${PROJECT_ROOT}/_STARtmp_${SRR}" 2>/dev/null || true
 			log_info "[STAR] Using temp directory: $star_tmp_dir"
-			
+
 			# Construct output prefix - ensure no double slashes and path is clean
 			local out_prefix="${star_genome_dir}/${SRR}_"
 			# Remove any double slashes
 			out_prefix="${out_prefix//\/\//\/}"
-			
+
 			# Check disk space before running STAR (needs ~30GB per run)
 			local available_space
 			available_space=$(df -P "$star_genome_dir" 2>/dev/null | awk 'NR==2 {print $4}')
@@ -491,7 +427,7 @@ star_alignment_pipeline() {
 
 			# Run STAR alignment - output UNSORTED BAM first, then sort with samtools
 			local unsorted_bam="${out_prefix}Aligned.out.bam"
-			
+
 			run_with_space_time_log --input "$TRIM_DIR_ROOT/$SRR" --output "$star_genome_dir" \
 				STAR --runMode alignReads \
 					--genomeDir "$star_index_dir" \
@@ -501,7 +437,7 @@ star_alignment_pipeline() {
 					--outTmpDir "$star_tmp_dir" \
 					--outSAMtype BAM Unsorted \
 					--runThreadN "$THREADS"
-			
+
 			# Check if unsorted BAM was created
 			if [[ ! -f "$unsorted_bam" ]]; then
 				log_error "[STAR] FATAL: Unsorted BAM file not created for $SRR"
@@ -511,7 +447,7 @@ star_alignment_pipeline() {
 				tail -30 "${out_prefix}Log.out" 2>/dev/null | while IFS= read -r line; do log_error "  $line"; done
 				return 1
 			fi
-			
+
 			local unsorted_size
 			unsorted_size=$(stat -c%s "$unsorted_bam" 2>/dev/null || stat -f%z "$unsorted_bam" 2>/dev/null || echo "0")
 			if [[ "$unsorted_size" -lt 1000 ]]; then
@@ -523,12 +459,12 @@ star_alignment_pipeline() {
 
 			# Sort BAM with samtools
 			log_info "[STAR] Sorting BAM with samtools..."
-			
+
 			if ! samtools sort -@ "$THREADS" -m 2G -o "$bam_output" "$unsorted_bam" 2>&1; then
 				log_error "[STAR] FATAL: samtools sort failed for $SRR"
 				return 1
 			fi
-			
+
 			# Verify sorted BAM
 			local final_bam_size
 			final_bam_size=$(stat -c%s "$bam_output" 2>/dev/null || stat -f%z "$bam_output" 2>/dev/null || echo "0")
@@ -536,44 +472,44 @@ star_alignment_pipeline() {
 				log_error "[STAR] FATAL: Sorted BAM file is empty/corrupt for $SRR (${final_bam_size} bytes)"
 				return 1
 			fi
-			
+
 			log_info "[STAR] BAM sorted successfully: $final_bam_size bytes"
-			
+
 			# Remove unsorted BAM to save space
 			rm -f "$unsorted_bam"
 			log_info "[STAR] Removed unsorted BAM to save space"
-			
+
 			# Index the BAM
 			log_info "[STAR] Indexing BAM..."
 			samtools index -@ "$THREADS" "$bam_output" 2>&1 || log_warn "[STAR] BAM indexing failed (non-fatal)"
-			
+
 			# Clean up temp directories after successful alignment
 			rm -rf "$star_tmp_dir" "${PROJECT_ROOT}/_STARtmp" 2>/dev/null || true
-			
+
 			# Delete transient big files if enabled (saves significant disk space)
 			if [[ "${STAR_DELETE_TRANSIENT:-true}" == "true" ]]; then
 				log_info "[STAR] Cleaning up transient files for $SRR..."
-				
+
 				# Remove 2-pass intermediate directories (can be several GB each)
 				rm -rf "${star_genome_dir}/${SRR}__STARgenome" 2>/dev/null || true
 				rm -rf "${star_genome_dir}/${SRR}__STARpass1" 2>/dev/null || true
-				
+
 				# Remove any leftover temp directories
 				rm -rf "${star_genome_dir}/${SRR}_STARtmp" 2>/dev/null || true
 				rm -rf "${star_genome_dir}/_STARtmp_${SRR}" 2>/dev/null || true
-				
+
 				# Remove progress log (Log.out and Log.final.out are kept for diagnostics)
 				rm -f "${star_genome_dir}/${SRR}_Log.progress.out" 2>/dev/null || true
-				
+
 				log_info "[STAR] Transient files cleaned up for $SRR"
 			fi
-			
+
 			log_info "[STAR] Successfully aligned: $SRR"
 		done
 	fi
-	
+
 	log_info "[STAR] All samples aligned successfully"
-	
+
 	# STEP 3: SALMON QUANTIFICATION
 	# fasta_tag is already embedded in abs_star_align_root via set_fasta_output_dirs
 	# Only append tissue_tag subdirectory when doing tissue-specific runs
@@ -585,7 +521,7 @@ star_alignment_pipeline() {
 	salmon_idx="${salmon_idx//\/\//\/}"
 	quant_root="${quant_root//\/\//\/}"
 	mkdir -p "$quant_root"
-	
+
 	# Build Salmon index (using transcriptome FASTA, not genome)
 	if [[ -f "$salmon_idx/versionInfo.json" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 		log_info "[SALMON INDEX] STAR Salmon index exists - skipping build"
@@ -595,7 +531,7 @@ star_alignment_pipeline() {
 		run_with_space_time_log --input "$transcriptome_fasta" --output "$salmon_idx" \
 			salmon index -t "$transcriptome_fasta" -i "$salmon_idx" -k 31 --threads "$THREADS"
 	fi
-	
+
 	# Quantify samples
 	log_info "[SALMON] Starting quantification for ${#rnaseq_list[@]} samples"
 
@@ -676,13 +612,13 @@ star_alignment_pipeline() {
 
 	# STEP 4: PREPARE TXIMPORT FILES FOR DESEQ2
 	log_step "Preparing tximport input for DESeq2 (STAR + Salmon)"
-	
+
 	local matrix_dir="$STAR_MATRIX_ROOT"
 	mkdir -p "$matrix_dir"
-	
+
 	local sample_metadata="$matrix_dir/sample_info.tsv"
 	local tx2gene_file="$matrix_dir/tx2gene_${fasta_tag}${ref_suffix:+_${ref_suffix}}.tsv"
-	
+
 	# Create tx2gene mapping from GTF (transcript_id -> gene_id attributes)
 	# This correctly handles multi-transcript genes; version-stripping FASTA headers is not reliable.
 	if [[ ! -f "$tx2gene_file" ]]; then
@@ -700,24 +636,24 @@ star_alignment_pipeline() {
 		fi
 		log_info "[TXIMPORT] Created tx2gene mapping: $tx2gene_count transcripts"
 	fi
-	
+
 	# Verify quantifications
 	local quant_count=0
 	for SRR in "${rnaseq_list[@]}"; do
 		[[ -f "$quant_root/$SRR/quant.sf" ]] && ((quant_count++))
 	done
-	
+
 	[[ $quant_count -lt 2 ]] && { log_error "Insufficient quantifications: $quant_count (need ≥2)"; return 1; }
-	
+
 	# Create sample metadata
 	[[ ! -f "$sample_metadata" ]] && create_sample_metadata "$sample_metadata" rnaseq_list[@]
-	
+
 	# Generate tximport R script
 	local tximport_script="$matrix_dir/run_tximport_star_salmon.R"
 	if [[ ! -f "$tximport_script" ]]; then
 		generate_tximport_star_script "$quant_root" "$sample_metadata" "$tx2gene_file" "$matrix_dir" "$tximport_script"
 	fi
-	
+
 	# Run tximport if R is available
 	if command -v Rscript >/dev/null 2>&1; then
 		log_step "Running tximport to import Salmon quantifications"
@@ -733,7 +669,7 @@ star_alignment_pipeline() {
 	else
 		log_warn "[TXIMPORT] Rscript not found - run manually: Rscript $tximport_script"
 	fi
-	
+
 	log_step "STAR alignment pipeline completed for $fasta_tag"
 	log_info "STAR alignments: $star_genome_dir"
 	log_info "Salmon quantifications: $quant_root"
@@ -752,12 +688,12 @@ run_tximport_star() {
 	local tx2gene_file="$3"
 	local output_dir="${4:-$(dirname "$metadata_file")}"
 	local helper_script="$SCRIPT_DIR/helpers/tximport_star_helper.R"
-	
+
 	if [[ ! -f "$helper_script" ]]; then
 		log_error "tximport_star_helper.R not found: $helper_script"
 		return 1
 	fi
-	
+
 	log_info "[TXIMPORT] Running STAR+Salmon import..."
 	Rscript "$helper_script" "$quant_dir" "$metadata_file" "$tx2gene_file" "$output_dir"
 }
@@ -770,7 +706,7 @@ generate_tximport_star_script() {
 	local matrix_dir="$4"
 	local output_script="$5"
 	local helper_script="$SCRIPT_DIR/helpers/tximport_star_helper.R"
-	
+
 	if [[ -f "$helper_script" ]]; then
 		cp "$helper_script" "$output_script"
 		chmod +x "$output_script"
@@ -779,4 +715,71 @@ generate_tximport_star_script() {
 		log_error "tximport_star_helper.R not found: $helper_script"
 		return 1
 	fi
+}
+
+# ==============================================================================
+# ALTERNATIVE FLOW: TISSUE-SPECIFIC ALIGNMENT
+# ==============================================================================
+# Splits samples by condition/tissue and runs star_alignment_pipeline() per group.
+# Falls back to pooled alignment when only one tissue type is detected.
+
+star_tissue_specific_pipeline() {
+	local fasta="" rnaseq_list=() metadata_file=""
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+			--FASTA) fasta="$2"; shift 2;;
+			--METADATA) metadata_file="$2"; shift 2;;
+			--RNASEQ_LIST)
+				shift
+				while [[ $# -gt 0 && ! "$1" =~ ^-- ]]; do
+					rnaseq_list+=("$1"); shift
+				done;;
+			*) log_error "Unknown option: $1"; return 1;;
+		esac
+	done
+
+	[[ -z "$fasta" || ! -f "$fasta" ]] && { log_error "Valid FASTA required"; return 1; }
+	[[ ${#rnaseq_list[@]} -eq 0 ]] && rnaseq_list=("${SRR_COMBINED_LIST[@]}")
+
+	declare -A sample_metadata
+	if [[ -n "$metadata_file" && -f "$metadata_file" ]]; then
+		load_sample_metadata "$metadata_file" sample_metadata || {
+			log_warn "Metadata load failed - running pooled alignment"
+			star_alignment_pipeline --FASTA "$fasta" --RNASEQ_LIST "${rnaseq_list[@]}"
+			return $?
+		}
+	else
+		log_warn "No metadata - running pooled alignment"
+		star_alignment_pipeline --FASTA "$fasta" --RNASEQ_LIST "${rnaseq_list[@]}"
+		return $?
+	fi
+
+	# Group samples by tissue
+	declare -A tissue_samples
+	for SRR in "${rnaseq_list[@]}"; do
+		local tissue="${sample_metadata[${SRR}_condition]:-unknown}"
+		tissue_samples["$tissue"]+="$SRR "
+	done
+
+	local tissue_count=${#tissue_samples[@]}
+	log_info "[STAR TISSUE] Found $tissue_count tissue types"
+
+	if [[ $tissue_count -lt 2 ]]; then
+		log_warn "Single tissue detected - using pooled alignment"
+		star_alignment_pipeline --FASTA "$fasta" --RNASEQ_LIST "${rnaseq_list[@]}"
+		return $?
+	fi
+
+	log_info "[STAR TISSUE] Running tissue-specific alignments for better isoform detection"
+
+	# Run STAR per tissue
+	for tissue in "${!tissue_samples[@]}"; do
+		local tissue_srrs=(${tissue_samples[$tissue]})
+		log_step "STAR alignment for tissue: $tissue (${#tissue_srrs[@]} samples)"
+
+		star_alignment_pipeline \
+			--FASTA "$fasta" \
+			--RNASEQ_LIST "${tissue_srrs[@]}" \
+			--TISSUE_TAG "$tissue"
+	done
 }
