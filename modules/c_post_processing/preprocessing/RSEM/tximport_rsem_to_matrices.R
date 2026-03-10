@@ -8,19 +8,12 @@
 
 suppressPackageStartupMessages({
   library(tximport)
-  library(DESeq2)
-  library(dplyr)
-  library(tibble)
 })
 
 # Source shared utilities (provides ensure_output_dir, convert_to_organ_labels, etc.)
 SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", ".")
 source(file.path(SCRIPT_DIR, "0_shared_config.R"))
 source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
-
-# Debug: Show what SAMPLE_IDS we have after loading config
-cat("[DEBUG] SRR_COMBINED_LIST_STR env var:", Sys.getenv("SRR_COMBINED_LIST_STR", unset = "<NOT SET>"), "\n")
-cat("[DEBUG] Number of SAMPLE_IDS loaded:", length(SAMPLE_IDS), "\n")
 
 # ===============================================
 # RSEM-SPECIFIC HELPER
@@ -71,14 +64,19 @@ save_count_matrix <- function(counts_matrix, output_dir, base_name, master_ref, 
 # CONFIGURATION
 # ===============================================
 
-QUANT_DIR <- "RSEM_Quant_WD"
+base_dir <- Sys.getenv("BASE_DIR", "")
+QUANT_DIR <- if (nzchar(base_dir)) {
+  file.path(base_dir, "2_ALIGNMENT_RESULTs", "M5_RSEM_Bowtie2", "RSEM_Quant_WD")
+} else {
+  "RSEM_Quant_WD"  # fallback for standalone execution
+}
 MASTER_REFERENCE <- Sys.getenv("MASTER_REFERENCE", "All_Smel_Genes")
 MATRICES_OUTPUT_DIR <- "count_matrices_from_RSEM_Quant"
 # Use shared GENE_GROUPS_DIR from 0_shared_config.R (already sourced)
 
 # Toggle to generate both gene-level and isoform-level matrices
-GENERATE_GENE_LEVEL <- TRUE      # Use .genes.results (aggregated)
-GENERATE_ISOFORM_LEVEL <- TRUE   # Use .isoforms.results (transcript-specific)
+GENERATE_GENE_LEVEL    <- as.logical(Sys.getenv("RSEM_GENERATE_GENE_LEVEL",    "TRUE"))  # Use .genes.results (aggregated)
+GENERATE_ISOFORM_LEVEL <- as.logical(Sys.getenv("RSEM_GENERATE_ISOFORM_LEVEL", "TRUE"))  # Use .isoforms.results (transcript-specific)
 
 # Use SAMPLE_IDS and SAMPLE_LABELS from shared config (0_shared_config.R)
 # Already sourced above - no duplication needed
@@ -221,59 +219,41 @@ for (level_name in names(processing_levels)) {
   }
   
   # ===============================================
-  # STEP 5: NORMALIZATION
+  # STEP 5: FILTER AND EXTRACT MATRICES
   # ===============================================
-  
-  if (has_replicates) {
-    cat("Step 5: Running DESeq2 normalization...\n")
-    
-    # Filter out genes/transcripts with zero effective length (DESeq2 requirement)
-    # RSEM can produce zero-length entries for transcripts with no aligned reads
-    if (!is.null(txi$length)) {
-      zero_length_mask <- rowSums(txi$length == 0) > 0
-      n_zero_length <- sum(zero_length_mask)
-      if (n_zero_length > 0) {
-        cat("  Filtering out", n_zero_length, entity_type, "with zero effective length...\n")
-        txi$counts <- txi$counts[!zero_length_mask, , drop = FALSE]
-        txi$abundance <- txi$abundance[!zero_length_mask, , drop = FALSE]
-        txi$length <- txi$length[!zero_length_mask, , drop = FALSE]
-        cat("  Remaining", entity_type, ":", nrow(txi$counts), "\n")
-      }
+
+  cat("Step 5: Extracting raw expected counts and TPM values...\n")
+
+  # Filter entries with zero effective length (RSEM produces these for unaligned transcripts)
+  if (!is.null(txi$length)) {
+    zero_length_mask <- rowSums(txi$length == 0) > 0
+    n_zero_length <- sum(zero_length_mask)
+    if (n_zero_length > 0) {
+      cat("  Filtering out", n_zero_length, entity_type, "with zero effective length...\n")
+      txi$counts    <- txi$counts[!zero_length_mask, , drop = FALSE]
+      txi$abundance <- txi$abundance[!zero_length_mask, , drop = FALSE]
+      txi$length    <- txi$length[!zero_length_mask, , drop = FALSE]
+      cat("  Remaining", entity_type, ":", nrow(txi$counts), "\n")
     }
-    
-    dds <- DESeqDataSetFromTximport(
-      txi = txi,
-      colData = sample_data,
-      design = ~ Condition
-    )
-    
-    dds <- DESeq(dds)
-    normalized_counts <- counts(dds, normalized = TRUE)
-    cat("DESeq2 normalization complete\n")
-    
-  } else {
-    cat("Step 5: Computing TPM values...\n")
-    normalized_counts <- txi$abundance
-    cat("TPM normalization complete (visualization only)\n")
   }
-  
-  rownames(normalized_counts) <- rownames(normalized_counts)
-  cat("Matrix dimensions:", nrow(normalized_counts), entity_type, "x", ncol(normalized_counts), "samples\n\n")
-  
-  # Keep TPM matrix for saving alongside normalized counts
-  # txi$abundance is already filtered (same as normalized_counts) since we modified txi in place
+
+  # raw_counts : RSEM posterior expected counts (fractional; correct input for tximport-aware DESeq2)
+  # tpm_matrix : transcripts per million (for visualization / heatmaps)
+  raw_counts <- txi$counts
   tpm_matrix <- txi$abundance
+
+  cat("Matrix dimensions:", nrow(raw_counts), entity_type, "x", ncol(raw_counts), "samples\n\n")
   
   # ===============================================
-  # STEP 6: SAVE FULL NORMALIZED MATRIX
+  # STEP 6: SAVE RAW EXPECTED COUNT AND TPM MATRICES
   # ===============================================
   
-  cat("Step 6: Saving normalized count matrix...\n")
+  cat("Step 6: Saving raw expected count and TPM matrices...\n")
   
   level_output_dir <- file.path(output_dir, level_name)
   ensure_output_dir(level_output_dir)
   
-  save_count_matrix(normalized_counts, level_output_dir, MASTER_REFERENCE, 
+  save_count_matrix(raw_counts, level_output_dir, MASTER_REFERENCE,
                    MASTER_REFERENCE, level_config$output_suffix, SAMPLE_LABELS,
                    tpm_matrix = tpm_matrix)
   cat("\n")
@@ -313,22 +293,19 @@ for (level_name in names(processing_levels)) {
       cat("  Processing:", gene_group_name, "-> Output:", output_folder_name, "\n")
   
       # Read gene list from CSV (first column is Gene_ID)
-      tryCatch({
+      # tryCatch returns its value to the outer assignment — fixes scoping issue
+      gene_list <- tryCatch({
         if (grepl("\\.csv$", gene_group_file, ignore.case = TRUE)) {
           gene_df <- read.csv(gene_group_file, stringsAsFactors = FALSE, header = TRUE)
-          if ("Gene_ID" %in% colnames(gene_df)) {
-            gene_list <- gene_df$Gene_ID
-          } else {
-            gene_list <- gene_df[[1]]  # Fallback to first column
-          }
+          gl <- if ("Gene_ID" %in% colnames(gene_df)) gene_df$Gene_ID else gene_df[[1]]
         } else {
-          gene_list <- suppressWarnings(readLines(gene_group_file))
-          gene_list <- gene_list[!grepl("^#|^Gene_ID", gene_list, ignore.case = TRUE) & nzchar(gene_list)]
+          gl <- suppressWarnings(readLines(gene_group_file))
+          gl <- gl[!grepl("^#|^Gene_ID", gl, ignore.case = TRUE) & nzchar(gl)]
         }
-        gene_list <- trimws(gene_list)
+        trimws(gl)
       }, error = function(e) {
         cat("    Error reading file:", e$message, "\n")
-        gene_list <- character(0)
+        character(0)
       })
   
       if (length(gene_list) == 0) {
@@ -338,7 +315,7 @@ for (level_name in names(processing_levels)) {
   
       # Match genes using prefix matching (gene_list may not have transcript suffix)
       # e.g., gene_list has "SMEL4.1_01g005840" but matrix has "SMEL4.1_01g005840.1.01"
-      all_gene_ids <- rownames(normalized_counts)
+      all_gene_ids <- rownames(raw_counts)
       genes_in_data <- character(0)
       for (gene in gene_list) {
         # Try exact match first, then prefix match
@@ -348,7 +325,9 @@ for (level_name in names(processing_levels)) {
           # Prefix match: find IDs that start with the gene followed by a period or end
           matches <- all_gene_ids[grepl(paste0("^", gsub("\\.", "\\\\.", gene), "(\\..*)?$"), all_gene_ids)]
           if (length(matches) > 0) {
-            genes_in_data <- c(genes_in_data, matches[1])  # Take first match (usually primary transcript)
+            # At isoform level include ALL matching transcripts per gene;
+            # at gene level take only the first (primary isoform)
+            genes_in_data <- c(genes_in_data, if (level_config$tx_out) matches else matches[1])
           }
         }
       }
@@ -364,7 +343,7 @@ for (level_name in names(processing_levels)) {
       gene_group_dir <- file.path(level_output_dir, output_folder_name)
       ensure_output_dir(gene_group_dir)
   
-      subset_counts <- normalized_counts[genes_in_data, , drop = FALSE]
+      subset_counts <- raw_counts[genes_in_data, , drop = FALSE]
       subset_tpm <- tpm_matrix[genes_in_data, , drop = FALSE]
       save_count_matrix(subset_counts, gene_group_dir, output_folder_name,
                        MASTER_REFERENCE, level_config$output_suffix, SAMPLE_LABELS,

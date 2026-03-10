@@ -1,21 +1,23 @@
 #!/bin/bash
 
 # ===============================================
-# StringTie Matrix Builder - M2 HISAT2 De Novo
+# M1 HISAT2 Ref-Guided Matrix Builder
 # ===============================================
 # Description:
-# Generates TPM/FPKM/Coverage matrices from M2 HISAT2 De Novo StringTie
-# abundance files (_gene_abundances_de_novo.tsv) for heatmap visualization.
+# Generates TPM/FPKM/Coverage matrices from HISAT2 Ref-Guided StringTie
+# abundance files (_ref_guided_gene_abundances.tsv) for heatmap visualization.
 # Process:
-# 1. For each gene group, locate de novo abundance files for all samples
+# 1. For each gene group, locate ref-guided abundance files for all samples
 # 2. Extract gene names from reference CSV files (centralized in gene_groups/)
 # 3. Build matrices (coverage, FPKM, TPM) with genes as rows, samples/organs as columns
-# 4. Output matrices to: 3_POST_PROC/M2_HISAT2_DeNovo/count_matrices_from_stringtie/
+# 4. Output matrices to: 3_POST_PROC/M1_HISAT2_RefGuided/count_matrices_from_stringtie/
 #
-# M1 HISAT2 Ref-Guided: use m1_ref_guided_matrix_builder.sh instead.
+# Called by: prepde_matrix_linker.sh (as part of M1 preprocessing)
+# Input:     2_ALIGNMENT_RESULTs/M1_HISAT2_RefGuided/stringtie_WD/
+# Abundance: ${SRR}_${MASTER_REFERENCE}_ref_guided_gene_abundances.tsv
 # ===============================================
 
-set -uo pipefail
+set -euo pipefail
 
 # ===============================================
 # CONFIGURATION
@@ -37,16 +39,14 @@ fi
 MASTER_REFERENCE="${MASTER_REFERENCE:-All_Smel_Genes}"
 MASTER_SUFFIX="_from_${MASTER_REFERENCE}"
 
-# Directories
+# Directories — M1 specific, not shared with M2
 BASE_DIR="${BASE_DIR:-$PWD}"
-INPUTS_DIR="${INPUTS_DIR:-${BASE_DIR}/2_ALIGNMENT_RESULTs/M2_HISAT2_DeNovo/stringtie_WD}"
-
-# M2 de novo abundance filename suffix — hardcoded, not configurable
-# For M1 ref-guided, use m1_ref_guided_matrix_builder.sh
-ABUNDANCE_SUFFIX="_gene_abundances_de_novo.tsv"
-
-OUT_DIR="${OUT_DIR:-count_matrices_from_stringtie}"
+INPUTS_DIR="${INPUTS_DIR:-${BASE_DIR}/2_ALIGNMENT_RESULTs/M1_HISAT2_RefGuided/stringtie_WD}"
+OUT_DIR="${OUT_DIR:-${BASE_DIR}/3_POST_PROC/M1_HISAT2_RefGuided/count_matrices_from_stringtie}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# M1 ref-guided abundance filename suffix (single-pass quantification with -e)
+ABUNDANCE_SUFFIX="_ref_guided_gene_abundances.tsv"
 
 # Utilities directory (contains matrix_builder.py)
 UTILITIES_DIR="${UTILITIES_DIR:-$SCRIPT_DIR/../../utilities}"
@@ -54,41 +54,37 @@ UTILITIES_DIR="${UTILITIES_DIR:-$SCRIPT_DIR/../../utilities}"
 # Create output directory and logging
 mkdir -p "$OUT_DIR/logs"
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting StringTie Matrix Builder"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting M1 Ref-Guided Matrix Builder"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Working directory: $BASE_DIR"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Input directory: $INPUTS_DIR"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Output directory: $OUT_DIR"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Master reference: $MASTER_REFERENCE"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Abundance suffix: $ABUNDANCE_SUFFIX"
 
 # ===============================================
-# LOAD SAMPLE IDS FROM CSV (DRY principle)
+# LOAD SAMPLE IDS FROM CSV
 # ===============================================
-# Load from SRR_csv directory instead of hardcoding
 # SRR_CSV_DIR is exported by run_all_post_processing.sh
 # Fallback to inputs/SRR_csv relative to the project root
 
 SRR_CSV_DIR="${SRR_CSV_DIR:-$SCRIPT_DIR/../../../inputs/SRR_csv}"
 
-# Parse CSV and build arrays (reuse function from pipeline_utils.sh if available)
 load_samples_from_csv() {
     local csv_dir="$1"
     local -n sample_ids_ref=$2
     local -n srr_to_organ_ref=$3
-    
+
     if [[ ! -d "$csv_dir" ]]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: SRR_csv directory not found: $csv_dir"
         return 1
     fi
-    
+
     for csv_file in "$csv_dir"/*.csv; do
         [[ ! -f "$csv_file" ]] && continue
         while IFS=',' read -r srr_id organ notes || [[ -n "$srr_id" ]]; do
-            # Skip header and comments
             [[ "$srr_id" =~ ^#.*$ || "$srr_id" == "SRR_ID" || -z "$srr_id" ]] && continue
             srr_id=$(echo "$srr_id" | tr -d '[:space:]')
             organ=$(echo "$organ" | tr -d '[:space:]')
-            
-            # Add if not already present
             if [[ ! " ${sample_ids_ref[*]} " =~ " ${srr_id} " ]]; then
                 sample_ids_ref+=("$srr_id")
                 srr_to_organ_ref["$srr_id"]="$organ"
@@ -97,12 +93,10 @@ load_samples_from_csv() {
     done
 }
 
-# Initialize arrays
 SAMPLE_IDS=()
 declare -A SRR_TO_ORGAN=()
 
-# Load from CSV files (DRY - single source of truth)
-load_samples_from_csv "$SRR_CSV_DIR" SAMPLE_IDS SRR_TO_ORGAN
+load_samples_from_csv "$SRR_CSV_DIR" SAMPLE_IDS SRR_TO_ORGAN || true
 
 if [[ ${#SAMPLE_IDS[@]} -eq 0 ]]; then
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: No samples loaded from CSV files"
@@ -110,18 +104,13 @@ if [[ ${#SAMPLE_IDS[@]} -eq 0 ]]; then
     exit 1
 fi
 
-# Filter to only configured samples (from SRR_COMBINED_LIST_STR environment variable)
-# IMPORTANT: Use the order from SRR_COMBINED_LIST_STR to preserve CSV file order
+# Filter to configured samples in SRR_COMBINED_LIST_STR order
 if [[ -n "${SRR_COMBINED_LIST_STR:-}" ]]; then
-    # Parse SRR_COMBINED_LIST_STR (space-separated "SRR_ID:Organ" pairs)
     declare -a CONFIGURED_SRRS=()
     for entry in $SRR_COMBINED_LIST_STR; do
-        srr_id="${entry%%:*}"  # Extract SRR ID before colon
+        srr_id="${entry%%:*}"
         CONFIGURED_SRRS+=("$srr_id")
     done
-    
-    # Use CONFIGURED_SRRS order (preserves CSV file order)
-    # Only include samples that exist in SAMPLE_IDS (have data files)
     declare -a FILTERED_SAMPLE_IDS=()
     for srr in "${CONFIGURED_SRRS[@]}"; do
         if [[ " ${SAMPLE_IDS[*]} " =~ " ${srr} " ]]; then
@@ -134,17 +123,16 @@ fi
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Using ${#SAMPLE_IDS[@]} samples"
 
-# StringTie abundance file column indices (1-based)
+# StringTie abundance file column indices (1-based, same layout as M2)
 GENENAME_COL=3      # Gene name column
 COVERAGE_COL=7      # Coverage values
-FPKM_COL=8          # FPKM values  
+FPKM_COL=8          # FPKM values
 TPM_COL=9           # TPM values
 
 # ===============================================
 # FUNCTIONS
 # ===============================================
 
-# Generate combined output folder name: GeneGroup_in_Dataset
 get_output_folder_name() {
     local gene_group="$1"
     local dataset="${CURRENT_DATASET:-}"
@@ -155,8 +143,6 @@ get_output_folder_name() {
     fi
 }
 
-# Function: merge_group_counts
-# Purpose: Process abundance files for a gene group and create count matrices
 merge_group_counts() {
     local gene_group="$1"
     local ref_csv="$2"
@@ -164,118 +150,99 @@ merge_group_counts() {
     group_name=$(get_output_folder_name "$gene_group")
 
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Processing gene group: $gene_group -> Output: $group_name"
-    
+
     mkdir -p "$OUT_DIR/$group_name"
 
     local tmpdir
     tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
 
-    # Collect abundance files
-    local files=()
+    # Count available abundance files (paths are constructed directly per-sample)
     local files_found=0
     for srr in "${SAMPLE_IDS[@]}"; do
         local file_path="$INPUTS_DIR/$MASTER_REFERENCE/$srr/${srr}_${MASTER_REFERENCE}${ABUNDANCE_SUFFIX}"
         if [[ -f "$file_path" ]]; then
-            files+=("$file_path")
-            ((files_found++))
+            (( files_found++ )) || true
         else
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: File not found: $file_path"
         fi
     done
-    
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Found $files_found abundance files"
-    
-    if [[ ${#files[@]} -eq 0 ]]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: No abundance files found for gene group '$gene_group'"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Hint: MASTER_REFERENCE='$MASTER_REFERENCE' must match the fasta_tag used during M2 alignment"
-        rm -rf "$tmpdir"
+
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Found $files_found ref-guided abundance files"
+
+    if [[ $files_found -eq 0 ]]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: No abundance files found for $gene_group"
         return 1
     fi
 
     # Extract gene names from reference CSV (first column is Gene_ID)
     tail -n +2 "${ref_csv}" | cut -d',' -f1 > "$tmpdir/gene_names.txt"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gene names extracted: $(wc -l < "$tmpdir/gene_names.txt") lines."
+    echo "Gene names extracted: $(wc -l < "$tmpdir/gene_names.txt") lines."
 
     for count_type in coverage fpkm tpm; do
         local COUNT_COL_VAR="${count_type^^}_COL"
         local COUNT_COL="${!COUNT_COL_VAR}"
 
-        # Extract count data from each sample file
-        local sample_files=()
+        local -a sample_files=()
 
         for srr in "${SAMPLE_IDS[@]}"; do
-            local sample_file=""
-            for f in "${files[@]}"; do
-                if [[ "$(basename "$f")" == "${srr}_"* ]]; then
-                    sample_file="$f"
-                    break
-                fi
-            done
-            
-            if [[ -n "$sample_file" ]]; then
+            # Construct path directly — no need to scan files[] array
+            local sample_file="$INPUTS_DIR/$MASTER_REFERENCE/$srr/${srr}_${MASTER_REFERENCE}${ABUNDANCE_SUFFIX}"
+            if [[ -f "$sample_file" ]]; then
                 tail -n +2 "$sample_file" | cut -f"$GENENAME_COL","$COUNT_COL" > "$tmpdir/${srr}.txt"
                 sample_files+=("$tmpdir/${srr}.txt")
             fi
         done
 
         local output_geneName_SRR_tsv="$OUT_DIR/$group_name/${group_name}_${count_type}_counts_geneName_SRR${MASTER_SUFFIX}.tsv"
-        
+
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Creating SRR matrix: $(basename "$output_geneName_SRR_tsv")"
-        
+
+        if [[ ${#sample_files[@]} -eq 0 ]]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: No sample files for $count_type in $gene_group, skipping matrix"
+            continue
+        fi
+
         printf "%s\n" "${sample_files[@]}" > "$tmpdir/sample_files_list.txt"
-        
-        # Create matrix with SRR headers
+
         {
             printf "GeneName"
             for srr in "${SAMPLE_IDS[@]}"; do
-                for f in "${files[@]}"; do
-                    if [[ "$(basename "$f")" == "${srr}_"* ]]; then
-                        printf "\t%s" "$srr"
-                        break
-                    fi
-                done
+                local sample_file="$INPUTS_DIR/$MASTER_REFERENCE/$srr/${srr}_${MASTER_REFERENCE}${ABUNDANCE_SUFFIX}"
+                [[ -f "$sample_file" ]] && printf "\t%s" "$srr"
             done
             printf "\n"
-
             python3 "$UTILITIES_DIR/matrix_builder.py" "$tmpdir/gene_names.txt" "$tmpdir/sample_files_list.txt"
-        } > "$output_geneName_SRR_tsv" || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: matrix_builder.py failed for SRR matrix: $group_name"; rm -rf "$tmpdir"; return 1; }
+        } > "$output_geneName_SRR_tsv"
 
-        # Create matrix with Organ headers
         local output_geneName_Organ_tsv="$OUT_DIR/$group_name/${group_name}_${count_type}_counts_geneName_Organ${MASTER_SUFFIX}.tsv"
-        
+
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Creating Organ matrix: $(basename "$output_geneName_Organ_tsv")"
-        
+
         {
             printf "GeneName"
             for srr in "${SAMPLE_IDS[@]}"; do
-                for f in "${files[@]}"; do
-                    if [[ "$(basename "$f")" == "${srr}_"* ]]; then
-                        local organ="${SRR_TO_ORGAN[$srr]:-Unknown}"
-                        printf "\t%s" "$organ"
-                        break
-                    fi
-                done
+                local sample_file="$INPUTS_DIR/$MASTER_REFERENCE/$srr/${srr}_${MASTER_REFERENCE}${ABUNDANCE_SUFFIX}"
+                if [[ -f "$sample_file" ]]; then
+                    local organ="${SRR_TO_ORGAN[$srr]:-Unknown}"
+                    printf "\t%s" "$organ"
+                fi
             done
             printf "\n"
-
             python3 "$UTILITIES_DIR/matrix_builder.py" "$tmpdir/gene_names.txt" "$tmpdir/sample_files_list.txt"
-        } > "$output_geneName_Organ_tsv" || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: matrix_builder.py failed for Organ matrix: $group_name"; rm -rf "$tmpdir"; return 1; }
+        } > "$output_geneName_Organ_tsv"
 
         rm -f "${sample_files[@]}"
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Completed $count_type matrix generation"
     done
-    
-    rm -rf "$tmpdir"
+
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Completed processing for $group_name"
 }
 
 # ===============================================
 # MAIN EXECUTION
 # ===============================================
- 
-# Centralized gene groups CSV directory
-# Use GENE_GROUPS_DIR from environment (set by run_all_post_processing.sh)
-# Fallback to inputs/gene_groups relative to the project root
+
 GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-$SCRIPT_DIR/../../../inputs/gene_groups}}"
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gene groups CSV directory: $GENE_GROUPS_CSV_DIR"
@@ -284,16 +251,16 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting count matrix generation for ${#GEN
 for gene_group in "${GENE_GROUPS[@]}"; do
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ========================================"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Processing gene group: $gene_group"
-    
+
     REF_CSV="${GENE_GROUPS_CSV_DIR}/${gene_group}.csv"
-    
-    if [[ ! -f "$REF_CSV" ]]; then 
+
+    if [[ ! -f "$REF_CSV" ]]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: Reference CSV not found: $REF_CSV, skipping $gene_group"
         continue
     fi
-    
+
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Found reference CSV with $(tail -n +2 "$REF_CSV" | wc -l) genes"
-    
+
     if merge_group_counts "$gene_group" "$REF_CSV"; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Successfully processed $gene_group"
     else
@@ -302,5 +269,5 @@ for gene_group in "${GENE_GROUPS[@]}"; do
 done
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] ========================================"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Matrix generation completed"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] M1 Ref-Guided matrix generation completed"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Output directory: $OUT_DIR"
