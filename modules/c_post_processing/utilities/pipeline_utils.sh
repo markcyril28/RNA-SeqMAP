@@ -52,13 +52,17 @@ get_preprocessing_script() {
     local PREPROCESSING_DIR="${BASE_DIR}/modules/c_post_processing/preprocessing"
     
     case "$method" in
-        "M1_HISAT2_RefGuided"|"M2_HISAT2_DeNovo")
-            # Both HISAT2 methods use StringTie for quantification
+        "M1_HISAT2_RefGuided")
+            # M1: prepDE.py already ran during alignment; linker validates and stages the integer count matrices
+            echo "${PREPROCESSING_DIR}/HISAT2/prepde_matrix_linker.sh"
+            ;;
+        "M2_HISAT2_DeNovo")
+            # M2: builds FPKM/TPM/Coverage matrices from StringTie abundance files
             echo "${PREPROCESSING_DIR}/HISAT2/stringtie_matrix_builder.sh"
             ;;
         "M3_STAR_Align")
-            # STAR alignment - placeholder for future implementation
-            echo ""  # TODO: implement STAR preprocessing
+            # STAR+Salmon: runs tximport on 6_salmon/quant outputs to create standardized matrices
+            echo "${PREPROCESSING_DIR}/STAR/tximport_star_to_matrices.R"
             ;;
         "M4_Salmon_Saf")
             echo "${PREPROCESSING_DIR}/Salmon/tximport_salmon_to_matrices.R"
@@ -82,23 +86,25 @@ run_method_analysis() {
     local method=$1 master_ref=$2
     local method_dir="$BASE_DIR/3_POST_PROC/$method"
     
-    [[ ! -d "$method_dir" ]] && { log_error "Method directory not found: $method_dir"; return 1; }
-    
+    # Create the method output directory if it doesn't exist yet (first post-processing run).
+    # The alignment pipeline normally creates this; creating it here allows post-processing
+    # to run independently (e.g., when tximport is the first step that creates content).
+    mkdir -p "$method_dir"
+
     log_step "Processing Method: $method"
     pushd "$method_dir" > /dev/null
     
     export CURRENT_METHOD="$method" MASTER_REFERENCE="$master_ref"
     
     # Export GENE_GROUPS_DIR as absolute path for R scripts
-    export GENE_GROUPS_DIR="$BASE_DIR/0_INPUTs/gene_groups"
+    export GENE_GROUPS_DIR="$BASE_DIR/inputs/gene_groups"
     
-    # Setup temp config files for R scripts
-    local modules_dir="B_${method#4}_modules"
-    [[ -d "$modules_dir" ]] || modules_dir="."
-    
+    # Setup temp config files for R scripts (written to the method's post-proc dir)
+    local modules_dir="."
+
     printf '%s\n' "${GENE_GROUPS[@]}" > "$modules_dir/.gene_groups_temp.txt"
     echo "$master_ref" > "$modules_dir/.master_reference_temp.txt"
-    echo "TRUE" > "$modules_dir/.overwrite_temp.txt"
+    echo "${OVERWRITE_EXISTING:-FALSE}" > "$modules_dir/.overwrite_temp.txt"
     
     # Rebuild GENE_GROUPS array from exported string in parallel mode
     [[ -n "${GENE_GROUPS_STR:-}" ]] && IFS=' ' read -ra GENE_GROUPS <<< "$GENE_GROUPS_STR"
@@ -110,7 +116,8 @@ run_method_analysis() {
     export SRR_COMBINED_LIST_STR="${SRR_COMBINED_LIST_STR:-}"
     
     # Run method-specific preprocessing if needed
-    local preprocess_path=$(get_preprocessing_script "$method")
+    local preprocess_path
+    preprocess_path=$(get_preprocessing_script "$method")
     if [[ -n "$preprocess_path" && -f "$preprocess_path" ]]; then
         log_info "Running preprocessing: $(basename "$preprocess_path")"
         if [[ "$preprocess_path" == *.R ]]; then
@@ -127,7 +134,8 @@ run_method_analysis() {
         [[ -z "$analysis" ]] && continue
         
         # Skip preprocessing analyses entirely - they run via get_preprocessing_script()
-        if [[ "$analysis" == "Tximport_Salmon" || "$analysis" == "Tximport_RSEM" || "$analysis" == "Stringtie_Matrix" ]]; then
+        if [[ "$analysis" == "Tximport_Salmon" || "$analysis" == "Tximport_RSEM" || \
+              "$analysis" == "Tximport_STAR" || "$analysis" == "Stringtie_Matrix" ]]; then
             continue
         fi
         
