@@ -52,14 +52,44 @@ if [[ ! -f "$GENE_MATRIX" ]]; then
     exit 1
 fi
 
-# Basic validation: check it has content (header + at least 1 gene row)
-local_rows=$(tail -n +2 "$GENE_MATRIX" | wc -l)
+# Validation: check content, structure, and data integrity
+local_rows=$(tail -n +2 "$GENE_MATRIX" | grep -c .)
 if [[ "$local_rows" -lt 1 ]]; then
     echo "[$(ts)] ERROR: gene_count_matrix.csv appears empty (0 gene rows)" >&2
     exit 1
 fi
 local_samples=$(head -n1 "$GENE_MATRIX" | tr ',' '\n' | tail -n +2 | wc -l)
+if [[ "$local_samples" -lt 1 ]]; then
+    echo "[$(ts)] ERROR: gene_count_matrix.csv has no sample columns (only gene ID column found)" >&2
+    exit 1
+fi
+
+# Validate gene names are non-empty (check first data row, field 1)
+# Note: avoid tail|head -n1 pipelines — head exits early causing SIGPIPE (exit 141) under set -o pipefail
+first_gene=$(awk -F',' 'NR==2{print $1; exit}' "$GENE_MATRIX")
+if [[ -z "$first_gene" || "$first_gene" == "," ]]; then
+    echo "[$(ts)] ERROR: gene_count_matrix.csv has empty gene names in first column" >&2
+    exit 1
+fi
+
+# Validate count values are numeric (spot-check first data row, second field onward)
+first_count=$(awk -F',' 'NR==2{print $2; exit}' "$GENE_MATRIX")
+if ! [[ "$first_count" =~ ^[0-9]+\.?[0-9]*$ ]]; then
+    echo "[$(ts)] ERROR: gene_count_matrix.csv contains non-numeric count values (got: '$first_count')" >&2
+    exit 1
+fi
+
 echo "[$(ts)] Validated: $local_rows genes, $local_samples samples in gene_count_matrix.csv"
+
+# Warn if the count matrix is missing samples relative to the configured dataset
+if [[ -n "${SRR_COMBINED_LIST_STR:-}" ]]; then
+    configured_samples=$(echo "$SRR_COMBINED_LIST_STR" | wc -w)
+    if [[ "$local_samples" -lt "$configured_samples" ]]; then
+        echo "[$(ts)] WARNING: gene_count_matrix.csv has $local_samples samples but $configured_samples are configured." >&2
+        echo "[$(ts)] WARNING: DESeq2 Differential_Expression will only cover the $local_samples aligned samples." >&2
+        echo "[$(ts)] WARNING: Run M1 alignment for all configured samples to include them in the count matrix." >&2
+    fi
+fi
 
 # ===============================================
 # STAGE TO POST-PROCESSING TARGET
@@ -72,7 +102,7 @@ for fname in gene_count_matrix.csv transcript_count_matrix.csv sample_metadata.c
     dst="$TARGET_DESEQ2_DIR/$fname"
     if [[ ! -f "$src" ]]; then
         echo "[$(ts)] Warning: $fname not found in source, skipping"
-    elif [[ -f "$dst" && "${OVERWRITE_EXISTING:-FALSE}" != "TRUE" ]]; then
+    elif [[ -f "$dst" && "${OVERWRITE_EXISTING:-FALSE}" != "TRUE" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
         echo "[$(ts)] Already staged (skip): $fname"
     else
         cp "$src" "$dst"

@@ -123,8 +123,9 @@ fi
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Using ${#SAMPLE_IDS[@]} samples"
 
-# StringTie abundance file column indices (1-based, same layout as M2)
-GENENAME_COL=3      # Gene name column
+# StringTie abundance file column indices (1-based)
+# Header: Gene ID | Gene Name | Reference | Strand | Start | End | Coverage | FPKM | TPM
+GENENAME_COL=1      # Gene ID column (e.g., SMEL5_01g000100)
 COVERAGE_COL=7      # Coverage values
 FPKM_COL=8          # FPKM values
 TPM_COL=9           # TPM values
@@ -177,7 +178,7 @@ merge_group_counts() {
 
     # Extract gene names from reference CSV (first column is Gene_ID)
     tail -n +2 "${ref_csv}" | cut -d',' -f1 > "$tmpdir/gene_names.txt"
-    echo "Gene names extracted: $(wc -l < "$tmpdir/gene_names.txt") lines."
+    echo "Gene names extracted: $(grep -c . "$tmpdir/gene_names.txt") lines."
 
     for count_type in coverage fpkm tpm; do
         local COUNT_COL_VAR="${count_type^^}_COL"
@@ -194,6 +195,8 @@ merge_group_counts() {
             fi
         done
 
+        # NOTE: Filename uses "geneName" (camelCase) while the TSV header column is "GeneName" (PascalCase).
+        # build_input_path() in 0_shared_config.R maps gene_type=="Shortened_Name" -> "geneName" to match this convention.
         local output_geneName_SRR_tsv="$OUT_DIR/$group_name/${group_name}_${count_type}_counts_geneName_SRR${MASTER_SUFFIX}.tsv"
 
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Creating SRR matrix: $(basename "$output_geneName_SRR_tsv")"
@@ -243,7 +246,7 @@ merge_group_counts() {
 # MAIN EXECUTION
 # ===============================================
 
-GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-$SCRIPT_DIR/../../../inputs/gene_groups}}"
+GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-$SCRIPT_DIR/../../../inputs/gene_groups_csv}}"
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gene groups CSV directory: $GENE_GROUPS_CSV_DIR"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting count matrix generation for ${#GENE_GROUPS[@]} gene groups"
@@ -254,12 +257,17 @@ for gene_group in "${GENE_GROUPS[@]}"; do
 
     REF_CSV="${GENE_GROUPS_CSV_DIR}/${gene_group}.csv"
 
+    # Search subdirectories if not found at top level
     if [[ ! -f "$REF_CSV" ]]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: Reference CSV not found: $REF_CSV, skipping $gene_group"
+        REF_CSV=$(find "$GENE_GROUPS_CSV_DIR" -maxdepth 3 -name "${gene_group}.csv" -type f -print -quit 2>/dev/null)
+    fi
+
+    if [[ -z "$REF_CSV" || ! -f "$REF_CSV" ]]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: Reference CSV not found: ${GENE_GROUPS_CSV_DIR}/${gene_group}.csv, skipping $gene_group"
         continue
     fi
 
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Found reference CSV with $(tail -n +2 "$REF_CSV" | wc -l) genes"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Found reference CSV with $(tail -n +2 "$REF_CSV" | grep -c .) genes"
 
     if merge_group_counts "$gene_group" "$REF_CSV"; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Successfully processed $gene_group"

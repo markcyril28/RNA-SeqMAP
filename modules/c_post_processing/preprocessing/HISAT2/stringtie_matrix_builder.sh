@@ -15,7 +15,7 @@
 # M1 HISAT2 Ref-Guided: use m1_ref_guided_matrix_builder.sh instead.
 # ===============================================
 
-set -uo pipefail
+set -euo pipefail
 
 # ===============================================
 # CONFIGURATION
@@ -130,14 +130,23 @@ if [[ -n "${SRR_COMBINED_LIST_STR:-}" ]]; then
     done
     SAMPLE_IDS=("${FILTERED_SAMPLE_IDS[@]}")
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Filtered to ${#SAMPLE_IDS[@]} configured samples"
+
+    if [[ ${#SAMPLE_IDS[@]} -eq 0 ]]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: No configured samples found in CSV data"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SRR_COMBINED_LIST_STR entries did not match any SRR_IDs in: $SRR_CSV_DIR"
+        exit 1
+    fi
 fi
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Using ${#SAMPLE_IDS[@]} samples"
 
-# StringTie abundance file column indices (1-based)
-GENENAME_COL=3      # Gene name column
-COVERAGE_COL=7      # Coverage values
-FPKM_COL=8          # FPKM values  
+# StringTie -A abundance file column indices (1-based)
+# Columns: 1=Gene_ID, 2=Gene_Name, 3=Reference, 4=Strand, 5=Start, 6=End, 7=Coverage, 8=FPKM, 9=TPM
+# For M2 de novo (transcript FASTA alignment), column 3 (Reference) contains the
+# transcript ID from the FASTA header, which we use to match against gene group CSVs.
+GENENAME_COL=3      # Reference column (transcript/contig ID from FASTA)
+COVERAGE_COL=7      # Coverage values (per-base depth, NOT raw fragment counts)
+FPKM_COL=8          # FPKM values
 TPM_COL=9           # TPM values
 
 # ===============================================
@@ -195,7 +204,7 @@ merge_group_counts() {
     # Extract gene names from reference CSV (first column is Gene_ID)
     tail -n +2 "${ref_csv}" | cut -d',' -f1 > "$tmpdir/gene_names.txt" \
         || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: Failed to extract gene names from $ref_csv"; rm -rf "$tmpdir"; return 1; }
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gene names extracted: $(wc -l < "$tmpdir/gene_names.txt") lines."
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gene names extracted: $(grep -c . "$tmpdir/gene_names.txt") lines."
 
     for count_type in coverage fpkm tpm; do
         local COUNT_COL_VAR="${count_type^^}_COL"
@@ -281,8 +290,8 @@ merge_group_counts() {
  
 # Centralized gene groups CSV directory
 # Use GENE_GROUPS_DIR from environment (set by run_all_post_processing.sh)
-# Fallback to inputs/gene_groups relative to the project root
-GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-$SCRIPT_DIR/../../../inputs/gene_groups}}"
+# Fallback to inputs/gene_groups_csv relative to the project root
+GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-$SCRIPT_DIR/../../../inputs/gene_groups_csv}}"
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gene groups CSV directory: $GENE_GROUPS_CSV_DIR"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting count matrix generation for ${#GENE_GROUPS[@]} gene groups"
@@ -293,12 +302,17 @@ for gene_group in "${GENE_GROUPS[@]}"; do
     
     REF_CSV="${GENE_GROUPS_CSV_DIR}/${gene_group}.csv"
     
-    if [[ ! -f "$REF_CSV" ]]; then 
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: Reference CSV not found: $REF_CSV, skipping $gene_group"
+    # Search subdirectories if not found at top level
+    if [[ ! -f "$REF_CSV" ]]; then
+        REF_CSV=$(find "$GENE_GROUPS_CSV_DIR" -maxdepth 3 -name "${gene_group}.csv" -type f -print -quit 2>/dev/null)
+    fi
+
+    if [[ -z "$REF_CSV" || ! -f "$REF_CSV" ]]; then 
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: Reference CSV not found: ${GENE_GROUPS_CSV_DIR}/${gene_group}.csv, skipping $gene_group"
         continue
     fi
     
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Found reference CSV with $(tail -n +2 "$REF_CSV" | wc -l) genes"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Found reference CSV with $(tail -n +2 "$REF_CSV" | grep -c .) genes"
     
     if merge_group_counts "$gene_group" "$REF_CSV"; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Successfully processed $gene_group"

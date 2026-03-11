@@ -54,18 +54,32 @@ save_count_matrix <- function(counts_matrix, output_dir, base_name, master_ref, 
   }
   
   # Save NumReads matrices (Salmon's equivalent of raw counts)
-  # With Gene_ID (SRR sample columns)
+  # Always save Gene_ID (needed by DESeq2 and as source for Shortened_Name)
   save_matrix(counts_matrix, "NumReads", "Gene_ID")
-  
-  # With Shortened_Name (Organ labels for columns)
-  counts_organ <- convert_to_organ_labels(counts_matrix)
-  save_matrix(counts_organ, "NumReads", "Shortened_Name")
-  
+
+  # With Shortened_Name (Organ labels for columns + gene name conversion) - only if configured
+  if ("Shortened_Name" %in% GENE_TYPES) {
+    counts_short <- convert_to_organ_labels(counts_matrix)
+    gene_group_for_map <- sub("_in_.*$", "", base_name)
+    counts_short <- tryCatch(
+      convert_to_shortened_names(counts_short, gene_group_for_map),
+      error = function(e) counts_short
+    )
+    save_matrix(counts_short, "NumReads", "Shortened_Name")
+  }
+
   # Save TPM matrices (if provided)
   if (!is.null(tpm_matrix)) {
     save_matrix(tpm_matrix, "tpm", "Gene_ID")
-    tpm_organ <- convert_to_organ_labels(tpm_matrix)
-    save_matrix(tpm_organ, "tpm", "Shortened_Name")
+    if ("Shortened_Name" %in% GENE_TYPES) {
+      tpm_short <- convert_to_organ_labels(tpm_matrix)
+      gene_group_for_map <- sub("_in_.*$", "", base_name)
+      tpm_short <- tryCatch(
+        convert_to_shortened_names(tpm_short, gene_group_for_map),
+        error = function(e) tpm_short
+      )
+      save_matrix(tpm_short, "tpm", "Shortened_Name")
+    }
   }
 }
 
@@ -356,7 +370,7 @@ for (level_name in names(processing_levels)) {
   
   cat("Step 7: Processing gene groups...\n")
   
-  gene_group_files <- list.files(GENE_GROUPS_DIR, pattern = "\\.(csv|txt|tsv)$", full.names = TRUE)
+  gene_group_files <- list.files(GENE_GROUPS_DIR, pattern = "\\.(csv|txt|tsv)$", recursive = TRUE, full.names = TRUE)
   
   # Filter to only process gene groups specified in GENE_GROUPS_STR (from bash config)
   gene_groups_str <- Sys.getenv("GENE_GROUPS_STR", unset = "")
@@ -432,7 +446,21 @@ for (level_name in names(processing_levels)) {
         } else {
           # Base-ID match: may return multiple transcripts at isoform level
           hits <- data_rownames[base_ids == gene]
-          if (length(hits) > 0) genes_in_data <- c(genes_in_data, hits)
+          if (length(hits) > 0) {
+            genes_in_data <- c(genes_in_data, hits)
+          } else {
+            # Reverse: strip suffix from gene_list ID to match gene-level row IDs
+            # e.g., gene "SMEL5_06g022750.1" -> "SMEL5_06g022750" matches gene-level data
+            gene_base <- sub("\\.[0-9]+$", "", gene)
+            if (gene_base != gene) {
+              hits2 <- data_rownames[base_ids == gene_base]
+              if (length(hits2) > 0) {
+                genes_in_data <- c(genes_in_data, hits2)
+              } else if (gene_base %in% data_rownames) {
+                genes_in_data <- c(genes_in_data, gene_base)
+              }
+            }
+          }
         }
       }
       genes_in_data <- unique(genes_in_data)
