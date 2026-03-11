@@ -12,7 +12,7 @@ set -o pipefail   # -e/-u omitted intentionally (sourced functions use boolean r
 THREADS=96
 ENABLE_GPU="FALSE"
 ENABLE_GNU_PARALLEL="TRUE"
-DESIRED_CPU_PER_JOB=2
+DESIRED_CPU_PER_JOB=8
 AVAILABLE_RAM_GB=64
 GPU_VRAM_GB=8
 
@@ -191,9 +191,11 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
         if [[ "$ENABLE_GNU_PARALLEL" == "TRUE" && $JOBS -gt 1 ]] && command -v parallel &>/dev/null; then
             log_info "GNU Parallel: $JOBS jobs"
             export_utils_for_parallel
-            export SCRIPT_DIR LOG_FILE ERROR_WARN_FILE RUN_ID ANALYSIS_MODULES_DIR GENE_GROUPS_DIR
-            export MASTER_REFERENCE THREADS ENABLE_GPU CURRENT_DATASET
-            export GENE_GROUPS_STR="${GENE_GROUPS[*]}" ANALYSES_STR="${ANALYSES[*]}"
+            # SCRIPT_DIR, LOG_FILE, etc. are only needed by parallel subshells;
+            # ANALYSIS_MODULES_DIR, GENE_GROUPS_DIR, MASTER_REFERENCE, THREADS,
+            # ENABLE_GPU, CURRENT_DATASET, GENE_GROUPS_STR, ANALYSES_STR are
+            # already exported at lines 165-166/188 — skip re-exporting them.
+            export SCRIPT_DIR LOG_FILE ERROR_WARN_FILE RUN_ID
             printf '%s\n' "${METHODS[@]}" | parallel \
                 -j "$JOBS" \
                 --halt soon,fail=1 \
