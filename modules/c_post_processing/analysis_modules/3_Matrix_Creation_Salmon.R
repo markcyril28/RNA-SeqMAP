@@ -116,10 +116,15 @@ cat("Output directory:        ", output_dir, "\n\n")
 results <- list()
 
 if (GENERATE_GENE_LEVEL) {
-  txi <- import_salmon(quant_dir, SAMPLE_IDS, tx2gene = .tx2gene)
-  if (!is.null(txi)) {
-    results$gene_level     <- txi$counts
-    results$gene_level_tpm <- txi$abundance
+  if (is.null(.tx2gene)) {
+    cat("WARNING: Skipping gene-level import — tx2gene mapping not found.\n")
+    cat("  Gene-level matrices require a .gene_trans_map file to aggregate transcripts to genes.\n")
+  } else {
+    txi <- import_salmon(quant_dir, SAMPLE_IDS, tx2gene = .tx2gene)
+    if (!is.null(txi)) {
+      results$gene_level     <- txi$counts
+      results$gene_level_tpm <- txi$abundance
+    }
   }
 }
 
