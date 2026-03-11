@@ -29,6 +29,34 @@ STAR_READ_LENGTH="${STAR_READ_LENGTH:-100}"
 # Set to "false" to keep 2-pass genome, unsorted BAM, etc. for debugging
 STAR_DELETE_TRANSIENT="${STAR_DELETE_TRANSIENT:-true}"
 
+# Calculate safe per-thread memory for samtools sort.
+# samtools sort -m VALUE is per-thread (not total), so total RAM = VALUE x (threads + 1).
+# This function queries available system RAM and divides by active sorting threads,
+# reserving headroom for STAR and other processes.
+# Usage: _samtools_sort_mem <num_threads> [parallel_jobs]
+_samtools_sort_mem() {
+	local sort_threads="${1:-4}"
+	local parallel_jobs="${2:-1}"
+	# Total memory slots = (sort_threads + 1 main) x concurrent jobs
+	local total_slots=$(( (sort_threads + 1) * parallel_jobs ))
+	[[ $total_slots -lt 1 ]] && total_slots=1
+
+	local avail_mb
+	avail_mb=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null) \
+		|| avail_mb=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1/1048576}') \
+		|| avail_mb=8192  # fallback: 8GB
+
+	# Reserve 25% for STAR, OS, and other processes
+	local usable_mb=$(( avail_mb * 75 / 100 ))
+	local per_thread_mb=$(( usable_mb / total_slots ))
+
+	# Clamp between 256MB and 4GB per thread
+	[[ $per_thread_mb -lt 256 ]] && per_thread_mb=256
+	[[ $per_thread_mb -gt 4096 ]] && per_thread_mb=4096
+
+	echo "${per_thread_mb}M"
+}
+
 # REPRODUCIBILITY NOTE: Salmon's EM algorithm convergence is thread-schedule dependent.
 # For exact reproducibility, always use the same --threads value across runs.
 # Salmon does not expose a --seed flag for its internal EM algorithm.
@@ -542,8 +570,10 @@ star_alignment_pipeline() {
 				return 1
 			fi
 
-			_parallel_log STAR "$SRR" INFO "Sorting BAM with samtools"
-			samtools sort -@ "$threads_per_job" -m 2G -o "$bam_output" "$unsorted_bam" 2>&1 | sed 's/^/\t/'
+			local _sort_mem
+			_sort_mem=$(_samtools_sort_mem "$threads_per_job" "$parallel_jobs")
+			_parallel_log STAR "$SRR" INFO "Sorting BAM with samtools (-@ $threads_per_job -m $_sort_mem)"
+			samtools sort -@ "$threads_per_job" -m "$_sort_mem" -o "$bam_output" "$unsorted_bam" 2>&1 | sed 's/^/\t/'
 			local sort_exit=${PIPESTATUS[0]}
 			[[ $sort_exit -ne 0 ]] && { _parallel_log STAR "$SRR" ERROR "samtools sort failed"; return 1; }
 
@@ -568,12 +598,12 @@ star_alignment_pipeline() {
 			_parallel_log STAR "$SRR" INFO "Completed successfully"
 			return 0
 		}
-		export -f _m3_star_parallel_worker
+		export -f _m3_star_parallel_worker _samtools_sort_mem
 
 		printf '%s\n' "${rnaseq_list[@]}" | parallel \
 			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
 			--env abs_trim_dir_root --env abs_error_warn_file --env keep_bam_global \
-			--env fasta_tag --env threads_per_job \
+			--env fasta_tag --env threads_per_job --env parallel_jobs \
 			--env star_index_dir --env star_genome_dir \
 			--env STAR_DELETE_TRANSIENT --env PROJECT_ROOT \
 			--env OVERWRITE_MODE --env effective_genome_load \
@@ -713,9 +743,11 @@ star_alignment_pipeline() {
 			fi
 
 			# Sort BAM with samtools
-			log_info "[STAR] Sorting BAM with samtools..."
+			local _sort_mem
+			_sort_mem=$(_samtools_sort_mem "$THREADS" 1)
+			log_info "[STAR] Sorting BAM with samtools (-@ $THREADS -m $_sort_mem)..."
 
-			if ! samtools sort -@ "$THREADS" -m 2G -o "$bam_output" "$unsorted_bam" 2>&1; then
+			if ! samtools sort -@ "$THREADS" -m "$_sort_mem" -o "$bam_output" "$unsorted_bam" 2>&1; then
 				log_error "[STAR] FATAL: samtools sort failed for $SRR"
 				return 1
 			fi
