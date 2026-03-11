@@ -48,6 +48,7 @@ salmon_saf_pipeline() {
 	[[ ${#rnaseq_list[@]} -eq 0 ]] && rnaseq_list=("${SRR_COMBINED_LIST[@]}")
 
 	local tag="$(basename "${fasta%.*}")"
+	set_fasta_output_dirs "$tag"
 	# Use an absolute path so $work is unambiguous regardless of the caller's CWD
 	local work="$SALMON_SAF_ROOT/tmp_${tag}_gentrome"
 	local idx_dir="$SALMON_INDEX_ROOT/decoySAF"
@@ -222,26 +223,10 @@ _create_salmon_matrices() {
 	# without needing to do a recursive glob search across inputs/
 	export GENE_TRANS_MAP_FILE="$gene_trans_map"
 	
-	# Build per-sample quant.sf paths from srr_list; fall back to glob only when list is empty.
-	# This prevents stale directories from prior runs being silently merged into the matrix.
-	local quant_sf_files=()
-	if [[ ${#srr_list[@]} -gt 0 ]]; then
-		for _s in "${srr_list[@]}"; do
-			[[ -f "$quant_root/$_s/quant.sf" ]] && quant_sf_files+=("$quant_root/$_s/quant.sf")
-		done
-	fi
-	if [[ ${#quant_sf_files[@]} -eq 0 ]]; then
-		while IFS= read -r _qf; do quant_sf_files+=("$_qf"); done \
-			< <(find "$quant_root" -name "quant.sf" 2>/dev/null | sort)
-	fi
-
 	# abundance_estimates_to_matrix.pl (Trinity) only supports RSEM|eXpress|kallisto,
 	# not salmon — skip it and use the manual fallback directly.
 	log_info "[SALMON MATRIX] abundance_estimates_to_matrix.pl does not support --est_method salmon; using manual count matrix builder."
 	_create_manual_salmon_matrix "$quant_root" "$matrix_dir" srr_list[@]
-
-	# Prepare DESeq2-compatible outputs
-	_prepare_salmon_deseq2_output "$tag" "$quant_root" "$matrix_dir" srr_list[@]
 }
 
 _create_manual_salmon_matrix() {
@@ -305,110 +290,4 @@ _create_manual_salmon_matrix() {
 
 		rm -f "$temp_gene_ids" "$temp_counts" "$matrix_dir"/*_counts.tmp
 	fi
-}
-
-_prepare_salmon_deseq2_output() {
-	local tag="$1"
-	local quant_root="$2"
-	local matrix_dir="$3"
-	local _arr_name="${4:-}"
-	local srr_list=()
-	if [[ -n "$_arr_name" ]]; then
-		local _tmp=("${!_arr_name}")
-		for _s in "${_tmp[@]}"; do [[ -n "$_s" ]] && srr_list+=("$_s"); done
-	fi
-
-	# Fallback: discover samples from quant.sf files if SRR list is empty
-	if [[ ${#srr_list[@]} -eq 0 ]]; then
-		while IFS= read -r _qf; do
-			srr_list+=("$(basename "$(dirname "$_qf")")");
-		done < <(find "$quant_root" -name "quant.sf" 2>/dev/null)
-	fi
-
-	log_step "Preparing DESeq2-compatible count matrix for Salmon pipeline"
-	
-	local deseq2_dir="$matrix_dir/deseq2_input"
-	local gene_count_matrix="$deseq2_dir/gene_count_matrix.csv"
-	local sample_metadata="$deseq2_dir/sample_metadata.csv"
-	mkdir -p "$deseq2_dir"
-	
-	# Verify quantifications
-	local quant_count=0
-	for SRR in "${srr_list[@]}"; do
-		# Use arithmetic assignment (not ((++))) to avoid exit-code 1 when count is 0 under set -e
-		[[ -f "$quant_root/$SRR/quant.sf" ]] && quant_count=$((quant_count + 1))
-	done
-	
-	[[ $quant_count -lt 2 ]] && { log_error "Insufficient Salmon quantifications (found: $quant_count, need: ≥2)"; return 1; }
-	log_info "[SALMON] Found $quant_count samples with successful quantifications"
-	
-	# Convert to CSV
-	if [[ -f "$matrix_dir/genes.counts.matrix" && ! -f "$gene_count_matrix" ]]; then
-		log_info "[SALMON MATRIX] Converting count matrix to CSV format..."
-		sed 's/\t/,/g' "$matrix_dir/genes.counts.matrix" | sed '1s/transcript_id/Transcript_ID/' > "$gene_count_matrix"
-	fi
-	
-	# Create sample metadata
-	[[ ! -f "$sample_metadata" ]] && create_sample_metadata "$sample_metadata" "${srr_list[@]}"
-
-	# Generate tximport script
-	local tximport_script="$deseq2_dir/run_tximport_salmon.R"
-	[[ ! -f "$tximport_script" ]] && generate_tximport_script "salmon" "$quant_root" "$tximport_script" "$sample_metadata"
-
-	# Create TPM matrix
-	if [[ -f "$matrix_dir/genes.TPM.not_cross_norm" ]]; then
-		local tpm_matrix="$deseq2_dir/gene_tpm_matrix.csv"
-		[[ ! -f "$tpm_matrix" ]] && sed 's/\t/,/g' "$matrix_dir/genes.TPM.not_cross_norm" | sed '1s/gene_id/Gene_ID/' > "$tpm_matrix"
-	fi
-
-	# Create summary
-	_create_salmon_summary "$tag" "$quant_root" "$deseq2_dir" srr_list[@]
-	
-	# Validate
-	[[ -f "$gene_count_matrix" ]] && validate_count_matrix "$gene_count_matrix" "gene" 2
-	
-	log_info "DESeq2 input files:"
-	log_info "  - Gene count matrix: $gene_count_matrix"
-	log_info "  - Sample metadata: $sample_metadata"
-}
-
-_create_salmon_summary() {
-	local tag="$1"
-	local quant_root="$2"
-	local deseq2_dir="$3"
-	local _arr_name="${4:-}"
-	local srr_list=()
-	if [[ -n "$_arr_name" ]]; then
-		local _tmp=("${!_arr_name}")
-		for _s in "${_tmp[@]}"; do [[ -n "$_s" ]] && srr_list+=("$_s"); done
-	fi
-	
-	local summary_file="$deseq2_dir/salmon_summary.txt"
-	[[ -f "$summary_file" ]] && return 0
-	
-	{
-		echo "==================================================================="
-		echo "Salmon SAF Quantification Summary for $tag"
-		echo "==================================================================="
-		echo "Date: $(date)"
-		echo "Samples processed: ${#srr_list[@]}"
-		echo "Method: Salmon Selective Alignment with decoy-aware indexing"
-		echo ""
-		echo "Per-sample statistics:"
-		echo "-------------------------------------------------------------------"
-		
-		for SRR in "${srr_list[@]}"; do
-			if [[ -f "$quant_root/$SRR/quant.sf" ]]; then
-				# Separate local declarations from assignments so errors in command
-				# substitutions are not silently swallowed (local always returns 0)
-				local total expressed reads
-				total=$(awk 'END{print NR-1}' "$quant_root/$SRR/quant.sf")
-				expressed=$(awk 'NR>1 && $5>0 {n++} END{print n+0}' "$quant_root/$SRR/quant.sf")
-				reads=$(awk 'NR>1 {sum+=$5} END {print int(sum)}' "$quant_root/$SRR/quant.sf")
-				echo "$SRR: $expressed/$total expressed, $reads total counts"
-			fi
-		done
-	} > "$summary_file"
-	
-	log_info "[SALMON SUMMARY] Summary saved to: $summary_file"
 }

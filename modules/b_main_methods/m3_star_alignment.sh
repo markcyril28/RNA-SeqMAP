@@ -113,9 +113,26 @@ star_alignment_pipeline() {
 		transcriptome_fasta="${STAR_TRANSCRIPTOME_FASTA:-}"
 	fi
 	if [[ -z "$transcriptome_fasta" ]]; then
-		# Auto-detect: look for <basename>_transcripts.fa alongside the genome FASTA
-		local auto_tx="$(dirname "$fasta")/$(basename "${fasta%.*}")_transcripts.fa"
-		if [[ -f "$auto_tx" ]]; then
+		# Auto-detect: look for transcriptome FASTA alongside the genome FASTA.
+		# Try multiple naming conventions:
+		#   1. <basename>_transcripts.fa       (e.g. GPE001970_genome_transcripts.fa)
+		#   2. <prefix>_transcripts.fa          (strip _genome suffix: GPE001970_transcripts.fa)
+		#   3. <prefix>_transcripts.function.fa (e.g. Eggplant_V4.1_transcripts.function.fa)
+		local fasta_dir fasta_stem auto_tx=""
+		fasta_dir="$(dirname "$fasta")"
+		fasta_stem="$(basename "${fasta%.*}")"
+		local prefix="${fasta_stem%_genome}"  # strip _genome suffix if present
+		for candidate in \
+			"${fasta_dir}/${fasta_stem}_transcripts.fa" \
+			"${fasta_dir}/${prefix}_transcripts.fa" \
+			"${fasta_dir}/${prefix}_transcripts.function.fa"; do
+			if [[ -f "$candidate" ]]; then
+				auto_tx="$candidate"
+				break
+			fi
+		done
+
+		if [[ -n "$auto_tx" ]]; then
 			transcriptome_fasta="$auto_tx"
 			log_info "[STAR] Auto-detected transcriptome FASTA: $transcriptome_fasta"
 		else
@@ -136,6 +153,7 @@ star_alignment_pipeline() {
 	local fasta_base fasta_tag star_index_dir star_genome_dir
 	fasta_base="$(basename "$fasta")"
 	fasta_tag="${fasta_base%.*}"
+	set_fasta_output_dirs "$fasta_tag"
 
 	# Get absolute paths - using realpath for robustness, fallback to manual resolution
 	local abs_star_index_root abs_star_align_root
@@ -654,7 +672,7 @@ star_alignment_pipeline() {
 				quant_exit=${PIPESTATUS[0]}
 			else
 				salmon quant -p "$threads_per_job" -i "$salmon_idx" -o "$quant_dir" \
-					--validateMappings -l "${_sal_lib_se:-A}" -r "$trimmed1" 2>&1 | \
+					--validateMappings --gcBias -l "${_sal_lib_se:-A}" -r "$trimmed1" 2>&1 | \
 					sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
 				quant_exit=${PIPESTATUS[0]}
 			fi
@@ -697,7 +715,7 @@ star_alignment_pipeline() {
 					--validateMappings --gcBias -l "${_sal_lib_pe:-A}" -1 "$trimmed1" -2 "$trimmed2"
 			else
 				run_with_space_time_log salmon quant -p "$THREADS" -i "$salmon_idx" -o "$quant_dir" \
-					--validateMappings -l "${_sal_lib_se:-A}" -r "$trimmed1"
+					--validateMappings --gcBias -l "${_sal_lib_se:-A}" -r "$trimmed1"
 			fi
 
 			if [[ -f "$quant_dir/quant.sf" ]]; then

@@ -29,7 +29,139 @@ THREADS_PER_RSEM_JOB="${THREADS_PER_RSEM_JOB:-$((THREADS / MAX_PARALLEL_SAMPLES)
 
 # Library strandedness: none (unstranded), forward (sense), reverse (antisense/dUTP)
 # Set to "reverse" for dUTP-based stranded libraries (most modern Illumina RNA-seq)
-RSEM_STRANDEDNESS="${RSEM_STRANDEDNESS:-none}"
+# Set to "auto" to auto-detect using Salmon --libType A (recommended)
+RSEM_STRANDEDNESS="${RSEM_STRANDEDNESS:-auto}"
+
+# ==============================================================================
+# STRANDEDNESS AUTO-DETECTION (via Salmon --libType A)
+# ==============================================================================
+
+# Detect library strandedness by running Salmon on a small read subset.
+# Caches the result per FASTA tag in the index directory.
+# Usage: _rsem_detect_strandedness <fasta> <first_srr> <index_root>
+# Sets: RSEM_STRANDEDNESS (global)
+_rsem_detect_strandedness() {
+	local fasta="$1"
+	local first_srr="$2"
+	local index_root="$3"
+	local cache_file="$index_root/.detected_strandedness"
+
+	# Return cached result if available
+	if [[ -f "$cache_file" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
+		RSEM_STRANDEDNESS=$(cat "$cache_file")
+		log_info "[STRANDEDNESS] Using cached result: $RSEM_STRANDEDNESS (from $cache_file)"
+		return 0
+	fi
+
+	# Check that Salmon is available
+	if ! command -v salmon >/dev/null 2>&1; then
+		log_warn "[STRANDEDNESS] Salmon not found — falling back to 'none' (unstranded)"
+		RSEM_STRANDEDNESS="none"
+		return 0
+	fi
+
+	# Locate trimmed reads for the first sample
+	find_trimmed_fastq "$first_srr"
+	if [[ -z "$trimmed1" ]]; then
+		log_warn "[STRANDEDNESS] No trimmed reads for $first_srr — falling back to 'none'"
+		RSEM_STRANDEDNESS="none"
+		return 0
+	fi
+
+	log_step "[STRANDEDNESS] Auto-detecting library strandedness using Salmon (sample: $first_srr)"
+
+	local tmp_dir
+	tmp_dir=$(mktemp -d "${index_root}/strandedness_detect_XXXXXX")
+	local salmon_idx="$tmp_dir/salmon_idx"
+	local salmon_quant="$tmp_dir/salmon_quant"
+
+	# Build a lightweight Salmon index (using the same transcriptome FASTA)
+	salmon index -t "$fasta" -i "$salmon_idx" --threads 4 -k 23 2>"$tmp_dir/salmon_index.log" || {
+		log_warn "[STRANDEDNESS] Salmon index failed — falling back to 'none'"
+		rm -rf "$tmp_dir"
+		RSEM_STRANDEDNESS="none"
+		return 0
+	}
+
+	# Quantify with --libType A (auto-detect) using a read subset (--numBootstraps 0, --validateMappings off for speed)
+	local salmon_exit
+	if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
+		salmon quant -i "$salmon_idx" -l A \
+			-1 "$trimmed1" -2 "$trimmed2" \
+			-o "$salmon_quant" --threads 4 \
+			--skipQuant 2>"$tmp_dir/salmon_quant.log"
+		salmon_exit=$?
+	else
+		salmon quant -i "$salmon_idx" -l A \
+			-r "$trimmed1" \
+			-o "$salmon_quant" --threads 4 \
+			--skipQuant 2>"$tmp_dir/salmon_quant.log"
+		salmon_exit=$?
+	fi
+
+	if [[ $salmon_exit -ne 0 ]]; then
+		log_warn "[STRANDEDNESS] Salmon quant failed — falling back to 'none'"
+		rm -rf "$tmp_dir"
+		RSEM_STRANDEDNESS="none"
+		return 0
+	fi
+
+	# Parse the inferred library type from lib_format_counts.json
+	local lib_format="$salmon_quant/lib_format_counts.json"
+	if [[ ! -f "$lib_format" ]]; then
+		log_warn "[STRANDEDNESS] lib_format_counts.json not found — falling back to 'none'"
+		rm -rf "$tmp_dir"
+		RSEM_STRANDEDNESS="none"
+		return 0
+	fi
+
+	# Extract the expected_format field (Salmon's inferred library type)
+	local inferred_type
+	inferred_type=$(python3 -c "
+import json, sys
+with open('$lib_format') as f:
+    data = json.load(f)
+print(data.get('expected_format', 'U'))
+" 2>/dev/null)
+
+	# Map Salmon library type codes to RSEM strandedness
+	# Salmon paired-end: IU=unstranded, ISF=forward(sense), ISR=reverse(antisense)
+	# Salmon single-end: U=unstranded, SF=forward, SR=reverse
+	case "$inferred_type" in
+		IU|U)   RSEM_STRANDEDNESS="none" ;;
+		ISF|SF) RSEM_STRANDEDNESS="forward" ;;
+		ISR|SR) RSEM_STRANDEDNESS="reverse" ;;
+		*)
+			log_warn "[STRANDEDNESS] Unrecognized Salmon library type '$inferred_type' — falling back to 'none'"
+			RSEM_STRANDEDNESS="none"
+			;;
+	esac
+
+	# Also log the read counts per orientation for transparency
+	local num_compat
+	num_compat=$(python3 -c "
+import json
+with open('$lib_format') as f:
+    d = json.load(f)
+for k in ['compatible_fragment_ratio', 'num_compatible_fragments',
+           'num_assigned_fragments']:
+    if k in d: print(f'  {k}: {d[k]}')
+for k in sorted(d.keys()):
+    if 'strand' in k.lower() or k.startswith('read'): print(f'  {k}: {d[k]}')
+" 2>/dev/null)
+	[[ -n "$num_compat" ]] && log_info "[STRANDEDNESS] Salmon fragment stats:\n$num_compat"
+
+	log_info "[STRANDEDNESS] Detected: $RSEM_STRANDEDNESS (Salmon inferred: $inferred_type)"
+
+	# Cache the result
+	mkdir -p "$index_root"
+	echo "$RSEM_STRANDEDNESS" > "$cache_file"
+
+	# Cleanup temp files
+	rm -rf "$tmp_dir"
+
+	return 0
+}
 
 # ==============================================================================
 # MAIN PIPELINE: BOWTIE2 + RSEM
@@ -54,11 +186,17 @@ bowtie2_rsem_pipeline() {
 	command -v dos2unix >/dev/null 2>&1 && dos2unix "$fasta" 2>/dev/null || true
 
 	local tag="$(basename "${fasta%.*}")"
+	set_fasta_output_dirs "$tag"
 	local rsem_idx="$RSEM_INDEX_ROOT/rsem_ref"
 	local quant_root="$RSEM_QUANT_ROOT"
 	local matrix_dir="$RSEM_MATRIX_ROOT"
 
 	mkdir -p "$RSEM_INDEX_ROOT" "$quant_root" "$matrix_dir"
+
+	# AUTO-DETECT STRANDEDNESS (runs once, caches result)
+	if [[ "$RSEM_STRANDEDNESS" == "auto" ]]; then
+		_rsem_detect_strandedness "$fasta" "${rnaseq_list[0]}" "$RSEM_INDEX_ROOT"
+	fi
 
 	# BUILD RSEM REFERENCE
 	# Check all required index files: .grp (RSEM) + .rev.2.bt2 (written last by Bowtie2 build)
@@ -106,7 +244,7 @@ _rsem_quantify_sequential() {
 		done
 	fi
 
-	log_info "[RSEM QUANT] Running SEQUENTIAL quantification for ${#samples[@]} samples (threads per job: $THREADS)"
+	log_info "[RSEM QUANT] Running SEQUENTIAL quantification for ${#samples[@]} samples ($THREADS threads)"
 
 	local failed_samples=0
 	for SRR in "${samples[@]}"; do
@@ -394,52 +532,55 @@ _create_manual_rsem_matrix() {
 		fi
 	done
 
-	if [[ -n "$first_sample" ]]; then
-		local num_genes
-		num_genes=$(wc -l < "$temp_gene_ids")
-
-		for SRR in "${srr_list[@]}"; do
-			if [[ -f "$quant_root/$SRR/${SRR}.genes.results" ]]; then
-				# Preserve fractional expected counts — tximport requires non-integer values
-				awk 'NR>1 {print $5}' "$quant_root/$SRR/${SRR}.genes.results" > "$matrix_dir/${SRR}_counts.tmp"
-				awk 'NR>1 {print $6}' "$quant_root/$SRR/${SRR}.genes.results" > "$matrix_dir/${SRR}_tpm.tmp"
-				awk 'NR>1 {print $7}' "$quant_root/$SRR/${SRR}.genes.results" > "$matrix_dir/${SRR}_fpkm.tmp"
-			else
-				log_warn "[RSEM MATRIX] Missing results for $SRR — filling with zeros in count matrix"
-				yes 0 | head -n "$num_genes" > "$matrix_dir/${SRR}_counts.tmp"
-				yes 0 | head -n "$num_genes" > "$matrix_dir/${SRR}_tpm.tmp"
-				yes 0 | head -n "$num_genes" > "$matrix_dir/${SRR}_fpkm.tmp"
-			fi
-		done
-
-		# Build ordered file lists matching srr_list order (avoids glob sort mismatch)
-		local count_files=() tpm_files=() fpkm_files=()
-		for SRR in "${srr_list[@]}"; do
-			count_files+=("$matrix_dir/${SRR}_counts.tmp")
-			tpm_files+=("$matrix_dir/${SRR}_tpm.tmp")
-			fpkm_files+=("$matrix_dir/${SRR}_fpkm.tmp")
-		done
-
-		# Create count matrix
-		echo -n "gene_id" > "$matrix_dir/genes.counts.matrix"
-		for SRR in "${srr_list[@]}"; do echo -ne "\t$SRR" >> "$matrix_dir/genes.counts.matrix"; done
-		echo "" >> "$matrix_dir/genes.counts.matrix"
-		paste "$temp_gene_ids" "${count_files[@]}" >> "$matrix_dir/genes.counts.matrix"
-
-		# Create TPM matrix
-		echo -n "gene_id" > "$matrix_dir/genes.TPM.not_cross_norm"
-		for SRR in "${srr_list[@]}"; do echo -ne "\t$SRR" >> "$matrix_dir/genes.TPM.not_cross_norm"; done
-		echo "" >> "$matrix_dir/genes.TPM.not_cross_norm"
-		paste "$temp_gene_ids" "${tpm_files[@]}" >> "$matrix_dir/genes.TPM.not_cross_norm"
-
-		# Create FPKM matrix
-		echo -n "gene_id" > "$matrix_dir/genes.FPKM.not_cross_norm"
-		for SRR in "${srr_list[@]}"; do echo -ne "\t$SRR" >> "$matrix_dir/genes.FPKM.not_cross_norm"; done
-		echo "" >> "$matrix_dir/genes.FPKM.not_cross_norm"
-		paste "$temp_gene_ids" "${fpkm_files[@]}" >> "$matrix_dir/genes.FPKM.not_cross_norm"
-
-		rm -f "$temp_gene_ids" "$matrix_dir"/*_counts.tmp "$matrix_dir"/*_tpm.tmp "$matrix_dir"/*_fpkm.tmp
+	if [[ -z "$first_sample" ]]; then
+		log_warn "[RSEM MATRIX] No samples have RSEM results — cannot create manual matrix"
+		return 1
 	fi
+
+	local num_genes
+	num_genes=$(wc -l < "$temp_gene_ids")
+
+	for SRR in "${srr_list[@]}"; do
+		if [[ -f "$quant_root/$SRR/${SRR}.genes.results" ]]; then
+			# Preserve fractional expected counts — tximport requires non-integer values
+			awk 'NR>1 {print $5}' "$quant_root/$SRR/${SRR}.genes.results" > "$matrix_dir/${SRR}_counts.tmp"
+			awk 'NR>1 {print $6}' "$quant_root/$SRR/${SRR}.genes.results" > "$matrix_dir/${SRR}_tpm.tmp"
+			awk 'NR>1 {print $7}' "$quant_root/$SRR/${SRR}.genes.results" > "$matrix_dir/${SRR}_fpkm.tmp"
+		else
+			log_warn "[RSEM MATRIX] Missing results for $SRR — filling with zeros in count matrix"
+			yes 0 | head -n "$num_genes" > "$matrix_dir/${SRR}_counts.tmp"
+			yes 0 | head -n "$num_genes" > "$matrix_dir/${SRR}_tpm.tmp"
+			yes 0 | head -n "$num_genes" > "$matrix_dir/${SRR}_fpkm.tmp"
+		fi
+	done
+
+	# Build ordered file lists matching srr_list order (avoids glob sort mismatch)
+	local count_files=() tpm_files=() fpkm_files=()
+	for SRR in "${srr_list[@]}"; do
+		count_files+=("$matrix_dir/${SRR}_counts.tmp")
+		tpm_files+=("$matrix_dir/${SRR}_tpm.tmp")
+		fpkm_files+=("$matrix_dir/${SRR}_fpkm.tmp")
+	done
+
+	# Create count matrix
+	echo -n "gene_id" > "$matrix_dir/genes.counts.matrix"
+	for SRR in "${srr_list[@]}"; do echo -ne "\t$SRR" >> "$matrix_dir/genes.counts.matrix"; done
+	echo "" >> "$matrix_dir/genes.counts.matrix"
+	paste "$temp_gene_ids" "${count_files[@]}" >> "$matrix_dir/genes.counts.matrix"
+
+	# Create TPM matrix
+	echo -n "gene_id" > "$matrix_dir/genes.TPM.not_cross_norm"
+	for SRR in "${srr_list[@]}"; do echo -ne "\t$SRR" >> "$matrix_dir/genes.TPM.not_cross_norm"; done
+	echo "" >> "$matrix_dir/genes.TPM.not_cross_norm"
+	paste "$temp_gene_ids" "${tpm_files[@]}" >> "$matrix_dir/genes.TPM.not_cross_norm"
+
+	# Create FPKM matrix
+	echo -n "gene_id" > "$matrix_dir/genes.FPKM.not_cross_norm"
+	for SRR in "${srr_list[@]}"; do echo -ne "\t$SRR" >> "$matrix_dir/genes.FPKM.not_cross_norm"; done
+	echo "" >> "$matrix_dir/genes.FPKM.not_cross_norm"
+	paste "$temp_gene_ids" "${fpkm_files[@]}" >> "$matrix_dir/genes.FPKM.not_cross_norm"
+
+	rm -f "$temp_gene_ids" "$matrix_dir"/*_counts.tmp "$matrix_dir"/*_tpm.tmp "$matrix_dir"/*_fpkm.tmp
 }
 
 _prepare_rsem_deseq2_output() {
