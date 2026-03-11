@@ -26,6 +26,7 @@ suppressPackageStartupMessages({
 SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", ".")
 source(file.path(SCRIPT_DIR, "0_shared_config.R"))
 source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
+source(file.path(SCRIPT_DIR, "3_Matrix_Creation_utils.R"))
 
 # Salmon quant output is in the alignment results directory, NOT post-proc.
 # Path includes MASTER_REFERENCE (= fasta_tag) to isolate per-reference outputs.
@@ -40,47 +41,15 @@ GENERATE_ISOFORM_LEVEL  <- TRUE
 # ===============================================
 # HELPER: SAVE MATRICES WITH STANDARD NAMING
 # ===============================================
+# Delegates to save_count_matrices() from 3_Matrix_Creation_utils.R to avoid
+# duplicate matrix-saving logic that can drift out of sync.
 
 save_count_matrix <- function(counts_matrix, output_dir, base_name, master_ref,
-                               level_suffix, sample_labels, tpm_matrix = NULL) {
+                               level_suffix, tpm_matrix = NULL) {
   processing_level <- gsub("^_", "", level_suffix)
-
-  save_matrix <- function(matrix_data, count_type, gene_type) {
-    output_file <- file.path(output_dir,
-      paste0(base_name, "_", count_type, "_", gene_type,
-             "_from_", master_ref, "_", processing_level, ".tsv"))
-    matrix_df <- as.data.frame(matrix_data, check.names = FALSE)
-    matrix_df <- cbind(GeneID = rownames(matrix_data), matrix_df)
-    rownames(matrix_df) <- NULL
-    write.table(matrix_df, output_file, sep = "\t", quote = FALSE, row.names = FALSE)
-    cat("  Saved:", basename(output_file), "\n")
-  }
-
-  # NumReads (raw counts) - always save Gene_ID (needed by DESeq2 and as source for Shortened_Name)
-  save_matrix(counts_matrix, "NumReads", "Gene_ID")
-  if ("Shortened_Name" %in% GENE_TYPES) {
-    counts_short <- convert_to_organ_labels(counts_matrix)
-    gene_group_for_map <- sub("_in_.*$", "", base_name)
-    counts_short <- tryCatch(
-      convert_to_shortened_names(counts_short, gene_group_for_map),
-      error = function(e) counts_short
-    )
-    save_matrix(counts_short, "NumReads", "Shortened_Name")
-  }
-
-  # TPM (normalized abundance)
-  if (!is.null(tpm_matrix)) {
-    save_matrix(tpm_matrix, "tpm", "Gene_ID")
-    if ("Shortened_Name" %in% GENE_TYPES) {
-      tpm_short <- convert_to_organ_labels(tpm_matrix)
-      gene_group_for_map <- sub("_in_.*$", "", base_name)
-      tpm_short <- tryCatch(
-        convert_to_shortened_names(tpm_short, gene_group_for_map),
-        error = function(e) tpm_short
-      )
-      save_matrix(tpm_short, "tpm", "Shortened_Name")
-    }
-  }
+  save_count_matrices(counts_matrix, output_dir, prefix = base_name,
+                      master_ref = master_ref, level = processing_level,
+                      tpm = tpm_matrix, count_type_label = "NumReads")
 }
 
 # ===============================================
@@ -304,7 +273,6 @@ for (level_name in names(processing_levels)) {
                     base_name    = full_ref_folder,
                     master_ref   = MASTER_REFERENCE,
                     level_suffix = level_config$output_suffix,
-                    sample_labels = SAMPLE_LABELS,
                     tpm_matrix   = tpm_matrix)
   cat("\n")
 
@@ -416,7 +384,6 @@ for (level_name in names(processing_levels)) {
                         base_name    = output_folder_name,
                         master_ref   = MASTER_REFERENCE,
                         level_suffix = level_config$output_suffix,
-                        sample_labels = SAMPLE_LABELS,
                         tpm_matrix   = subset_tpm)
       successful_groups <- successful_groups + 1
     }
