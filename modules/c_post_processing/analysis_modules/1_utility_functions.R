@@ -429,11 +429,11 @@ apply_normalization <- function(data_matrix, normalization_scheme, count_type) {
 
 get_legend_layout <- function(position = "bottom") {
   if (position == "bottom") {
-    list(direction = "horizontal", height = unit(2, "cm"), width = unit(10, "cm"),
-         grid_height = unit(0.8, "cm"), grid_width = unit(2.5, "cm"))
+    list(direction = "horizontal", height = grid::unit(2, "cm"), width = grid::unit(10, "cm"),
+         grid_height = grid::unit(0.8, "cm"), grid_width = grid::unit(2.5, "cm"))
   } else {
-    list(direction = "vertical", height = unit(10, "cm"), width = unit(2, "cm"),
-         grid_height = unit(2.5, "cm"), grid_width = unit(0.8, "cm"))
+    list(direction = "vertical", height = grid::unit(10, "cm"), width = grid::unit(2, "cm"),
+         grid_height = grid::unit(2.5, "cm"), grid_width = grid::unit(0.8, "cm"))
   }
 }
 

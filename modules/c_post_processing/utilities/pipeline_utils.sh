@@ -185,10 +185,12 @@ run_method_analysis() {
 
         # Check for script in utilities directory first (for shell scripts like stringtie_matrix_builder.sh)
         local script_path=""
-        if [[ -f "$UTILITIES_DIR/$script" ]]; then
-            script_path="$UTILITIES_DIR/$script"
-        elif [[ -f "$ANALYSIS_MODULES_DIR/$script" ]]; then
-            script_path="$ANALYSIS_MODULES_DIR/$script"
+        local _util_dir="${UTILITIES_DIR:-$BASE_DIR/modules/c_post_processing/utilities}"
+        local _mods_dir="${ANALYSIS_MODULES_DIR:-$BASE_DIR/modules/c_post_processing/analysis_modules}"
+        if [[ -f "$_util_dir/$script" ]]; then
+            script_path="$_util_dir/$script"
+        elif [[ -f "$_mods_dir/$script" ]]; then
+            script_path="$_mods_dir/$script"
         elif [[ -f "$modules_dir/${script%.R}.R" ]]; then
             script_path="$modules_dir/${script%.R}.R"
         fi

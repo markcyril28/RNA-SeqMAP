@@ -45,7 +45,7 @@ INPUTS_DIR="${INPUTS_DIR:-${BASE_DIR}/2_ALIGNMENT_RESULTs/M2_HISAT2_DeNovo/strin
 # For M1 ref-guided, use m1_ref_guided_matrix_builder.sh
 ABUNDANCE_SUFFIX="_gene_abundances_de_novo.tsv"
 
-OUT_DIR="${OUT_DIR:-count_matrices_from_stringtie}"
+OUT_DIR="${OUT_DIR:-${BASE_DIR}/3_POST_PROC/M2_HISAT2_DeNovo/count_matrices_from_stringtie}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Utilities directory (contains matrix_builder.py)
