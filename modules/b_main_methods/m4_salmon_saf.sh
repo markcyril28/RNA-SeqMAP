@@ -8,7 +8,7 @@
 
 # NOTE: set -e/-u/-o pipefail are intentionally NOT set here — this file is sourced
 # as a library and must not alter the parent shell's error-exit behaviour.
-# Pipe failures in salmon quant are checked manually via PIPESTATUS (lines ~117, ~125).
+# Pipe failures in salmon quant are checked manually via PIPESTATUS (lines ~119, ~127).
 
 # Guard against double-sourcing
 [[ "${M4_SALMON_SOURCED:-}" == "true" ]] && return 0
@@ -191,7 +191,7 @@ salmon_saf_pipeline() {
 
 	# MERGE MATRICES
 	_create_salmon_matrices "$fasta" "$tag" "$quant_root" "$matrix_dir" rnaseq_list[@]
-	
+
 	log_step "COMPLETED: Salmon-SAF pipeline for $tag"
 }
 
@@ -212,7 +212,7 @@ _create_salmon_matrices() {
 	fi
 
 	log_step "Generating gene and transcript matrices (Salmon)"
-	
+
 	# Check or create gene_trans_map
 	local gene_trans_map="${fasta}.gene_trans_map"
 	if [[ ! -f "$gene_trans_map" ]]; then
@@ -222,7 +222,7 @@ _create_salmon_matrices() {
 	# Export so tximport_salmon_to_matrices.R can locate it via GENE_TRANS_MAP_FILE
 	# without needing to do a recursive glob search across inputs/
 	export GENE_TRANS_MAP_FILE="$gene_trans_map"
-	
+
 	# abundance_estimates_to_matrix.pl (Trinity) only supports RSEM|eXpress|kallisto,
 	# not salmon — skip it and use the manual fallback directly.
 	log_info "[SALMON MATRIX] abundance_estimates_to_matrix.pl does not support --est_method salmon; using manual count matrix builder."
@@ -245,10 +245,10 @@ _create_manual_salmon_matrix() {
 			srr_list+=("$(basename "$(dirname "$_qf")")");
 		done < <(find "$quant_root" -name "quant.sf" 2>/dev/null)
 	fi
-	
+
 	local temp_gene_ids="$matrix_dir/temp_gene_ids.txt"
 	local temp_counts="$matrix_dir/temp_counts.txt"
-	
+
 	local first_sample=""
 	for SRR in "${srr_list[@]}"; do
 		if [[ -f "$quant_root/$SRR/quant.sf" ]]; then
@@ -257,7 +257,7 @@ _create_manual_salmon_matrix() {
 			break
 		fi
 	done
-	
+
 	if [[ -n "$first_sample" ]]; then
 		for SRR in "${srr_list[@]}"; do
 			if [[ -f "$quant_root/$SRR/quant.sf" ]]; then
