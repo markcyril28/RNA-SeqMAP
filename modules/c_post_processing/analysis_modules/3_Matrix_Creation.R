@@ -115,7 +115,11 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
       txi_gene <- tryCatch(
         tximport(setNames(file.path(quant_dir, sample_ids, "quant.sf"), sample_ids),
                  type = "salmon"),
-        error = function(e) NULL)
+        error = function(e) {
+          cat("  Warning: M4 gene-level import failed (tx2gene mapping required).", e$message, "\n")
+          cat("  Use 3_Matrix_Creation_Salmon.R for proper gene-level aggregation.\n")
+          NULL
+        })
       if (!is.null(txi_gene)) {
         results$gene_level     <- txi_gene$counts
         results$gene_level_tpm <- txi_gene$abundance

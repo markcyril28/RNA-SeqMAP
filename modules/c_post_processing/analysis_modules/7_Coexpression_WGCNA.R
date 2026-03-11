@@ -19,7 +19,12 @@ suppressPackageStartupMessages({
   library(visNetwork)
 })
 
-allowWGCNAThreads()
+# Control WGCNA threading explicitly for reproducibility.
+# WGCNA's TOM computation uses thread-parallel floating-point accumulation;
+# different thread counts can produce slightly different module assignments.
+# Set WGCNA_THREADS=1 for exact reproducibility, or match thread count across runs.
+WGCNA_THREADS <- as.integer(Sys.getenv("WGCNA_THREADS", unset = as.character(THREADS)))
+allowWGCNAThreads(nThreads = WGCNA_THREADS)
 
 SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", ".")
 source(file.path(SCRIPT_DIR, "0_shared_config.R"))
@@ -53,7 +58,10 @@ TOP_VAR_GENES <- 5000              # Use top N variable genes from transcriptome
 # Low-expression gene filtering (removes unreliable near-zero expression genes)
 # Genes must have expression >= MIN_EXPR_THRESHOLD in at least MIN_EXPR_SAMPLES samples
 # Set MIN_EXPR_THRESHOLD to 0 to disable this filter
-MIN_EXPR_THRESHOLD <- 1            # Minimum expression value (TPM/count) to consider "expressed"
+# NOTE: For M2 (StringTie de novo), input values are TPM/FPKM/coverage — not raw counts.
+#   Coverage is per-base depth and has a different scale than fragment counts;
+#   a threshold of 1 is generally reasonable across all M2 count types.
+MIN_EXPR_THRESHOLD <- 1            # Minimum expression value (TPM/count/coverage) to consider "expressed"
 MIN_EXPR_SAMPLES <- 2              # Minimum number of samples that must meet the threshold
 
 # Figure toggles (all enabled for comprehensive output)
@@ -99,8 +107,18 @@ pick_soft_threshold <- function(data_matrix, output_dir, gene_group) {
   
   fit_index <- -sign(sft$fitIndices[,3]) * sft$fitIndices[,2]
   power_selected <- which(fit_index > 0.80)[1]
-  if (is.na(power_selected)) power_selected <- which.max(fit_index)
-  
+  if (is.na(power_selected)) {
+    # Fallback: pick the power with highest scale-free fit
+    valid_fits <- which(is.finite(fit_index))
+    if (length(valid_fits) > 0) {
+      power_selected <- valid_fits[which.max(fit_index[valid_fits])]
+    } else {
+      # All fit indices are NA/Inf — use a safe default
+      cat("  WARNING: Could not determine optimal soft power (all fit indices invalid). Using default power = 6\n")
+      return(6L)
+    }
+  }
+
   return(powers[power_selected])
 }
 
@@ -325,11 +343,14 @@ identify_hub_genes <- function(gene_info, n_top = N_HUB_GENES) {
   return(hub_genes)
 }
 
-create_correlation_network <- function(data_matrix, query_genes, output_dir, gene_group) {
+create_correlation_network <- function(data_matrix, query_genes, output_dir, gene_group,
+                                       cor_matrix = NULL) {
   if (!GENERATE_WGCNA_FIGURES$correlation_network) return(NULL)
-  
-  # Compute correlation matrix (use GPU if available)
-  cor_matrix <- gpu_cor(t(data_matrix))
+
+  # Compute correlation matrix (use GPU if available), or reuse pre-computed one
+  if (is.null(cor_matrix)) {
+    cor_matrix <- gpu_cor(t(data_matrix))
+  }
   
   # Filter to query genes and their top correlated genes
   matched <- query_genes[query_genes %in% rownames(cor_matrix)]
@@ -371,7 +392,7 @@ create_correlation_network <- function(data_matrix, query_genes, output_dir, gen
     png(file.path(output_dir, paste0(gene_group, "_correlation_network.png")),
         width = 1600, height = 1400, res = 120)
     
-    set.seed(42)
+    set.seed(GLOBAL_RANDOM_SEED)
     layout <- layout_with_fr(g)
     
     plot(g, 
@@ -478,7 +499,7 @@ create_correlation_network <- function(data_matrix, query_genes, output_dir, gen
       png(file.path(output_dir, paste0(gene_group, "_query_genes_network.png")),
           width = 1200, height = 1000, res = 120)
       
-      set.seed(42)
+      set.seed(GLOBAL_RANDOM_SEED)
       layout_q <- layout_with_fr(g_query)
       
       plot(g_query,
@@ -751,13 +772,17 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     write.table(hubs, file.path(output_dir, paste0(gene_group, "_hub_genes.tsv")),
                 sep = "\t", row.names = FALSE, quote = FALSE)
     
-    # ===== STEP 11: Correlation network with query genes bold =====
+    # ===== STEP 11: Compute correlation matrix (once, reuse in Steps 11-13) =====
+    cat("  Computing gene-gene correlation matrix...\n")
+    cor_matrix <- gpu_cor(t(data_filtered))
+
+    # ===== STEP 11b: Correlation network with query genes bold =====
     cat("  Creating correlation network...\n")
-    create_correlation_network(t(data_matrix), query_genes_matched, output_dir, gene_group)
-    
+    create_correlation_network(t(data_matrix), query_genes_matched, output_dir, gene_group,
+                               cor_matrix = cor_matrix)
+
     # ===== STEP 12: Find genes co-expressed with query genes =====
     cat("  Finding genes co-expressed with query genes...\n")
-    cor_matrix <- gpu_cor(t(data_filtered))
     
     coexpr_results <- data.frame()
     for (qg in query_genes_matched) {

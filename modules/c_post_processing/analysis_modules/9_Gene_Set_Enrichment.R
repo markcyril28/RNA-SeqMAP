@@ -147,6 +147,7 @@ run_gsea_analysis <- function(ranked_genes, gene_sets, term2name,
     return(NULL)
   }
   
+  set.seed(GLOBAL_RANDOM_SEED)  # Reproducibility for permutation test
   gsea_result <- GSEA(
     ranked_genes,
     TERM2GENE = gene_sets,
@@ -211,7 +212,15 @@ generate_enrichment_plots <- function(enrich_result, analysis_name, output_dir, 
 # ===============================================
 
 run_gene_set_enrichment <- function(config = NULL, matrices_dir = NULL) {
-  if (is.null(config)) config <- load_runtime_config()
+  # Get method base directory from environment for config file loading
+  method_base_dir <- Sys.getenv("METHOD_BASE_DIR", unset = ".")
+  if (is.null(config)) config <- load_runtime_config(method_base_dir)
+
+  # Set up matrices_dir based on method_base_dir if not provided
+  if (is.null(matrices_dir)) {
+    matrices_dir <- file.path(method_base_dir, get_matrices_dir(CURRENT_METHOD))
+  }
+
   ensure_output_dir(GSEA_OUT_DIR)
   
   print_config_summary("GENE SET ENRICHMENT ANALYSIS", config)
@@ -243,32 +252,51 @@ run_gene_set_enrichment <- function(config = NULL, matrices_dir = NULL) {
     cat("No gene sets available. Provide custom gene sets or run WGCNA first.\n")
     return(NULL)
   }
-  
+
+  # Build universe from FULL TRANSCRIPTOME (all measured genes), not gene set database.
+  # Using the gene set database as universe inflates significance and produces false positives.
+  # IMPORTANT: Always use "Gene_ID" gene type so that universe IDs match gene set IDs
+  # (gene sets from WGCNA modules use raw Gene_IDs, not Shortened_Names).
+  full_file <- build_input_path(config$master_reference, PROCESSING_LEVELS[1],
+                                COUNT_TYPES[1], "Gene_ID",
+                                matrices_dir, config$master_reference)
+  universe <- NULL
+  if (file.exists(full_file)) {
+    full_data <- read_count_matrix(full_file)
+    universe <- rownames(full_data)
+    cat("Universe: ", length(universe), " measured genes (from full transcriptome matrix)\n")
+  } else {
+    cat("  Warning: Full transcriptome matrix not found at:", full_file, "\n")
+    cat("  Falling back to gene set database genes as universe (may inflate significance)\n")
+    universe <- unique(gene_sets$gene)
+  }
+
   successful <- 0
   total <- 0
-  
+
   for (gene_group in config$gene_groups) {
     cat("Processing:", gene_group, "\n")
     total <- total + 1
-    
+
     output_folder_name <- get_output_folder_name(gene_group, CURRENT_DATASET)
     output_dir <- file.path(GSEA_OUT_DIR, output_folder_name)
     ensure_output_dir(output_dir)
-    
+
+    # IMPORTANT: Always use "Gene_ID" gene type for query genes to match
+    # universe and gene set IDs (which are always in Gene_ID format).
     input_file <- build_input_path(gene_group, PROCESSING_LEVELS[1],
-                                   COUNT_TYPES[1], GENE_TYPES[1],
+                                   COUNT_TYPES[1], "Gene_ID",
                                    matrices_dir, config$master_reference)
-    
+
     validation <- validate_and_read_matrix(input_file, 5)
     if (!validation$success) {
       cat("  Skipped:", validation$reason, "\n")
       next
     }
-    
-    # Use gene names as the list for ORA
+
+    # Use gene IDs as the list for ORA (must match universe and gene set namespace)
     query_genes <- rownames(validation$data)
-    universe <- gene_sets$gene
-    
+
     result <- run_ora_enrichment(query_genes, universe, gene_sets, term2name,
                                   gene_group, output_dir)
     

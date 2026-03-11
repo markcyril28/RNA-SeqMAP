@@ -33,7 +33,9 @@ save_count_matrices <- function(counts, output_dir, prefix, master_ref, level,
   # Always save Gene_ID (needed as source for Shortened_Name and by DESeq2)
   save_matrix(counts, count_type_label, "Gene_ID")
   if ("Shortened_Name" %in% GENE_TYPES) {
-    counts_short <- convert_to_organ_labels(counts)
+    # Only convert column headers from SRR IDs to organ labels when "Organ" is
+    # an active label type; otherwise keep original SRR column names.
+    counts_short <- if ("Organ" %in% LABEL_TYPES) convert_to_organ_labels(counts) else counts
     # Also convert row names from Gene_ID to Shortened_Name using the gene group mapping.
     # prefix is typically the gene_group or folder_name; extract gene_group portion
     # (strip "_in_<dataset>" suffix if present) for the mapping lookup.
@@ -48,7 +50,7 @@ save_count_matrices <- function(counts, output_dir, prefix, master_ref, level,
   if (!is.null(tpm)) {
     save_matrix(tpm, "tpm", "Gene_ID")
     if ("Shortened_Name" %in% GENE_TYPES) {
-      tpm_short <- convert_to_organ_labels(tpm)
+      tpm_short <- if ("Organ" %in% LABEL_TYPES) convert_to_organ_labels(tpm) else tpm
       gene_group_for_map <- sub("_in_.*$", "", prefix)
       tpm_short <- tryCatch(
         convert_to_shortened_names(tpm_short, gene_group_for_map),
@@ -130,7 +132,8 @@ run_matrix_saving <- function(results, output_dir, master_ref,
     return(invisible(NULL))
   }
 
-  config <- load_runtime_config()
+  method_base_dir <- Sys.getenv("METHOD_BASE_DIR", unset = ".")
+  config <- load_runtime_config(method_base_dir)
 
   # Skip companion "_tpm" keys — they are processed alongside their parent level
   level_names <- names(results)[!grepl("_tpm$", names(results))]

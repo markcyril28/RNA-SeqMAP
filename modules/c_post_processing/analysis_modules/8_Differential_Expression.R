@@ -10,7 +10,10 @@
 #   consumed by heatmap, PCA, and other visualization modules.
 #   - M1 HISAT2 RefGuided: prepDE.py integer counts (gene_count_matrix.csv)
 #     staged by prepde_matrix_linker.sh into .../deseq2_input/
-#   - M4 Salmon / M5 RSEM: tximport-derived raw counts (NumReads / expected_count)
+#   - M3/M4/M5 (Salmon/RSEM): Prefer DESeqDataSetFromTximport() using the saved
+#     tximport RDS object, which preserves transcript-length offsets (Soneson et al.
+#     2015). Falls back to DESeqDataSetFromMatrix() with rounded counts if RDS
+#     is not available.
 #   DESeq2 performs its own internal normalization (median-of-ratios) on these
 #   raw counts — no external normalization is applied before DESeq2.
 
@@ -66,6 +69,11 @@ GENERATE_DEA_FIGURES <- list(
 
 prepare_deseq_dataset <- function(count_matrix, sample_info) {
   # DESeq2 requires raw integer counts - round expected_count from Salmon/RSEM
+  # NOTE: For M4 Salmon / M5 RSEM, rounding expected counts and using
+  # DESeqDataSetFromMatrix loses tximport's gene-length offset corrections.
+  # The gold-standard approach is DESeqDataSetFromTximport(txi, ...).
+  # This simplified path still gives valid results but may be slightly less
+  # accurate for genes with large transcript-length variation across samples.
   count_matrix <- round(count_matrix)
   storage.mode(count_matrix) <- "integer"
   
@@ -97,11 +105,67 @@ prepare_deseq_dataset <- function(count_matrix, sample_info) {
     colData = sample_info,
     design = ~ condition
   )
-  
+
+  return(dds)
+}
+
+# Create DESeqDataSet from tximport object (preserves transcript-length offsets).
+# For M3/M4/M5: uses average transcript length correction from Salmon/RSEM via
+# DESeqDataSetFromTximport() — the DESeq2-recommended approach (Love et al. 2014,
+# Soneson et al. 2015). This accounts for differential isoform usage across samples
+# that changes the effective gene length, improving accuracy over rounded counts.
+prepare_deseq_from_tximport <- function(txi, sample_ids, sample_info, gene_ids = NULL) {
+  # Subset tximport to requested samples
+  txi_sub <- txi
+  txi_sub$counts    <- txi$counts[, sample_ids, drop = FALSE]
+  txi_sub$abundance <- txi$abundance[, sample_ids, drop = FALSE]
+  txi_sub$length    <- txi$length[, sample_ids, drop = FALSE]
+
+  # Optionally filter to gene group
+  if (!is.null(gene_ids)) {
+    matched <- match_gene_ids(gene_ids, rownames(txi_sub$counts))
+    if (length(matched) == 0) {
+      cat("  No gene IDs matched in tximport object\n")
+      return(NULL)
+    }
+    txi_sub$counts    <- txi_sub$counts[matched, , drop = FALSE]
+    txi_sub$abundance <- txi_sub$abundance[matched, , drop = FALSE]
+    txi_sub$length    <- txi_sub$length[matched, , drop = FALSE]
+  }
+
+  # Pre-filter low-count genes (same criteria as prepare_deseq_dataset)
+  raw_counts <- round(txi_sub$counts)
+  keep <- rowSums(raw_counts) > 0 & rowSums(raw_counts >= MIN_COUNT_FILTER) >= 2
+  txi_sub$counts    <- txi_sub$counts[keep, , drop = FALSE]
+  txi_sub$abundance <- txi_sub$abundance[keep, , drop = FALSE]
+  txi_sub$length    <- txi_sub$length[keep, , drop = FALSE]
+
+  if (nrow(txi_sub$counts) < MIN_GENES_DEA) {
+    cat("  Too few genes after filtering (need >=", MIN_GENES_DEA, ")\n")
+    return(NULL)
+  }
+
+  condition_counts <- table(sample_info$condition)
+  if (any(condition_counts < 2)) {
+    cat("  Warning: Some conditions have < 2 replicates (unreliable statistics)\n")
+  }
+  if (ncol(txi_sub$counts) < 4) {
+    cat("  Too few samples for reliable DEA (need >= 4 total)\n")
+    return(NULL)
+  }
+
+  dds <- DESeqDataSetFromTximport(
+    txi = txi_sub,
+    colData = sample_info,
+    design = ~ condition
+  )
+
+  cat("    Using tximport offsets (transcript-length corrected)\n")
   return(dds)
 }
 
 run_deseq2 <- function(dds, contrast_name, output_dir) {
+  set.seed(GLOBAL_RANDOM_SEED)  # Reproducibility for apeglm shrinkage estimation
   dds <- DESeq(dds, quiet = TRUE)
   
   res <- tryCatch({
@@ -109,8 +173,13 @@ run_deseq2 <- function(dds, contrast_name, output_dir) {
       # Find the contrast coefficient — skip the intercept (first element)
       coef_names <- resultsNames(dds)
       contrast_coefs <- coef_names[grepl("^condition_", coef_names)]
-      coef_name <- if (length(contrast_coefs) > 0) contrast_coefs[1] else coef_names[2]
-      lfcShrink(dds, coef = coef_name, type = "apeglm", quiet = TRUE)
+      coef_name <- if (length(contrast_coefs) > 0) contrast_coefs[1] else if (length(coef_names) > 1) coef_names[2] else NULL
+      if (is.null(coef_name)) {
+        cat("    Warning: no condition coefficient found for apeglm shrinkage, using unshrunken results\n")
+        results(dds, alpha = PADJ_THRESHOLD)
+      } else {
+        lfcShrink(dds, coef = coef_name, type = "apeglm", quiet = TRUE)
+      }
     } else {
       results(dds, alpha = PADJ_THRESHOLD)
     }
@@ -138,8 +207,9 @@ create_volcano_plot <- function(res_df, contrast_name, output_dir) {
   
   plot_data <- res_df[!is.na(res_df$padj), ]
   plot_data$neglog10p <- -log10(plot_data$padj)
-  plot_data$neglog10p[is.infinite(plot_data$neglog10p)] <- 
-    max(plot_data$neglog10p[is.finite(plot_data$neglog10p)]) + 10
+  finite_vals <- plot_data$neglog10p[is.finite(plot_data$neglog10p)]
+  inf_replacement <- if (length(finite_vals) > 0) max(finite_vals) + 10 else 300
+  plot_data$neglog10p[is.infinite(plot_data$neglog10p)] <- inf_replacement
   
   n_label <- min(10, sum(plot_data$significance != "NS"))
   top_genes <- head(plot_data[plot_data$significance != "NS", ], n_label)
@@ -299,18 +369,46 @@ run_differential_expression <- function(config = NULL, matrices_dir = NULL) {
     return(invisible(NULL))
   }
 
-  if (is.null(config)) config <- load_runtime_config()
+  # Get method base directory from environment for config file loading
+  method_base_dir <- Sys.getenv("METHOD_BASE_DIR", unset = ".")
+  if (is.null(config)) config <- load_runtime_config(method_base_dir)
   ensure_output_dir(DEA_OUT_DIR)
 
-  if (is.null(matrices_dir)) matrices_dir <- get_matrices_dir(CURRENT_METHOD)
+  if (is.null(matrices_dir)) {
+    matrices_dir <- file.path(method_base_dir, get_matrices_dir(CURRENT_METHOD))
+  }
 
   print_config_summary("DIFFERENTIAL EXPRESSION ANALYSIS", config)
 
   # M1 RefGuided: use prepDE.py integer count matrix from deseq2_input/
   is_m1 <- grepl("M1_HISAT2_RefGuided", CURRENT_METHOD)
 
+  # For M3/M4/M5: load tximport RDS if available (saved by Matrix_Creation scripts).
+  # DESeqDataSetFromTximport preserves transcript-length offsets for more accurate DEA.
+  method_type <- get_method_type(CURRENT_METHOD)
+  txi_rds_path <- file.path(matrices_dir, config$master_reference,
+                             "gene_level", "tximport_gene_level.rds")
+  txi_obj <- NULL
+  if (method_type %in% c("salmon", "rsem", "star") && file.exists(txi_rds_path)) {
+    txi_obj <- tryCatch(readRDS(txi_rds_path), error = function(e) {
+      cat("  Warning: Failed to load tximport RDS:", e$message, "\n")
+      NULL
+    })
+    if (!is.null(txi_obj)) {
+      cat("  Loaded tximport RDS (transcript-length offsets available)\n")
+    }
+  } else if (method_type %in% c("salmon", "rsem", "star")) {
+    cat("  Note: tximport RDS not found at:", txi_rds_path, "\n")
+    cat("  Using rounded counts (re-run Matrix_Creation to enable tximport offsets)\n")
+  }
+
   successful <- 0
   total <- 0
+
+  if (length(config$gene_groups) == 0) {
+    cat("ERROR: No gene groups configured. Check .gene_groups_temp.txt\n")
+    return(invisible(NULL))
+  }
 
   for (gene_group in config$gene_groups) {
     cat("Processing:", gene_group, "\n")
@@ -339,11 +437,19 @@ run_differential_expression <- function(config = NULL, matrices_dir = NULL) {
       cat("  Skipped:", validation$reason, "\n")
       next
     }
-    
+
     # Create sample info with tissue groups
     sample_ids <- colnames(validation$data)
     sample_tissues <- SAMPLE_LABELS[sample_ids]
-    
+
+    # Warn about unmapped samples (NA labels silently drop from all tissue groups)
+    na_mask <- is.na(sample_tissues)
+    if (any(na_mask)) {
+      cat("  Warning:", sum(na_mask), "sample(s) have no tissue label in SAMPLE_LABELS:",
+          paste(sample_ids[na_mask], collapse = ", "), "\n")
+      cat("  These samples will be excluded from all pairwise comparisons.\n")
+    }
+
     # Run pairwise comparisons between tissue groups
     group_names <- names(TISSUE_GROUPS)
     if (length(group_names) < 2) {
@@ -362,24 +468,72 @@ run_differential_expression <- function(config = NULL, matrices_dir = NULL) {
         samples_g2 <- sample_ids[sample_tissues %in% TISSUE_GROUPS[[group2]]]
         
         if (length(samples_g1) < 2 || length(samples_g2) < 2) {
-          cat("  Skipped", group1, "vs", group2, ": insufficient samples\n")
+          cat("  Skipped", group1, "vs", group2, ": insufficient samples (",
+              length(samples_g1), "vs", length(samples_g2), ")\n")
           next
         }
-        
-        # Prepare subset
+
+        # Prepare subset — verify samples exist in data columns
         all_samples <- c(samples_g1, samples_g2)
+        missing_in_data <- all_samples[!all_samples %in% colnames(validation$data)]
+        if (length(missing_in_data) > 0) {
+          cat("  Warning:", length(missing_in_data), "sample(s) not found in count matrix:",
+              paste(head(missing_in_data, 5), collapse = ", "), "\n")
+          all_samples <- all_samples[all_samples %in% colnames(validation$data)]
+          samples_g1 <- samples_g1[samples_g1 %in% all_samples]
+          samples_g2 <- samples_g2[samples_g2 %in% all_samples]
+          if (length(samples_g1) < 2 || length(samples_g2) < 2) {
+            cat("  Skipped", group1, "vs", group2, ": insufficient samples after filtering\n")
+            next
+          }
+        }
         count_subset <- validation$data[, all_samples, drop = FALSE]
         
+        # Set group2 as reference level so the DESeq2 coefficient is
+        # condition_{group1}_vs_{group2}, matching contrast_name direction.
+        # Without explicit levels, R uses alphabetical order, making the
+        # contrast direction inconsistent with the naming.
         sample_info <- data.frame(
           row.names = all_samples,
-          condition = factor(c(rep(group1, length(samples_g1)), 
-                               rep(group2, length(samples_g2))))
+          condition = factor(c(rep(group1, length(samples_g1)),
+                               rep(group2, length(samples_g2))),
+                             levels = c(group2, group1))
         )
         
         contrast_name <- paste0(gene_group, "_", group1, "_vs_", group2)
         cat("  Running:", contrast_name, "\n")
-        
-        dds <- prepare_deseq_dataset(count_subset, sample_info)
+
+        # Prefer tximport path for M3/M4/M5 (preserves length offsets)
+        dds <- NULL
+        if (!is.null(txi_obj)) {
+          # Load gene group gene list for filtering tximport object
+          gene_group_csv <- file.path(GENE_GROUPS_DIR, paste0(gene_group, ".csv"))
+          if (!file.exists(gene_group_csv)) {
+            hits <- list.files(GENE_GROUPS_DIR, pattern = paste0("^", gene_group, "\\.csv$"),
+                               recursive = TRUE, full.names = TRUE)
+            if (length(hits) > 0) gene_group_csv <- hits[1]
+          }
+          gene_ids_for_filter <- NULL
+          if (file.exists(gene_group_csv)) {
+            gdf <- tryCatch(read.csv(gene_group_csv, stringsAsFactors = FALSE, header = TRUE),
+                           error = function(e) NULL)
+            if (!is.null(gdf) && nrow(gdf) > 0) {
+              gene_ids_for_filter <- if ("Gene_ID" %in% colnames(gdf)) trimws(gdf$Gene_ID) else trimws(gdf[[1]])
+            }
+          }
+          dds <- tryCatch(
+            prepare_deseq_from_tximport(txi_obj, all_samples, sample_info,
+                                        gene_ids = gene_ids_for_filter),
+            error = function(e) {
+              cat("    tximport path failed, falling back to matrix:", e$message, "\n")
+              NULL
+            }
+          )
+        }
+        # Fallback to rounded count matrix
+        if (is.null(dds)) {
+          dds <- prepare_deseq_dataset(count_subset, sample_info)
+        }
         if (is.null(dds)) next
         
         result <- run_deseq2(dds, contrast_name, output_dir)

@@ -39,7 +39,15 @@ import_rsem <- function(quant_dir, sample_ids, level = "gene") {
     files <- files[files_exist]
   }
 
-  txi <- tximport(files, type = "rsem", txIn = (level != "gene"), txOut = (level != "gene"))
+  txi <- tryCatch(
+    tximport(files, type = "rsem", txIn = (level != "gene"), txOut = (level != "gene")),
+    error = function(e) {
+      cat("ERROR: tximport failed for", level, "level:", e$message, "\n")
+      cat("  Check RSEM output files for corruption or format issues\n")
+      return(NULL)
+    }
+  )
+  if (is.null(txi)) return(NULL)
 
   # Filter entries with zero effective length (unaligned transcripts)
   if (!is.null(txi$length)) {
@@ -87,6 +95,11 @@ if (GENERATE_GENE_LEVEL) {
   if (!is.null(txi)) {
     results$gene_level     <- txi$counts
     results$gene_level_tpm <- txi$abundance
+    # Save full tximport object for DESeq2 (preserves transcript-length offsets)
+    txi_rds_dir <- file.path(output_dir, MASTER_REFERENCE, "gene_level")
+    ensure_output_dir(txi_rds_dir)
+    saveRDS(txi, file.path(txi_rds_dir, "tximport_gene_level.rds"))
+    cat("Saved tximport RDS for DESeq2: tximport_gene_level.rds\n")
   }
 }
 

@@ -29,10 +29,11 @@ process_all_combinations <- function(
   valid_count_types <- get_count_types(CURRENT_METHOD)
   
   # Map user-configured count types to method-equivalent types
-  # (e.g., "expected_count" -> "coverage" for StringTie)
+  # When a user requests a count type that doesn't exist for a method,
+  # map it to the closest available alternative.
   count_type_mapping <- list(
     "stringtie" = list(
-      "expected_count" = "coverage",  # closest to raw counts
+      "expected_count" = "coverage",  # fallback only — coverage is per-base depth, NOT raw fragment counts
       "tpm" = "tpm",
       "fpkm" = "fpkm",
       "coverage" = "coverage"

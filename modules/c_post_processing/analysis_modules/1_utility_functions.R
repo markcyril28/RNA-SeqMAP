@@ -52,10 +52,10 @@ gpu_cor <- function(x, method = "pearson") {
     if (GPU_BACKEND == "torch") {
       # Use torch for GPU column-column correlation (matching R's cor())
       x_tensor <- torch::torch_tensor(as.matrix(x), device = "cuda")
-      # Center columns: mean(dim=1) averages across rows for each column
-      x_centered <- x_tensor - x_tensor$mean(dim = 1, keepdim = TRUE)
+      # Center columns: mean(dim=0) averages across rows for each column
+      x_centered <- x_tensor - x_tensor$mean(dim = 0, keepdim = TRUE)
       # Column-column covariance: t(X_c) %*% X_c / (nrow - 1)
-      cov_matrix <- torch::torch_mm(x_centered$t(), x_centered) / (x_tensor$size(1) - 1)
+      cov_matrix <- torch::torch_mm(x_centered$t(), x_centered) / (x_tensor$size(0) - 1)
       # Compute standard deviations of columns
       std_dev <- torch::torch_sqrt(torch::torch_diag(cov_matrix))
       # Compute correlation

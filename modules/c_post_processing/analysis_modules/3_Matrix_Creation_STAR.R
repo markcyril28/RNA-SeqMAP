@@ -55,6 +55,9 @@ if (GENERATE_GENE_LEVEL) {
     tx2gene <- read.delim(tx2gene_files[1], header = FALSE,
                           col.names = c("TXNAME", "GENEID"),
                           stringsAsFactors = FALSE)
+    if (nrow(tx2gene) == 0 || ncol(tx2gene) < 2) {
+      cat("  Error: tx2gene file is empty or malformed:", tx2gene_files[1], "\n")
+    } else {
     quant_files <- file.path(quant_dir, SAMPLE_IDS, "quant.sf")
     names(quant_files) <- SAMPLE_IDS
     missing_qf <- quant_files[!file.exists(quant_files)]
@@ -91,9 +94,15 @@ if (GENERATE_GENE_LEVEL) {
     if (!is.null(txi_gene)) {
       results$gene_level     <- txi_gene$counts
       results$gene_level_tpm <- txi_gene$abundance
+      # Save full tximport object for DESeq2 (preserves transcript-length offsets)
+      txi_rds_dir <- file.path(output_dir, MASTER_REFERENCE, "gene_level")
+      ensure_output_dir(txi_rds_dir)
+      saveRDS(txi_gene, file.path(txi_rds_dir, "tximport_gene_level.rds"))
+      cat("Saved tximport RDS for DESeq2: tximport_gene_level.rds\n")
     }
     }
     }
+    }  # tx2gene validation
   } else {
     cat("  Warning: tx2gene file not found in", file.path(output_dir, MASTER_REFERENCE),
         "— skipping gene-level import\n")
@@ -115,6 +124,11 @@ if (GENERATE_ISOFORM_LEVEL) {
     if (!is.null(txi_iso)) {
       results$isoform_level     <- txi_iso$counts
       results$isoform_level_tpm <- txi_iso$abundance
+      # Save full tximport object for DESeq2 isoform-level analysis
+      txi_iso_rds_dir <- file.path(output_dir, MASTER_REFERENCE, "isoform_level")
+      ensure_output_dir(txi_iso_rds_dir)
+      saveRDS(txi_iso, file.path(txi_iso_rds_dir, "tximport_isoform_level.rds"))
+      cat("Saved tximport RDS for isoform-level DESeq2: tximport_isoform_level.rds\n")
     }
   }
 }

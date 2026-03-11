@@ -27,8 +27,8 @@ CURRENT_DATASET <- Sys.getenv("CURRENT_DATASET", unset = "")
 # Master reference genome/transcriptome
 MASTER_REFERENCE <- Sys.getenv("MASTER_REFERENCE", unset = "Eggplant_V4.1_transcripts.function")
 
-# GPU acceleration flag
-ENABLE_GPU <- as.logical(Sys.getenv("ENABLE_GPU", unset = "FALSE"))
+# GPU acceleration flag (isTRUE guards against NA from empty/malformed env var)
+ENABLE_GPU <- isTRUE(as.logical(Sys.getenv("ENABLE_GPU", unset = "FALSE")))
 
 # Thread count
 THREADS <- as.integer(Sys.getenv("THREADS", unset = "8"))
@@ -38,6 +38,11 @@ AVAILABLE_RAM_GB <- as.integer(Sys.getenv("AVAILABLE_RAM_GB", unset = "24"))
 
 # Available GPU VRAM (GB) - used for GPU memory management
 GPU_VRAM_GB <- as.integer(Sys.getenv("GPU_VRAM_GB", unset = "8"))
+
+# Global random seed for reproducibility across all stochastic operations
+# (t-SNE, UMAP, GSEA permutations, DESeq2 shrinkage, WGCNA layout, etc.)
+# Override via environment variable GLOBAL_RANDOM_SEED if needed.
+GLOBAL_RANDOM_SEED <- as.integer(Sys.getenv("GLOBAL_RANDOM_SEED", unset = "42"))
 
 # Memory-aware settings (with 24GB+ RAM: prioritize accuracy over memory conservation)
 HIGH_MEMORY_MODE <- AVAILABLE_RAM_GB >= 16
@@ -308,6 +313,9 @@ get_count_types <- function(method = CURRENT_METHOD) {
     # Salmon: TPM for visualization, NumReads for DESeq2
     "salmon" = c("tpm", "NumReads"),
     # RSEM: TPM for visualization, expected_count for DESeq2
+    # NOTE: RSEM also produces FPKM (in .genes.results column 7), but tximport
+    # only outputs counts + TPM. The bash script saves FPKM to genes.FPKM.not_cross_norm
+    # for reference, but the tximport-based analysis pipeline does not use it.
     "rsem" = c("tpm", "expected_count"),
     # STAR+Salmon: TPM for visualization, NumReads (Salmon offset counts) for DESeq2
     "star" = c("tpm", "NumReads"),
@@ -508,6 +516,7 @@ print_config_summary <- function(title, config) {
   cat("  * Gene groups:", paste(config$gene_groups, collapse = ", "), "\n")
   cat("  * Count types:", paste(COUNT_TYPES, collapse = ", "), "\n")
   cat("  * Threads:", THREADS, "\n")
+  cat("  * Random seed:", GLOBAL_RANDOM_SEED, "\n")
   if (GPU_AVAILABLE) {
     cat("  * GPU:", "ENABLED (", GPU_BACKEND, ")\n", sep = "")
   } else if (ENABLE_GPU) {

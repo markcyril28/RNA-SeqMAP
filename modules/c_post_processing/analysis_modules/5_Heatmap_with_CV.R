@@ -300,36 +300,42 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
     
     # Export raw values with CV as TSV alongside the PNG
     if (exists("EXPORT_RAW_VALUES") && EXPORT_RAW_VALUES) {
-      tsv_path <- sub("\\.png$", "_values.tsv", output_path)
-      if (transpose) {
-        # Organs as rows, genes as columns — row CV = sample CV
-        row_id_label <- if (label_type == "Organ") "OrganID" else "SampleID"
-        export_df <- data.frame(
-          row_id_label = rownames(data_matrix),
-          Sample_CV = row_cv,
-          data_matrix,
-          check.names = FALSE
-        )
-        names(export_df)[1] <- row_id_label
-        # Append a summary row with per-gene (column) CV
-        stopifnot(length(col_cv) == ncol(data_matrix))
-        col_cv_row <- c("Gene_CV", NA, sprintf("%.1f", col_cv))
-        export_df <- rbind(export_df, setNames(as.list(col_cv_row), names(export_df)))
-      } else {
-        # Genes as rows, samples as columns — row CV = gene CV
-        export_df <- data.frame(
-          GeneID = rownames(data_matrix),
-          Gene_CV = row_cv,
-          data_matrix,
-          check.names = FALSE
-        )
-        # Append a summary row with per-sample (column) CV
-        stopifnot(length(col_cv) == ncol(data_matrix))
-        col_cv_row <- c("Sample_CV", NA, sprintf("%.1f", col_cv))
-        export_df <- rbind(export_df, setNames(as.list(col_cv_row), names(export_df)))
-      }
-      write.table(export_df, tsv_path, sep = "\t", row.names = FALSE, quote = FALSE)
-      cat("      Exported values:", basename(tsv_path), "\n")
+      tryCatch({
+        tsv_path <- sub("\\.png$", "_values.tsv", output_path)
+        if (transpose) {
+          # Organs as rows, genes as columns — row CV = sample CV
+          row_id_label <- if (label_type == "Organ") "OrganID" else "SampleID"
+          export_df <- data.frame(
+            row_id_label = rownames(data_matrix),
+            Sample_CV = row_cv,
+            data_matrix,
+            check.names = FALSE
+          )
+          names(export_df)[1] <- row_id_label
+          # Append a summary row with per-gene (column) CV
+          if (length(col_cv) == ncol(data_matrix)) {
+            col_cv_row <- c("Gene_CV", NA, sprintf("%.1f", col_cv))
+            export_df <- rbind(export_df, setNames(as.list(col_cv_row), names(export_df)))
+          }
+        } else {
+          # Genes as rows, samples as columns — row CV = gene CV
+          export_df <- data.frame(
+            GeneID = rownames(data_matrix),
+            Gene_CV = row_cv,
+            data_matrix,
+            check.names = FALSE
+          )
+          # Append a summary row with per-sample (column) CV
+          if (length(col_cv) == ncol(data_matrix)) {
+            col_cv_row <- c("Sample_CV", NA, sprintf("%.1f", col_cv))
+            export_df <- rbind(export_df, setNames(as.list(col_cv_row), names(export_df)))
+          }
+        }
+        write.table(export_df, tsv_path, sep = "\t", row.names = FALSE, quote = FALSE)
+        cat("      Exported values:", basename(tsv_path), "\n")
+      }, error = function(e) {
+        cat("      Warning: TSV export failed:", e$message, "\n")
+      })
     }
     
     cat("      Generated:", basename(output_path), "\n")
@@ -399,7 +405,12 @@ process_cv_heatmap <- function(gene_group, gene_group_output_dir, processing_lev
 # ===============================================
 
 run_cv_heatmap <- function(config = NULL, matrices_dir = NULL) {
-  if (is.null(config)) config <- load_runtime_config()
+  # Get method base directory from environment for config file loading
+  method_base_dir <- Sys.getenv("METHOD_BASE_DIR", unset = ".")
+  if (is.null(config)) config <- load_runtime_config(method_base_dir)
+  if (is.null(matrices_dir)) {
+    matrices_dir <- file.path(method_base_dir, get_matrices_dir(CURRENT_METHOD))
+  }
   ensure_output_dir(CV_HEATMAP_OUT_DIR)
   
   print_config_summary("HEATMAP WITH CV GENERATION", config)
