@@ -30,14 +30,32 @@ save_count_matrices <- function(counts, output_dir, prefix, master_ref, level,
     cat("Saved:", basename(output_file), "\n")
   }
 
+  # Always save Gene_ID (needed as source for Shortened_Name and by DESeq2)
   save_matrix(counts, count_type_label, "Gene_ID")
-  counts_organ <- convert_to_organ_labels(counts)
-  save_matrix(counts_organ, count_type_label, "Shortened_Name")
+  if ("Shortened_Name" %in% GENE_TYPES) {
+    counts_short <- convert_to_organ_labels(counts)
+    # Also convert row names from Gene_ID to Shortened_Name using the gene group mapping.
+    # prefix is typically the gene_group or folder_name; extract gene_group portion
+    # (strip "_in_<dataset>" suffix if present) for the mapping lookup.
+    gene_group_for_map <- sub("_in_.*$", "", prefix)
+    counts_short <- tryCatch(
+      convert_to_shortened_names(counts_short, gene_group_for_map),
+      error = function(e) counts_short
+    )
+    save_matrix(counts_short, count_type_label, "Shortened_Name")
+  }
 
   if (!is.null(tpm)) {
     save_matrix(tpm, "tpm", "Gene_ID")
-    tpm_organ <- convert_to_organ_labels(tpm)
-    save_matrix(tpm_organ, "tpm", "Shortened_Name")
+    if ("Shortened_Name" %in% GENE_TYPES) {
+      tpm_short <- convert_to_organ_labels(tpm)
+      gene_group_for_map <- sub("_in_.*$", "", prefix)
+      tpm_short <- tryCatch(
+        convert_to_shortened_names(tpm_short, gene_group_for_map),
+        error = function(e) tpm_short
+      )
+      save_matrix(tpm_short, "tpm", "Shortened_Name")
+    }
   }
 }
 
@@ -80,9 +98,20 @@ filter_by_gene_group <- function(counts_matrix, gene_list_file) {
     if (gene %in% all_row_ids) {
       matched_genes <- c(matched_genes, gene)
     } else {
+      # Forward prefix: gene_list ID is a prefix of a data row ID
+      # e.g., gene "SMEL4.1_06g023900.1" matches row "SMEL4.1_06g023900.1.01"
       pattern <- paste0("^", gsub("\\.", "\\\\.", gene), "(\\..*)?$")
       hits    <- all_row_ids[grepl(pattern, all_row_ids)]
-      if (length(hits) > 0) matched_genes <- c(matched_genes, hits)
+      if (length(hits) > 0) {
+        matched_genes <- c(matched_genes, hits)
+      } else {
+        # Reverse: strip version suffix from gene_list ID to match gene-level row IDs
+        # e.g., gene "SMEL5_06g022750.1" -> "SMEL5_06g022750" matches row "SMEL5_06g022750"
+        base_gene <- sub("\\.[0-9]+$", "", gene)
+        if (base_gene != gene && base_gene %in% all_row_ids) {
+          matched_genes <- c(matched_genes, base_gene)
+        }
+      }
     }
   }
   matched_genes <- unique(matched_genes)
@@ -142,6 +171,12 @@ run_matrix_saving <- function(results, output_dir, master_ref,
       for (gene_group in config$gene_groups) {
         gf <- file.path(gene_groups_dir, paste0(gene_group, ".csv"))
         if (!file.exists(gf)) gf <- file.path(gene_groups_dir, paste0(gene_group, ".txt"))
+        # Search subdirectories if not found at top level
+        if (!file.exists(gf)) {
+          hits <- list.files(gene_groups_dir, pattern = paste0("^", gene_group, "\\.(csv|txt)$"),
+                             recursive = TRUE, full.names = TRUE)
+          if (length(hits) > 0) gf <- hits[1]
+        }
         if (!file.exists(gf)) {
           cat("Gene group file not found:", gene_group, "\n")
           next

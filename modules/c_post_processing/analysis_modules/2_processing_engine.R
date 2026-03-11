@@ -46,6 +46,11 @@ process_all_combinations <- function(
       "expected_count" = "expected_count",
       "tpm" = "tpm",
       "fpkm" = "fpkm"
+    ),
+    "star" = list(
+      "expected_count" = "NumReads",
+      "tpm" = "tpm",
+      "NumReads" = "NumReads"
     )
   )
   
@@ -106,7 +111,10 @@ process_all_combinations <- function(
                 label_type, "- Found", validation$n_genes, "genes\n")
             
             # Sequential processing for normalization schemes
-            for (norm_scheme in NORM_SCHEMES) {
+            # Filter configured NORM_SCHEMES to only those valid for this count type
+            # (e.g., "raw"/"cpm"/"deseq2_normalized" are invalid for pre-normalized TPM/FPKM)
+            active_norm_schemes <- NORM_SCHEMES[sapply(NORM_SCHEMES, function(ns) is_valid_norm_for_count(count_type, ns))]
+            for (norm_scheme in active_norm_schemes) {
               data_normalized <- apply_normalization(validation$data, norm_scheme, count_type)
               
               if (is.null(data_normalized)) {

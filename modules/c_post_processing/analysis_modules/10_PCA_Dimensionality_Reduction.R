@@ -76,6 +76,9 @@ prepare_sample_metadata <- function(sample_ids) {
   tissues <- SAMPLE_LABELS[sample_ids]
   tissues[is.na(tissues)] <- sample_ids[is.na(tissues)]
   
+  # Strip R's make.unique suffixes (.1, .2, etc.) from organ labels for display
+  tissues <- sub("\\.[0-9]+$", "", tissues)
+  
   # Use centralized tissue group mapping from 1_utility_functions.R
   tissue_groups <- get_tissue_groups(tissues)
   
@@ -207,8 +210,9 @@ run_umap_analysis <- function(data_matrix, metadata, output_dir, gene_group) {
   
   data_t <- t(data_matrix)
   
-  if (nrow(data_t) <= UMAP_N_NEIGHBORS) {
-    cat("    Too few samples for UMAP\n")
+  # UMAP needs at least 4 samples; n_neighbors is clamped below via min()
+  if (nrow(data_t) < 4) {
+    cat("    Too few samples for UMAP (need >= 4, have", nrow(data_t), ")\n")
     return(NULL)
   }
   
@@ -263,7 +267,8 @@ run_dimensionality_reduction <- function(config = NULL, matrices_dir = NULL) {
     cat("Processing:", gene_group, "\n")
     total <- total + 1
     
-    output_dir <- file.path(DIM_REDUCTION_OUT_DIR, gene_group)
+    output_folder_name <- get_output_folder_name(gene_group, CURRENT_DATASET)
+    output_dir <- file.path(DIM_REDUCTION_OUT_DIR, output_folder_name)
     ensure_output_dir(output_dir)
     
     input_file <- build_input_path(gene_group, PROCESSING_LEVELS[1],

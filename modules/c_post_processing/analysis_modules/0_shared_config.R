@@ -64,11 +64,11 @@ GENE_GROUPS_DIR <- Sys.getenv("GENE_GROUPS_DIR", unset = "")
 if (GENE_GROUPS_DIR == "") {
   base_dir_fallback <- Sys.getenv("BASE_DIR", unset = "")
   if (nzchar(base_dir_fallback)) {
-    GENE_GROUPS_DIR <- file.path(base_dir_fallback, "inputs", "gene_groups")
+    GENE_GROUPS_DIR <- file.path(base_dir_fallback, "inputs", "gene_groups_csv")
   } else {
     # Last-resort: walk up two levels from ANALYSIS_MODULES_DIR to reach project root
     ANALYSIS_MODULES_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", unset = ".")
-    GENE_GROUPS_DIR <- file.path(dirname(dirname(dirname(ANALYSIS_MODULES_DIR))), "inputs", "gene_groups")
+    GENE_GROUPS_DIR <- file.path(dirname(dirname(dirname(ANALYSIS_MODULES_DIR))), "inputs", "gene_groups_csv")
   }
 }
 
@@ -90,7 +90,7 @@ OUTPUT_SUBDIRS <- list(
   BASIC_HEATMAP = file.path("I_Basic_Heatmap", MASTER_REFERENCE),
   CV_HEATMAP = file.path("II_Heatmap_with_CV", MASTER_REFERENCE),
   BAR_GRAPH = file.path("III_Bar_Graphs", MASTER_REFERENCE),
-  WGCNA = file.path("III_Coexpression_WGCNA", MASTER_REFERENCE),
+  WGCNA = file.path("IV_Coexpression_WGCNA", MASTER_REFERENCE),
   DEA = file.path("V_Differential_Expression", MASTER_REFERENCE),
   GSEA = file.path("VI_Gene_Set_Enrichment", MASTER_REFERENCE),
   DIM_REDUCTION = file.path("VII_PCA", MASTER_REFERENCE),
@@ -106,7 +106,9 @@ OUTPUT_SUBDIRS <- list(
 #   - StringTie (M1/M2 HISAT2): tpm, fpkm, coverage
 #   - Salmon (M4): tpm, NumReads (length-corrected, bias-corrected)
 #   - RSEM (M5): tpm, expected_count, fpkm
-# For DESeq2: use expected_count/NumReads/coverage (raw counts)
+# For DESeq2: use expected_count/NumReads (raw integer counts)
+#   NOTE: StringTie coverage is a per-base abundance metric, NOT raw fragment counts.
+#         M1 DESeq2 uses prepDE.py integer counts (gene_count_matrix.csv), not coverage.
 # For visualization: TPM is preferred for cross-sample comparison
 #
 # NOTE: COUNT_TYPES is now dynamically set at initialization based on CURRENT_METHOD
@@ -300,7 +302,8 @@ get_quant_dir <- function(method = CURRENT_METHOD) {
 get_count_types <- function(method = CURRENT_METHOD) {
   method_type <- get_method_type(method)
   switch(method_type,
-    # StringTie: TPM for cross-sample comparison, FPKM similar, coverage for raw counts
+    # StringTie: TPM for cross-sample comparison, FPKM similar, coverage as abundance metric
+    # NOTE: coverage is per-base depth (not raw counts); DESeq2 uses prepDE.py integers instead
     "stringtie" = c("tpm", "fpkm", "coverage"),
     # Salmon: TPM for visualization, NumReads for DESeq2
     "salmon" = c("tpm", "NumReads"),
@@ -313,15 +316,21 @@ get_count_types <- function(method = CURRENT_METHOD) {
 }
 
 # Get appropriate normalization schemes for a given count type
-# Raw count types (coverage, expected_count, NumReads) support all normalizations
+# Raw count types (expected_count, NumReads) support all normalizations including CPM/DESeq2
+# Abundance metrics (coverage) from StringTie are NOT raw integer counts — they are per-base
+#   coverage values already derived from alignment depth. CPM and DESeq2 median-of-ratios
+#   assume raw fragment/read counts as input, so they are invalid for coverage.
 # Pre-normalized types (tpm, fpkm) should NOT use raw/deseq2/cpm (already normalized)
 get_norm_schemes <- function(count_type) {
-  # Identify if this is a raw count type
-  raw_count_types <- c("coverage", "expected_count", "numreads", "counts")
+  # True raw integer count types (from counting reads/fragments)
+  raw_count_types <- c("expected_count", "numreads", "counts")
+  # StringTie coverage: abundance-based metric, not raw counts
+  abundance_count_types <- c("coverage")
   is_raw <- tolower(count_type) %in% raw_count_types
-  
+  is_abundance <- tolower(count_type) %in% abundance_count_types
+
   if (is_raw) {
-    # Raw counts support all normalization schemes
+    # Raw integer counts support all normalization schemes
     return(c(
       "count_type_normalized",  # Log2(x+1) - always useful
       "raw",                    # No transformation - for DESeq2 input
@@ -329,6 +338,16 @@ get_norm_schemes <- function(count_type) {
       "zscore",                 # Z-score after log2
       "zscore_scaled_to_ten",   # Z-score scaled 0-10
       "cpm"                     # Counts Per Million + log2
+    ))
+  } else if (is_abundance) {
+    # StringTie coverage: per-base abundance metric (not raw fragment counts)
+    # Log2 and z-score transformations are valid; CPM/DESeq2 are not
+    # (those methods assume raw read/fragment counts for library-size correction)
+    return(c(
+      "count_type_normalized",  # Log2(x+1) - useful for visualization
+      "raw",                    # No transformation - for inspection
+      "zscore",                 # Z-score after log2 (global)
+      "zscore_scaled_to_ten"    # Z-score scaled 0-10
     ))
   } else {
     # Pre-normalized types (TPM, FPKM) - skip redundant normalizations
@@ -340,6 +359,20 @@ get_norm_schemes <- function(count_type) {
       "zscore_scaled_to_ten"    # Z-score scaled 0-10 - useful for heatmaps
     ))
   }
+}
+
+# Get the raw integer count type appropriate for DESeq2 input
+# DESeq2 requires raw counts, NOT pre-normalized TPM/FPKM.
+# Returns NULL for methods where DEA uses a separate input path (e.g., M1 prepDE.py).
+get_raw_count_type <- function(method = CURRENT_METHOD) {
+  method_type <- get_method_type(method)
+  switch(method_type,
+    "salmon" = "NumReads",
+    "rsem" = "expected_count",
+    "star" = "NumReads",
+    "stringtie" = NULL,  # M1 uses prepDE.py counts (handled separately); M2 lacks DEA-suitable counts
+    NULL  # default
+  )
 }
 
 # Check if a count_type + norm_scheme combination is valid

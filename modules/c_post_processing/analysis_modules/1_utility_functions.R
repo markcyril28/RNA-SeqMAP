@@ -5,7 +5,16 @@
 # ===============================================
 # Comprehensive utility functions for all analysis modules
 
-source(file.path(dirname(sys.frame(1)$ofile), "0_shared_config.R"))
+# Guard: only source 0_shared_config.R if it hasn't been loaded yet (CURRENT_METHOD is its sentinel).
+# Use ANALYSIS_MODULES_DIR env var (set by the bash wrapper) with a safe fallback to
+# sys.frame(1)$ofile for interactive/direct-source calls.
+if (!exists("CURRENT_METHOD")) {
+  .utils_dir <- tryCatch(
+    dirname(sys.frame(1)$ofile),
+    error = function(e) Sys.getenv("ANALYSIS_MODULES_DIR", ".")
+  )
+  source(file.path(.utils_dir, "0_shared_config.R"))
+}
 
 # ===============================================
 # GPU-ACCELERATED COMPUTATION FUNCTIONS
@@ -41,29 +50,29 @@ gpu_cor <- function(x, method = "pearson") {
   
   tryCatch({
     if (GPU_BACKEND == "torch") {
-      # Use torch for GPU correlation
+      # Use torch for GPU column-column correlation (matching R's cor())
       x_tensor <- torch::torch_tensor(as.matrix(x), device = "cuda")
-      # Center the data
+      # Center columns: mean(dim=1) averages across rows for each column
       x_centered <- x_tensor - x_tensor$mean(dim = 1, keepdim = TRUE)
-      # Compute covariance
-      cov_matrix <- torch::torch_mm(x_centered, x_centered$t()) / (x_tensor$size(2) - 1)
-      # Compute standard deviations
+      # Column-column covariance: t(X_c) %*% X_c / (nrow - 1)
+      cov_matrix <- torch::torch_mm(x_centered$t(), x_centered) / (x_tensor$size(1) - 1)
+      # Compute standard deviations of columns
       std_dev <- torch::torch_sqrt(torch::torch_diag(cov_matrix))
       # Compute correlation
       cor_matrix <- cov_matrix / torch::torch_outer(std_dev, std_dev)
       result <- as.matrix(cor_matrix$cpu())
-      rownames(result) <- rownames(x)
-      colnames(result) <- rownames(x)
+      rownames(result) <- colnames(x)
+      colnames(result) <- colnames(x)
       return(result)
     } else if (GPU_BACKEND == "gpuR") {
-      # Use gpuR for GPU correlation
+      # Use gpuR for GPU correlation (cov() computes column-column covariance)
       x_gpu <- gpuR::vclMatrix(as.matrix(x), type = "float")
       result <- as.matrix(gpuR::cov(x_gpu))
       # Convert covariance to correlation
       std_dev <- sqrt(diag(result))
       result <- result / outer(std_dev, std_dev)
-      rownames(result) <- rownames(x)
-      colnames(result) <- rownames(x)
+      rownames(result) <- colnames(x)
+      colnames(result) <- colnames(x)
       return(result)
     }
   }, error = function(e) {
@@ -104,7 +113,8 @@ gpu_prcomp <- function(x, center = TRUE, scale. = FALSE, rank. = NULL) {
       n <- nrow(x_mat)
       sdev <- as.numeric(svd_result[[2]]$cpu()) / sqrt(max(1, n - 1))
       rotation <- as.matrix(svd_result[[3]]$t()$cpu())
-      x_scores <- as.matrix(torch::torch_mm(x_tensor, svd_result[[3]]$t()$t())$cpu())
+      # Scores = X_centered %*% V; svd_result[[3]] = Vh (k×p), so Vh$t() = V (p×k)
+      x_scores <- as.matrix(torch::torch_mm(x_tensor, svd_result[[3]]$t())$cpu())
       
       # Build prcomp-compatible result
       result <- list(
@@ -458,8 +468,13 @@ get_norm_display_name <- function(norm_scheme) {
 # ===============================================
 
 convert_to_organ_labels <- function(counts_matrix) {
-  colnames_organ <- SAMPLE_LABELS[colnames(counts_matrix)]
-  colnames_organ[is.na(colnames_organ)] <- colnames(counts_matrix)[is.na(colnames_organ)]
+  current_cols <- colnames(counts_matrix)
+  # Short-circuit: if columns are already organ labels (not SRR IDs), skip conversion
+  if (all(current_cols %in% SAMPLE_LABELS) || !any(current_cols %in% SAMPLE_IDS)) {
+    return(counts_matrix)
+  }
+  colnames_organ <- SAMPLE_LABELS[current_cols]
+  colnames_organ[is.na(colnames_organ)] <- current_cols[is.na(colnames_organ)]
   result <- counts_matrix
   colnames(result) <- colnames_organ
   result
@@ -477,6 +492,13 @@ convert_to_organ_labels <- function(counts_matrix) {
 load_gene_name_mapping <- function(gene_group, gene_groups_dir = GENE_GROUPS_DIR) {
   # First check gene_groups_csv directory
   csv_file <- file.path(gene_groups_dir, paste0(gene_group, ".csv"))
+  
+  # Search subdirectories if not found at top level
+  if (!file.exists(csv_file)) {
+    hits <- list.files(gene_groups_dir, pattern = paste0("^", gene_group, "\\.csv$"),
+                       recursive = TRUE, full.names = TRUE)
+    if (length(hits) > 0) csv_file <- hits[1]
+  }
   
   # If not found, check if it's a reference with a gene_info.csv
   if (!file.exists(csv_file)) {
@@ -516,7 +538,7 @@ load_gene_name_mapping <- function(gene_group, gene_groups_dir = GENE_GROUPS_DIR
     name_col <- if ("Shortened_Name" %in% colnames(df)) "Shortened_Name" else if ("Name" %in% colnames(df)) "Name" else NULL
     
     if (!is.null(gene_col) && !is.null(name_col)) {
-      return(setNames(df[[name_col]], df[[gene_col]]))
+      return(setNames(trimws(df[[name_col]]), trimws(df[[gene_col]])))
     }
     return(NULL)
   }, error = function(e) NULL)
@@ -540,7 +562,7 @@ convert_to_shortened_names <- function(counts_matrix, gene_group) {
     # First try removing trailing .X.XX suffix (e.g., .1.01 for RSEM)
     base_ids <- sub("\\.[0-9]+\\.[0-9]+$", "", current_rownames[unmatched_idx])
     new_rownames[unmatched_idx] <- mapping[base_ids]
-    
+
     # For still unmatched, try removing single .X suffix (e.g., .1 for Salmon)
     still_unmatched_after_first <- is.na(new_rownames) & unmatched_idx
     if (any(still_unmatched_after_first)) {
@@ -548,7 +570,25 @@ convert_to_shortened_names <- function(counts_matrix, gene_group) {
       new_rownames[still_unmatched_after_first] <- mapping[base_ids_single]
     }
   }
-  
+
+  # Reverse lookup: row ID is shorter than mapping key (e.g., gene-level "SMEL5_06g022750"
+  # when mapping has transcript-level "SMEL5_06g022750.1" as key).
+  # Build a stripped-key mapping and try matching.
+  still_unmatched <- is.na(new_rownames)
+  if (any(still_unmatched)) {
+    mapping_keys <- names(mapping)
+    stripped_keys <- sub("\\.[0-9]+$", "", mapping_keys)
+    # Only use entries where stripping actually changed the key (avoids false matches)
+    changed <- stripped_keys != mapping_keys
+    if (any(changed)) {
+      reverse_mapping <- setNames(mapping[changed], stripped_keys[changed])
+      # Remove duplicates (keep first occurrence)
+      reverse_mapping <- reverse_mapping[!duplicated(names(reverse_mapping))]
+      reverse_hits <- reverse_mapping[current_rownames[still_unmatched]]
+      new_rownames[still_unmatched] <- reverse_hits
+    }
+  }
+
   # Keep original name if still no mapping found
   still_unmatched <- is.na(new_rownames)
   new_rownames[still_unmatched] <- current_rownames[still_unmatched]
@@ -571,18 +611,28 @@ apply_labels <- function(counts_matrix, gene_group, gene_type, label_type) {
     current_cols <- colnames(result)
     
     # Check if columns are organ labels (matching SAMPLE_LABELS values)
-    if (any(current_cols %in% SAMPLE_LABELS)) {
+    # Handle R's make.unique suffixes (.1, .2, etc.) from read.table on duplicate organ names
+    base_cols <- sub("\\.[0-9]+$", "", current_cols)
+    if (any(base_cols %in% SAMPLE_LABELS)) {
       # Columns are organ labels - reorder using SAMPLE_LABELS values order
       ordered_organs <- SAMPLE_LABELS[SAMPLE_IDS]
       ordered_organs <- ordered_organs[!is.na(ordered_organs)]
-      # Columns that match the expected order
-      matched_cols <- ordered_organs[ordered_organs %in% current_cols]
-      # Columns not in the expected order (keep at end)
-      unmatched_cols <- current_cols[!current_cols %in% matched_cols]
-      # Combine: matched in order, then unmatched
-      ordered_cols <- c(matched_cols, unmatched_cols)
-      if (length(ordered_cols) > 0) {
-        result <- result[, ordered_cols, drop = FALSE]
+      # Match against base organ names (stripped of .1/.2 suffixes) so that
+      # duplicates like "Flower_Buds.1" correctly match "Flower_Buds".
+      matched_indices <- integer(0)
+      used <- logical(ncol(result))
+      for (organ in ordered_organs) {
+        candidates <- which(base_cols == organ & !used)
+        if (length(candidates) > 0) {
+          matched_indices <- c(matched_indices, candidates[1])
+          used[candidates[1]] <- TRUE
+        }
+      }
+      # Columns not matched by the expected order (keep at end)
+      unmatched_indices <- which(!used)
+      ordered_indices <- c(matched_indices, unmatched_indices)
+      if (length(ordered_indices) == ncol(result)) {
+        result <- result[, ordered_indices, drop = FALSE]
       }
     } else if (any(current_cols %in% SAMPLE_IDS)) {
       # Columns are SRR IDs - reorder using SAMPLE_IDS order directly
@@ -621,7 +671,7 @@ map_tissue_to_group <- function(tissue_name) {
   if (grepl("Root|Stem|Leaf|Leaves|Senescent", tissue_name, ignore.case = TRUE)) {
     return("Vegetative")
   }
-  if (grepl("Flower|Bud|Pistil", tissue_name, ignore.case = TRUE)) {
+  if (grepl("Flower|Bud|Pistil|Stamen", tissue_name, ignore.case = TRUE)) {
     return("Reproductive")
   }
   if (grepl("Fruit|peduncle", tissue_name, ignore.case = TRUE)) {
@@ -650,5 +700,12 @@ get_violet_color_scale <- function(n_breaks = 100) {
 
 get_blue_red_color_scale <- function(n_breaks = 100) {
   colorRampPalette(c("#2166AC", "#67A9CF", "#F7F7F7", "#EF8A62", "#B2182B"))(n_breaks)
+}
+
+get_cv_color_scale <- function(n_breaks = 100) {
+  # Deep violet to light lavender for CV: low CV = deep (stable), high CV = pale (variable)
+  # colorRamp2(seq(min,max,...), colors) maps min→first color, max→last color
+  colorRampPalette(c("#4A148C", "#7B1FA2", "#9C27B0", "#AB47BC",
+                     "#BA68C8", "#CE93D8", "#E1BEE7", "#F3E5F5"))(n_breaks)
 }
 #c("#dab3ddff","#d9afe0ff","#c57fd1ff","#ac44beff","#8E24AA","#6A1B9A","#4A148C","#2F1B69")

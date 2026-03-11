@@ -7,10 +7,10 @@
 # Expects environment variables set by pipeline_utils.sh:
 #   CURRENT_METHOD, MASTER_REFERENCE, BASE_DIR,
 #   SRR_COMBINED_LIST_STR, GENE_GROUPS_STR, GENE_GROUPS_DIR,
-#   RSEM_GENERATE_GENE_LEVEL, RSEM_GENERATE_ISOFORM_LEVEL
+#   STAR_GENERATE_GENE_LEVEL, STAR_GENERATE_ISOFORM_LEVEL
 
-GENERATE_GENE_LEVEL    <- as.logical(Sys.getenv("RSEM_GENERATE_GENE_LEVEL",    "TRUE"))
-GENERATE_ISOFORM_LEVEL <- as.logical(Sys.getenv("RSEM_GENERATE_ISOFORM_LEVEL", "TRUE"))
+GENERATE_GENE_LEVEL    <- as.logical(Sys.getenv("STAR_GENERATE_GENE_LEVEL",    "TRUE"))
+GENERATE_ISOFORM_LEVEL <- as.logical(Sys.getenv("STAR_GENERATE_ISOFORM_LEVEL", "TRUE"))
 
 suppressPackageStartupMessages(library(tximport))
 
@@ -57,6 +57,32 @@ if (GENERATE_GENE_LEVEL) {
                           stringsAsFactors = FALSE)
     quant_files <- file.path(quant_dir, SAMPLE_IDS, "quant.sf")
     names(quant_files) <- SAMPLE_IDS
+    missing_qf <- quant_files[!file.exists(quant_files)]
+    if (length(missing_qf) > 0) {
+      cat("  Warning: Missing quant.sf for", length(missing_qf), "samples:",
+          paste(names(missing_qf), collapse = ", "), "\n")
+      quant_files <- quant_files[file.exists(quant_files)]
+    }
+    if (length(quant_files) < 2) {
+      cat("  Error: Need >= 2 quant.sf files for gene-level import\n")
+    } else {
+
+    # Validate tx2gene transcript IDs match quant.sf transcript IDs
+    sample_qf <- read.delim(quant_files[1], header = TRUE, nrows = 100,
+                             stringsAsFactors = FALSE)
+    qf_ids <- sub("\\.[0-9]+$", "", sample_qf$Name)  # strip version suffix
+    tx_ids <- sub("\\.[0-9]+$", "", tx2gene$TXNAME)
+    overlap <- length(intersect(qf_ids, tx_ids))
+    match_rate <- overlap / length(qf_ids)
+    if (match_rate < 0.5) {
+      cat("  ERROR: tx2gene transcript IDs poorly match quant.sf IDs!\n")
+      cat("    Match rate:", round(match_rate * 100), "% (", overlap, "/", length(qf_ids), "sampled)\n")
+      cat("    tx2gene IDs (first 3):", paste(head(tx2gene$TXNAME, 3), collapse = ", "), "\n")
+      cat("    quant.sf IDs (first 3):", paste(head(sample_qf$Name, 3), collapse = ", "), "\n")
+      cat("    This usually means tx2gene was generated from the wrong GTF.\n")
+      cat("    Re-run STAR+Salmon alignment to regenerate tx2gene.\n")
+      cat("    Skipping gene-level import.\n\n")
+    } else {
 
     txi_gene <- tryCatch(
       tximport(quant_files, type = "salmon", tx2gene = tx2gene, ignoreTxVersion = TRUE),
@@ -65,6 +91,8 @@ if (GENERATE_GENE_LEVEL) {
     if (!is.null(txi_gene)) {
       results$gene_level     <- txi_gene$counts
       results$gene_level_tpm <- txi_gene$abundance
+    }
+    }
     }
   } else {
     cat("  Warning: tx2gene file not found in", file.path(output_dir, MASTER_REFERENCE),
@@ -76,14 +104,18 @@ if (GENERATE_GENE_LEVEL) {
 if (GENERATE_ISOFORM_LEVEL) {
   quant_files <- file.path(quant_dir, SAMPLE_IDS, "quant.sf")
   names(quant_files) <- SAMPLE_IDS
+  quant_files <- quant_files[file.exists(quant_files)]
+  if (length(quant_files) < 2) {
+    cat("  Error: Need >= 2 quant.sf files for isoform-level import\n")
+  } else {
+    txi_iso <- tryCatch(
+      tximport(quant_files, type = "salmon", txIn = TRUE, txOut = TRUE),
+      error = function(e) { cat("  Isoform-level import error:", e$message, "\n"); NULL })
 
-  txi_iso <- tryCatch(
-    tximport(quant_files, type = "salmon", txIn = TRUE, txOut = TRUE),
-    error = function(e) { cat("  Isoform-level import error:", e$message, "\n"); NULL })
-
-  if (!is.null(txi_iso)) {
-    results$isoform_level     <- txi_iso$counts
-    results$isoform_level_tpm <- txi_iso$abundance
+    if (!is.null(txi_iso)) {
+      results$isoform_level     <- txi_iso$counts
+      results$isoform_level_tpm <- txi_iso$abundance
+    }
   }
 }
 

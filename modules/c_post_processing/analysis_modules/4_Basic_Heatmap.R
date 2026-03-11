@@ -12,6 +12,14 @@ suppressPackageStartupMessages({
   library(grid)
 })
 
+# Pre-initialize fontconfig to suppress "using without calling FcInit()" warning
+# that fires on the first graphics device creation in a new session.
+invisible(suppressWarnings({
+  tmp <- tempfile(fileext = ".png")
+  png(tmp, width = 1, height = 1); dev.off()
+  file.remove(tmp)
+}))
+
 SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", ".")
 source(file.path(SCRIPT_DIR, "0_shared_config.R"))
 source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
@@ -32,8 +40,9 @@ EXPORT_RAW_VALUES <- TRUE
 # HEATMAP GENERATION FUNCTION
 # ===============================================
 
-generate_heatmap_violet <- function(data_matrix, output_path, title, 
+generate_heatmap_violet <- function(data_matrix, output_path, title,
                                      count_type, label_type, normalization_type,
+                                     norm_scheme = NULL,
                                      transpose = FALSE, sort_by_expression = FALSE) {
   tryCatch({
     # Prepare data
@@ -82,18 +91,17 @@ generate_heatmap_violet <- function(data_matrix, output_path, title,
     }
     
     # Configure legend breaks based on normalization type
-    # Use case-insensitive matching and check for key patterns
-    is_zscore_scaled <- grepl("zscore.*scaled.*ten|z-score.*scaled.*ten", normalization_type, ignore.case = TRUE)
-    
+    # All schemes use quantile-based color bounds so visual intensity is consistent.
+    # zscore_scaled_to_ten is a linear rescaling of zscore to [0,10]; using the same
+    # quantile approach ensures identical color patterns between the two.
+    # For zscore_scaled_to_ten: show a complete 0-10 legend (increment of 2) so the
+    # reader sees the full intuitive scale, even though colors are quantile-mapped.
+    is_zscore_scaled <- grepl("zscore.*scaled.*ten|z-score.*scaled.*ten",
+                              normalization_type, ignore.case = TRUE)
     if (is_zscore_scaled) {
-      # For zscore_scaled_to_ten: data is already scaled to 0-10
-      # Use fixed 0-10 color scale and legend with 5 parts (0, 2.5, 5, 7.5, 10)
-      legend_breaks <- c(0, 2.5, 5, 7.5, 10)
+      legend_breaks <- seq(0, 10, by = 2)
       legend_labels <- as.character(legend_breaks)
-      color_min <- 0
-      color_max <- 10
     } else {
-      # Divide range into 5 equal parts for other normalizations
       legend_breaks <- seq(color_min, color_max, length.out = 5)
       legend_labels <- sprintf("%.1f", legend_breaks)
     }
@@ -105,7 +113,9 @@ generate_heatmap_violet <- function(data_matrix, output_path, title,
     
     # Legend
     legend_layout <- get_legend_layout(LEGEND_POSITION)
-    legend_title <- get_legend_title(normalization_type, count_type)
+    # Use internal norm_scheme for get_legend_title() (which switches on internal names);
+    # normalization_type is the display name used for file naming and the is_zscore_scaled check.
+    legend_title <- get_legend_title(if (!is.null(norm_scheme)) norm_scheme else normalization_type, count_type)
     
     # Calculate dimensions for square cells with auto-sizing
     n_rows <- nrow(data_matrix)
@@ -119,6 +129,21 @@ generate_heatmap_violet <- function(data_matrix, output_path, title,
     img_width <- max(800, n_cols * 60 + margin_width)
     img_height <- max(800, n_rows * 60 + margin_height)
     
+    # Clean organ label suffixes (.1, .2) added by R's make.unique on duplicate names
+    # Only strip from the axis that carries organ/tissue labels
+    if (label_type == "Organ") {
+      if (transpose) {
+        clean_row_labels <- sub("\\.[0-9]+$", "", rownames(data_matrix))
+        clean_col_labels <- colnames(data_matrix)
+      } else {
+        clean_row_labels <- rownames(data_matrix)
+        clean_col_labels <- sub("\\.[0-9]+$", "", colnames(data_matrix))
+      }
+    } else {
+      clean_row_labels <- rownames(data_matrix)
+      clean_col_labels <- colnames(data_matrix)
+    }
+
     # Create heatmap without dendrograms, with square cells and visible borders
     ht <- Heatmap(
       data_matrix,
@@ -130,6 +155,9 @@ generate_heatmap_violet <- function(data_matrix, output_path, title,
       show_column_dend = FALSE,
       show_row_names = nrow(data_matrix) <= 50,
       show_column_names = TRUE,
+      row_labels = clean_row_labels,
+      column_labels = clean_col_labels,
+      column_names_side = if (transpose) "top" else "bottom",
       row_names_side = "left",
       row_names_gp = gpar(fontsize = 11),
       column_names_gp = gpar(fontsize = 11),
@@ -159,7 +187,13 @@ generate_heatmap_violet <- function(data_matrix, output_path, title,
     if (exists("EXPORT_RAW_VALUES") && EXPORT_RAW_VALUES) {
       tsv_path <- sub("\\.png$", "_values.tsv", output_path)
       # Convert to data frame with row names as first column
-      export_df <- data.frame(GeneID = rownames(data_matrix), data_matrix, check.names = FALSE)
+      row_id_label <- if (transpose) {
+        if (label_type == "Organ") "OrganID" else "SampleID"
+      } else {
+        "GeneID"
+      }
+      export_df <- data.frame(V1 = rownames(data_matrix), data_matrix, check.names = FALSE)
+      names(export_df)[1] <- row_id_label
       write.table(export_df, tsv_path, sep = "\t", row.names = FALSE, quote = FALSE)
       cat("      Exported values:", basename(tsv_path), "\n")
     }
@@ -214,6 +248,7 @@ process_basic_heatmap <- function(gene_group, gene_group_output_dir, processing_
         count_type = count_type,
         label_type = label_type,
         normalization_type = norm_display,
+        norm_scheme = norm_scheme,
         transpose = orient$transpose,
         sort_by_expression = sorting$sort
       )

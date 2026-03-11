@@ -4,6 +4,15 @@
 # DIFFERENTIAL EXPRESSION ANALYSIS MODULE
 # ===============================================
 # DESeq2-based differential expression analysis
+#
+# INPUT SOURCE (differs from visualization modules):
+#   This module uses RAW INTEGER COUNTS, not the TPM/FPKM/Coverage matrices
+#   consumed by heatmap, PCA, and other visualization modules.
+#   - M1 HISAT2 RefGuided: prepDE.py integer counts (gene_count_matrix.csv)
+#     staged by prepde_matrix_linker.sh into .../deseq2_input/
+#   - M4 Salmon / M5 RSEM: tximport-derived raw counts (NumReads / expected_count)
+#   DESeq2 performs its own internal normalization (median-of-ratios) on these
+#   raw counts — no external normalization is applied before DESeq2.
 
 suppressPackageStartupMessages({
   library(DESeq2)
@@ -224,13 +233,38 @@ load_m1_gene_group_counts <- function(gene_group, matrices_dir, master_ref) {
 
   # Filter to gene group if a gene group CSV exists
   gene_group_csv <- file.path(GENE_GROUPS_DIR, paste0(gene_group, ".csv"))
+  # Search subdirectories if not found at top level
+  if (!file.exists(gene_group_csv)) {
+    hits <- list.files(GENE_GROUPS_DIR, pattern = paste0("^", gene_group, "\\.csv$"),
+                       recursive = TRUE, full.names = TRUE)
+    if (length(hits) > 0) gene_group_csv <- hits[1]
+  }
   if (file.exists(gene_group_csv)) {
     gdf <- tryCatch(read.csv(gene_group_csv, stringsAsFactors = FALSE, header = TRUE),
                    error = function(e) NULL)
     if (!is.null(gdf) && nrow(gdf) > 0) {
       gene_ids <- if ("Gene_ID" %in% colnames(gdf)) trimws(gdf$Gene_ID) else trimws(gdf[[1]])
       gene_ids <- gene_ids[nzchar(gene_ids)]
-      matched <- rownames(full_matrix)[rownames(full_matrix) %in% gene_ids]
+      rn <- rownames(full_matrix)
+      matched <- rn[rn %in% gene_ids]
+      # Reverse suffix stripping: gene group has "SMEL5_*.1" but matrix has "SMEL5_*"
+      if (length(matched) < length(gene_ids)) {
+        unmatched <- gene_ids[!gene_ids %in% rn]
+        for (g in unmatched) {
+          g_base <- sub("\\.[0-9]+$", "", g)
+          if (g_base != g && g_base %in% rn) matched <- c(matched, g_base)
+        }
+        # Forward prefix matching: gene group has "SMEL4.1_*.1" and matrix has "SMEL4.1_*.1.01"
+        if (length(matched) < length(gene_ids)) {
+          still_unmatched <- gene_ids[!gene_ids %in% rn & !sub("\\.[0-9]+$", "", gene_ids) %in% rn]
+          for (g in still_unmatched) {
+            pat <- paste0("^", gsub("\\.", "\\\\.", g), "(\\..*)?$")
+            hits <- rn[grepl(pat, rn)]
+            if (length(hits) > 0) matched <- c(matched, hits[1])
+          }
+        }
+        matched <- unique(matched)
+      }
       if (length(matched) == 0) {
         return(list(success = FALSE, reason = paste("no gene IDs matched in M1 matrix for", gene_group)))
       }
@@ -268,14 +302,22 @@ run_differential_expression <- function(config = NULL, matrices_dir = NULL) {
   for (gene_group in config$gene_groups) {
     cat("Processing:", gene_group, "\n")
 
-    output_dir <- file.path(DEA_OUT_DIR, gene_group)
+    output_folder_name <- get_output_folder_name(gene_group, CURRENT_DATASET)
+    output_dir <- file.path(DEA_OUT_DIR, output_folder_name)
     ensure_output_dir(output_dir)
 
     if (is_m1) {
       validation <- load_m1_gene_group_counts(gene_group, matrices_dir, config$master_reference)
     } else {
+      # DESeq2 requires raw integer counts (NumReads/expected_count), NOT TPM.
+      # get_raw_count_type() returns the appropriate raw count type for each method.
+      raw_ct <- get_raw_count_type(CURRENT_METHOD)
+      if (is.null(raw_ct)) {
+        cat("  Skipped: no raw count type defined for", CURRENT_METHOD, "\n")
+        next
+      }
       input_file <- build_input_path(gene_group, PROCESSING_LEVELS[1],
-                                     COUNT_TYPES[1], "geneID",
+                                     raw_ct, "Gene_ID",
                                      matrices_dir, config$master_reference)
       validation <- validate_and_read_matrix(input_file, MIN_GENES_DEA)
     }
@@ -291,6 +333,10 @@ run_differential_expression <- function(config = NULL, matrices_dir = NULL) {
     
     # Run pairwise comparisons between tissue groups
     group_names <- names(TISSUE_GROUPS)
+    if (length(group_names) < 2) {
+      cat("  Skipped: fewer than 2 tissue groups defined\n")
+      next
+    }
     for (i in 1:(length(group_names) - 1)) {
       for (j in (i + 1):length(group_names)) {
         total <- total + 1
