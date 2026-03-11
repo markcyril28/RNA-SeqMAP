@@ -76,6 +76,111 @@ _get_salmon_lib_type() {
 	esac
 }
 
+# Post-alignment QC: parse Log.final.out files to flag alignment rate outliers,
+# abnormal unmapped read categories, and potential rRNA contamination.
+# Usage: _star_check_alignment_rates <alignment_dir> <srr1> [srr2 ...]
+_star_check_alignment_rates() {
+	local align_dir="$1"; shift
+	local srr_list=("$@")
+	local warn_count=0
+
+	# Collect per-sample stats for cohort-level outlier detection
+	local -a sample_names=() unique_rates=() multi_rates=() unmapped_short=() unmapped_mismatch=() unmapped_other=()
+
+	for SRR in "${srr_list[@]}"; do
+		local logf="${align_dir}/${SRR}_Log.final.out"
+		[[ ! -f "$logf" ]] && continue
+
+		# Extract key metrics from STAR Log.final.out
+		local uniq_pct multi_pct short_pct mismatch_pct other_pct input_reads
+		input_reads=$(awk -F'|' '/Number of input reads/{gsub(/[[:space:]]/, "", $2); print $2}' "$logf" 2>/dev/null)
+		uniq_pct=$(awk -F'|' '/Uniquely mapped reads %/{gsub(/[[:space:]%]/, "", $2); print $2}' "$logf" 2>/dev/null)
+		multi_pct=$(awk -F'|' '/% of reads mapped to multiple loci/{gsub(/[[:space:]%]/, "", $2); print $2}' "$logf" 2>/dev/null)
+		short_pct=$(awk -F'|' '/% of reads unmapped: too short/{gsub(/[[:space:]%]/, "", $2); print $2}' "$logf" 2>/dev/null)
+		mismatch_pct=$(awk -F'|' '/% of reads unmapped: too many mismatches/{gsub(/[[:space:]%]/, "", $2); print $2}' "$logf" 2>/dev/null)
+		other_pct=$(awk -F'|' '/% of reads unmapped: other/{gsub(/[[:space:]%]/, "", $2); print $2}' "$logf" 2>/dev/null)
+
+		[[ -z "$uniq_pct" ]] && continue
+
+		sample_names+=("$SRR")
+		unique_rates+=("$uniq_pct")
+		multi_rates+=("${multi_pct:-0}")
+		unmapped_short+=("${short_pct:-0}")
+		unmapped_mismatch+=("${mismatch_pct:-0}")
+		unmapped_other+=("${other_pct:-0}")
+
+		# Per-sample checks
+		# 1. Low unique mapping rate (<50% is very concerning, <70% is a warning)
+		if awk "BEGIN{exit !($uniq_pct < 50)}" 2>/dev/null; then
+			log_warn "[STAR QC] $SRR: Uniquely mapped only ${uniq_pct}% — VERY LOW (check sample quality, adapter contamination, or genome mismatch)"
+			((warn_count++))
+		elif awk "BEGIN{exit !($uniq_pct < 70)}" 2>/dev/null; then
+			log_warn "[STAR QC] $SRR: Uniquely mapped ${uniq_pct}% — below 70% threshold"
+			((warn_count++))
+		fi
+
+		# 2. High multi-mapping (>20%) may indicate rRNA contamination or repetitive sequences
+		if awk "BEGIN{exit !(${multi_pct:-0} > 20)}" 2>/dev/null; then
+			log_warn "[STAR QC] $SRR: Multi-mapped ${multi_pct}% — high rate may indicate rRNA contamination or repetitive element enrichment"
+			((warn_count++))
+		fi
+
+		# 3. High unmapped-too-short (>15%) suggests adapter contamination or degraded RNA
+		if awk "BEGIN{exit !(${short_pct:-0} > 15)}" 2>/dev/null; then
+			log_warn "[STAR QC] $SRR: Unmapped (too short) ${short_pct}% — check adapter trimming or RNA degradation"
+			((warn_count++))
+		fi
+
+		# 4. High unmapped-too-many-mismatches (>5%) suggests genome version mismatch
+		if awk "BEGIN{exit !(${mismatch_pct:-0} > 5)}" 2>/dev/null; then
+			log_warn "[STAR QC] $SRR: Unmapped (mismatches) ${mismatch_pct}% — may indicate genome/species mismatch"
+			((warn_count++))
+		fi
+	done
+
+	# Cohort-level outlier detection: flag samples >2 SD below mean unique mapping rate
+	local n=${#unique_rates[@]}
+	if [[ $n -ge 3 ]]; then
+		local sum=0 sum_sq=0
+		for rate in "${unique_rates[@]}"; do
+			sum=$(awk "BEGIN{printf \"%.4f\", $sum + $rate}")
+			sum_sq=$(awk "BEGIN{printf \"%.4f\", $sum_sq + ($rate * $rate)}")
+		done
+		local mean=$(awk "BEGIN{printf \"%.2f\", $sum / $n}")
+		local sd=$(awk "BEGIN{v=($sum_sq/$n) - ($sum/$n)^2; printf \"%.2f\", (v>0)?sqrt(v):0}")
+		local threshold=$(awk "BEGIN{printf \"%.2f\", $mean - 2 * $sd}")
+
+		log_info "[STAR QC] Cohort alignment stats: mean=${mean}%, SD=${sd}%, outlier threshold=${threshold}%"
+
+		for ((i=0; i<n; i++)); do
+			if awk "BEGIN{exit !(${unique_rates[$i]} < $threshold)}" 2>/dev/null; then
+				log_warn "[STAR QC] OUTLIER: ${sample_names[$i]} (${unique_rates[$i]}%) is >2 SD below cohort mean (${mean}%)"
+				((warn_count++))
+			fi
+		done
+	fi
+
+	# Summary table
+	if [[ ${#sample_names[@]} -gt 0 ]]; then
+		log_info "[STAR QC] ┌───────────────────┬────────┬────────┬──────────┬──────────┬────────┐"
+		log_info "[STAR QC] │ Sample            │ Unique │ Multi  │ Unmap:Sh │ Unmap:MM │ Unmap:O│"
+		log_info "[STAR QC] ├───────────────────┼────────┼────────┼──────────┼──────────┼────────┤"
+		for ((i=0; i<${#sample_names[@]}; i++)); do
+			printf -v _row "[STAR QC] │ %-17s │ %5s%% │ %5s%% │   %5s%% │   %5s%% │ %5s%%│" \
+				"${sample_names[$i]}" "${unique_rates[$i]}" "${multi_rates[$i]}" \
+				"${unmapped_short[$i]}" "${unmapped_mismatch[$i]}" "${unmapped_other[$i]}"
+			log_info "$_row"
+		done
+		log_info "[STAR QC] └───────────────────┴────────┴────────┴──────────┴──────────┴────────┘"
+	fi
+
+	if [[ $warn_count -gt 0 ]]; then
+		log_warn "[STAR QC] $warn_count warning(s) detected — review samples before proceeding"
+	else
+		log_info "[STAR QC] All samples passed alignment rate checks"
+	fi
+}
+
 # ==============================================================================
 # MAIN STAR ALIGNMENT PIPELINE
 # ==============================================================================
@@ -236,6 +341,32 @@ star_alignment_pipeline() {
 	_sal_lib_se=$(_get_salmon_lib_type "${STAR_STRAND_SPECIFIC:-None}" "false")
 	log_info "[STAR] Salmon library type: PE=${_sal_lib_pe}  SE=${_sal_lib_se}  (STAR_STRAND_SPECIFIC=${STAR_STRAND_SPECIFIC:-None})"
 
+	# Pre-compute STAR strandedness and splice-junction args (used in both parallel + sequential).
+	# --outSAMstrandField intronMotif: infers XS strand tag from splice site motifs.
+	#   Appropriate for UNSTRANDED libraries; for stranded protocols STAR derives XS from
+	#   the read orientation, so adding intronMotif would override with a less-reliable signal.
+	local star_strand_args=()
+	if [[ "${STAR_STRAND_SPECIFIC:-None}" == "None" ]]; then
+		star_strand_args+=(--outSAMstrandField intronMotif)
+		log_info "[STAR] Unstranded: using --outSAMstrandField intronMotif for XS tags"
+	else
+		log_info "[STAR] Stranded (${STAR_STRAND_SPECIFIC}): XS tag derived from read orientation"
+	fi
+
+	# Explicit splice junction filtering thresholds (STAR defaults documented here
+	# so the pipeline behaviour is transparent across STAR versions).
+	# Format: 4 values for canonical GT/AG, semi-canonical CT/AC or GT/AT, non-canonical, other.
+	# --outSJfilterCountUniqueMin   3 1 1 1   (min unique reads per junction type)
+	# --outSJfilterCountTotalMin    3 1 1 1   (min total reads per junction type)
+	# --outSJfilterOverhangMin      30 12 12 12 (min overhang for reported junctions)
+	# --outSJfilterIntronMaxVsReadN 50000 100000 200000 (max intron vs read length)
+	local star_sj_filter_args=(
+		--outSJfilterCountUniqueMin 3 1 1 1
+		--outSJfilterCountTotalMin  3 1 1 1
+		--outSJfilterOverhangMin    30 12 12 12
+		--outSJfilterIntronMaxVsReadN 50000 100000 200000
+	)
+
 	# Resolve effective genome load. --twopassMode Basic is incompatible with LoadAndKeep;
 	# override and warn rather than silently degrading to 1-pass alignment.
 	# effective_genome_load is not declared local so it can be exported for parallel workers.
@@ -316,7 +447,7 @@ star_alignment_pipeline() {
 	local threads_per_job=$((THREADS / parallel_jobs))
 	[[ $threads_per_job -lt 1 ]] && threads_per_job=1
 
-	if command -v parallel >/dev/null 2>&1 && [[ "$parallel_jobs" -gt 1 ]]; then
+	if command -v parallel >/dev/null 2>&1 && [[ "$parallel_jobs" -gt 1 ]] && [[ "${USE_GNU_PARALLEL:-TRUE}" != "FALSE" ]]; then
 		log_step "[PARALLEL] STAR alignment: ${#rnaseq_list[@]} samples, $parallel_jobs jobs x $threads_per_job threads"
 		log_warn "[PARALLEL] STAR is memory-intensive (~30GB/instance). Ensure sufficient RAM for $parallel_jobs concurrent jobs."
 		_prepare_parallel_env
@@ -325,6 +456,9 @@ star_alignment_pipeline() {
 		export star_index_dir star_genome_dir
 		export STAR_DELETE_TRANSIENT PROJECT_ROOT
 		export effective_genome_load
+		# Serialize array args for parallel workers (bash can't export arrays)
+		export _star_strand_args_str="${star_strand_args[*]}"
+		export _star_sj_filter_args_str="${star_sj_filter_args[*]}"
 
 		_m3_star_parallel_worker() {
 			local SRR="$1"
@@ -365,6 +499,10 @@ star_alignment_pipeline() {
 			_parallel_log STAR "$SRR" INFO "Aligning with $threads_per_job threads"
 			_parallel_log STAR "$SRR" INFO "--- BEGIN STAR OUTPUT ---"
 
+			# Deserialize array args from exported strings
+			local _par_strand_args=($_star_strand_args_str)
+			local _par_sj_args=($_star_sj_filter_args_str)
+
 			STAR --runMode alignReads \
 				--genomeDir "$star_index_dir" \
 				--readFilesIn "${star_reads_args[@]}" \
@@ -372,10 +510,11 @@ star_alignment_pipeline() {
 				--outFileNamePrefix "$out_prefix" \
 				--outTmpDir "$star_tmp_dir" \
 				--outSAMtype BAM Unsorted \
-				--outSAMstrandField intronMotif \
+				${_par_strand_args[@]:+"${_par_strand_args[@]}"} \
 				--outSAMattributes NH HI AS NM MD \
 				--outSAMunmapped Within \
 				--twopassMode Basic \
+				${_par_sj_args[@]:+"${_par_sj_args[@]}"} \
 				--genomeLoad "$effective_genome_load" \
 				--runThreadN "$threads_per_job" 2>&1 || \
 				{ _parallel_log STAR "$SRR" ERROR "--- END STAR OUTPUT (FAILED) ---"; _parallel_log STAR "$SRR" ERROR "STAR alignment failed"; return 1; }
@@ -429,6 +568,7 @@ star_alignment_pipeline() {
 			--env star_index_dir --env star_genome_dir \
 			--env STAR_DELETE_TRANSIENT --env PROJECT_ROOT \
 			--env OVERWRITE_MODE --env effective_genome_load \
+			--env _star_strand_args_str --env _star_sj_filter_args_str \
 			-j "$parallel_jobs" \
 			--halt soon,fail=1 \
 			--joblog "$star_genome_dir/parallel_star_align.log" \
@@ -536,10 +676,11 @@ star_alignment_pipeline() {
 					--outFileNamePrefix "$out_prefix" \
 					--outTmpDir "$star_tmp_dir" \
 					--outSAMtype BAM Unsorted \
-					--outSAMstrandField intronMotif \
+					${star_strand_args[@]:+"${star_strand_args[@]}"} \
 					--outSAMattributes NH HI AS NM MD \
 					--outSAMunmapped Within \
 					--twopassMode Basic \
+					${star_sj_filter_args[@]:+"${star_sj_filter_args[@]}"} \
 					--genomeLoad "$effective_genome_load" \
 					--runThreadN "$THREADS"
 
@@ -615,6 +756,10 @@ star_alignment_pipeline() {
 
 	log_info "[STAR] All samples aligned successfully"
 
+	# POST-ALIGNMENT QC: Parse Log.final.out for alignment rate outliers and anomalies
+	log_step "STAR post-alignment quality check"
+	_star_check_alignment_rates "$star_genome_dir" "${rnaseq_list[@]}"
+
 	# STEP 3: SALMON QUANTIFICATION
 	# Include fasta_tag in paths to prevent multi-reference collisions.
 	# tissue_tag further subdivides quant outputs within a given reference run.
@@ -645,7 +790,7 @@ star_alignment_pipeline() {
 	# Quantify samples
 	log_info "[SALMON] Starting quantification for ${#rnaseq_list[@]} samples"
 
-	if command -v parallel >/dev/null 2>&1 && [[ "$parallel_jobs" -gt 1 ]]; then
+	if command -v parallel >/dev/null 2>&1 && [[ "$parallel_jobs" -gt 1 ]] && [[ "${USE_GNU_PARALLEL:-TRUE}" != "FALSE" ]]; then
 		log_step "[PARALLEL] Salmon quant (STAR): ${#rnaseq_list[@]} samples, $parallel_jobs jobs x $threads_per_job threads"
 		_prepare_parallel_env
 
