@@ -234,10 +234,10 @@ hisat2_de_novo_pipeline() {
 				local align_exit=0
 				if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
 					run_with_space_time_log --input "$TRIM_DIR_ROOT/$SRR" --output "$HISAT2_DIR" \
-						hisat2 -p "${THREADS}" -x "$index_prefix" -1 "$trimmed1" -2 "$trimmed2" -S "$sam"
+						hisat2 -p "${THREADS}" $hisat2_strand_opts -x "$index_prefix" -1 "$trimmed1" -2 "$trimmed2" -S "$sam"
 				else
 					run_with_space_time_log --input "$TRIM_DIR_ROOT/$SRR" --output "$HISAT2_DIR" \
-						hisat2 -p "${THREADS}" -x "$index_prefix" -U "$trimmed1" -S "$sam"
+						hisat2 -p "${THREADS}" $hisat2_strand_opts -x "$index_prefix" -U "$trimmed1" -S "$sam"
 				fi
 				align_exit=$?
 				[[ $align_exit -ne 0 ]] && { log_error "[HISAT2] Alignment failed for $SRR (exit=$align_exit)"; rm -f "$sam"; continue; }
@@ -261,7 +261,7 @@ hisat2_de_novo_pipeline() {
 			else
 				log_step "Assembling transcripts for $SRR (de novo)"
 				run_with_space_time_log --input "$bam" --output "$out_dir" \
-					stringtie -p "$THREADS" "$bam" -o "$out_gtf" \
+					stringtie -p "$THREADS" $stringtie_strand_opt "$bam" -o "$out_gtf" \
 						-A "$out_abund" \
 					|| { log_error "[STRINGTIE] Assembly failed for $SRR"; rm -f "$out_gtf" "$out_abund"; continue; }
 			fi
@@ -276,4 +276,62 @@ hisat2_de_novo_pipeline() {
 	fi
 	
 	log_step "HISAT2 de novo pipeline completed for $fasta_tag"
+}
+
+# ==============================================================================
+# STRANDNESS INFERENCE HELPER
+# ==============================================================================
+# Infer library strandness from a BAM aligned to a transcriptome FASTA.
+# All reference sequences in a transcriptome FASTA are on the + strand, so:
+#   RF (dUTP/TruSeq):  read1 maps predominantly reverse  (flag 0x10)
+#   FR (ligation):     read1 maps predominantly forward   (no 0x10)
+#   Unstranded:        ~50/50 split
+# Sets hisat2_strand_opts and stringtie_strand_opt in the caller's scope.
+# Usage: _m2_infer_strand_from_bam <bam>
+_m2_infer_strand_from_bam() {
+	local bam="$1"
+	local fwd_count rev_count total fwd_frac
+
+	# Exclude unmapped (0x4), secondary (0x100), supplementary (0x800)
+	# 0x904 = 0x800 + 0x100 + 0x4
+	local is_paired
+	is_paired=$(samtools view -f 0x1 -F 0x904 -c "$bam" 2>/dev/null)
+
+	if [[ "${is_paired:-0}" -gt 0 ]]; then
+		# Paired-end: check read1 (0x40) strand orientation
+		# Forward-mapped read1: has 0x40, lacks 0x10 (and 0x4/0x100/0x800)
+		# 0x914 = 0x800 + 0x100 + 0x10 + 0x4
+		fwd_count=$(samtools view -f 0x40 -F 0x914 -c "$bam" 2>/dev/null)
+		# Reverse-mapped read1: has 0x40 + 0x10 = 0x50, lacks 0x4/0x100/0x800
+		rev_count=$(samtools view -f 0x50 -F 0x904 -c "$bam" 2>/dev/null)
+	else
+		# Single-end: check overall strand orientation
+		fwd_count=$(samtools view -F 0x914 -c "$bam" 2>/dev/null)
+		rev_count=$(samtools view -f 0x10 -F 0x904 -c "$bam" 2>/dev/null)
+	fi
+
+	total=$(( ${fwd_count:-0} + ${rev_count:-0} ))
+	if [[ "$total" -eq 0 ]]; then
+		log_warn "[STRANDNESS] No mapped reads in BAM — running unstranded"
+		_detected_strand="unstranded"
+		return 0
+	fi
+
+	fwd_frac=$(awk "BEGIN{printf \"%.4f\", ${fwd_count:-0} / $total}")
+	log_info "[STRANDNESS] Read1 forward fraction: $fwd_frac ($total primary alignments)"
+
+	if awk "BEGIN{exit !($fwd_frac > 0.7)}"; then
+		_detected_strand="FR"
+		hisat2_strand_opts="--rna-strandness FR"
+		stringtie_strand_opt="--fr"
+		log_info "[STRANDNESS] Auto-detected: FR (ligation / forward-stranded)"
+	elif awk "BEGIN{exit !($fwd_frac < 0.3)}"; then
+		_detected_strand="RF"
+		hisat2_strand_opts="--rna-strandness RF"
+		stringtie_strand_opt="--rf"
+		log_info "[STRANDNESS] Auto-detected: RF (dUTP / TruSeq / reverse-stranded)"
+	else
+		_detected_strand="unstranded"
+		log_info "[STRANDNESS] Auto-detected: Unstranded (fwd_frac=$fwd_frac)"
+	fi
 }
