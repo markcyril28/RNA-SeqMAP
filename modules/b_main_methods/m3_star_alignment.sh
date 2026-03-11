@@ -230,7 +230,7 @@ star_alignment_pipeline() {
 
 	# Validate GTF early - used by both index build and tx2gene creation.
 	# Do this outside the index-skip branch so the check runs even when the index already exists.
-	if [[ ! -f "$STAR_GTF_FILE" ]]; then
+	if [[ ! -f "${STAR_GTF_FILE:-}" ]]; then
 		log_error "[STAR] GTF annotation file not found: '${STAR_GTF_FILE:-<unset>}'"
 		log_error "[STAR] Set STAR_GTF_FILE (or gtf_file) in your configuration before running M3."
 		return 1
