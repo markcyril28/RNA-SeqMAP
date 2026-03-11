@@ -44,6 +44,7 @@ hisat2_de_novo_pipeline() {
 	local fasta_base fasta_tag index_prefix
 	fasta_base="$(basename "$fasta")"
 	fasta_tag="${fasta_base%.*}"
+	set_fasta_output_dirs "$fasta_tag"
 	index_prefix="$HISAT2_DE_NOVO_INDEX_DIR/${fasta_tag}_index"
 
 	# BUILD HISAT2 INDEX

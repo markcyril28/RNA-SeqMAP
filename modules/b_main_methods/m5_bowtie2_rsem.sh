@@ -291,7 +291,7 @@ _rsem_quantify_parallel() {
 	# Report results — count only files for the current batch (avoids inflation from stale runs)
 	local successful=0
 	for s in "${valid_samples[@]}"; do
-		[[ -f "$quant_root/$s/${s}.genes.results" ]] && ((successful++))
+		[[ -f "$quant_root/$s/${s}.genes.results" ]] && successful=$((successful + 1))
 	done
 	log_info "[RSEM QUANT] Parallel quantification complete: $successful/$num_samples samples succeeded"
 
@@ -468,7 +468,7 @@ _prepare_rsem_deseq2_output() {
 	# Verify quantifications
 	local quant_count=0
 	for SRR in "${srr_list[@]}"; do
-		[[ -f "$quant_root/$SRR/${SRR}.genes.results" ]] && ((quant_count++))
+		[[ -f "$quant_root/$SRR/${SRR}.genes.results" ]] && quant_count=$((quant_count + 1))
 	done
 
 	[[ $quant_count -lt 2 ]] && { log_error "Insufficient RSEM quantifications (found: $quant_count, need: ≥2)"; return 1; }
