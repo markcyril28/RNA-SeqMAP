@@ -19,11 +19,11 @@
 # SYSTEM RESOURCES
 # ==============================================================================
 
-THREADS=64
+THREADS=96
 ENABLE_GPU="FALSE"
 ENABLE_GNU_PARALLEL="TRUE"
-DESIRED_CPU_PER_JOB=4
-AVAILABLE_RAM_GB=32
+DESIRED_CPU_PER_JOB=2
+AVAILABLE_RAM_GB=64
 GPU_VRAM_GB=8
 
 # ==============================================================================

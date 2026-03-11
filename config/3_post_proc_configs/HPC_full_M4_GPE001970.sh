@@ -22,12 +22,15 @@
 # SYSTEM RESOURCES
 # ==============================================================================
 
-THREADS=64
+
+THREADS=96
 ENABLE_GPU="FALSE"
 ENABLE_GNU_PARALLEL="TRUE"
-DESIRED_CPU_PER_JOB=4
+DESIRED_CPU_PER_JOB=2
 AVAILABLE_RAM_GB=64
 GPU_VRAM_GB=8
+
+
 
 # ==============================================================================
 # LOGGING AND OUTPUT
@@ -99,9 +102,9 @@ ANALYSES=(
 
     # ---- Statistics ----
     #"Differential_Expression"   # Possible for M4 (tximport counts)
-    "PCA_Dimensionality_Reduction"
-    "Sample_Correlation_Clustering"
-    "Tissue_Specificity"        # Applicable — transcript-level quantification
+    #"PCA_Dimensionality_Reduction"
+    #"Sample_Correlation_Clustering"
+    #"Tissue_Specificity"        # Applicable — transcript-level quantification
     #"Coexpression_using_WGCNA"
     #"Gene_Set_Enrichment"
 )
