@@ -24,7 +24,7 @@ CONFIG_FILES=(
 	#"config/1_download_and_trim/HPC_download_and_trim.sh"		# Download + trim all SRRs
 
 	# --- Test runs (all M1-M5, 3 SRRs) ---
-	"config/2_alignment/HPC_test_genome_M1_M3.sh"				# M1 + M3 (genome FASTA)
+	#"config/2_alignment/HPC_test_genome_M1_M3.sh"				# M1 + M3 (genome FASTA)
 	#"config/2_alignment/HPC_test_transcript_M2_M4_M5.sh"		# M2 + M4 + M5 (transcript FASTA)
 
 	# --- Test runs (individual methods) ---
@@ -34,8 +34,8 @@ CONFIG_FILES=(
 	#"config/2_alignment/HPC_test_genome.sh"
 
 	# --- Full runs ---
-	#"config/2_alignment/HPC_full_ref_guided.sh"				# Reference-guided (M1 + M3)
-	#"config/2_alignment/HPC_full_non_ref_guided.sh"			# Non-reference-guided (M2 + M4 + M5)
+	"config/2_alignment/HPC_full_ref_guided.sh"				# Reference-guided (M1 + M3)
+	"config/2_alignment/HPC_full_non_ref_guided.sh"			# Non-reference-guided (M2 + M4 + M5)
 
 	# --- Local ---
 	#"config/2_alignment/local_test.sh"							# Local testing
@@ -60,8 +60,6 @@ set_pipeline_flags() {
 	RUN_METHOD_3_STAR_ALIGNMENT=$(_has_stage "METHOD_3_STAR_ALIGNMENT")
 	RUN_METHOD_4_SALMON_SAF=$(_has_stage "METHOD_4_SALMON_SAF")
 	RUN_METHOD_5_BOWTIE2_RSEM=$(_has_stage "METHOD_5_BOWTIE2_RSEM")
-	RUN_HEATMAP_WRAPPER=$(_has_stage "HEATMAP_WRAPPER")
-	RUN_ZIP_RESULTS=$(_has_stage "ZIP_RESULTS")
 	RUN_DELETE_TRIMMED_FASTQ_FILES=$(_has_stage "DELETE_TRIMMED_FASTQ_FILES")
 }
 
@@ -206,6 +204,8 @@ for config_file in "${CONFIG_FILES[@]}"; do
 	echo "=============================================================================="
 
 	[[ -f "$config_file" ]] || { echo "ERROR: Configuration file not found: $config_file"; exit 1; }
+	GENOME_REF_PAIRS=()
+	ALL_FASTA_FILES=()
 	source "$config_file"
 	set_pipeline_flags
 
@@ -219,38 +219,20 @@ for config_file in "${CONFIG_FILES[@]}"; do
 		gzip_trimmed_fastq_files
 	fi
 
-	for fasta_input in "${ALL_FASTA_FILES[@]}"; do
-		run_all --FASTA "$fasta_input" --RNASEQ_LIST "${SRR_COMBINED_LIST[@]}"
-	done
-
-	# --- Post-processing ---
-	switch_log_stage "3_POST_PROC"
-
-	if [[ $RUN_HEATMAP_WRAPPER == "TRUE" ]]; then
-		log_step "Heatmap Wrapper post-processing"
-		# run_all_post_processing.sh lives at the project root, not in POST_PROC_ROOT.
-		# NOTE: For M3, MASTER_REFERENCE in run_all_post_processing.sh must match the
-		# fasta_tag derived from the genome FASTA used during STAR alignment
-		# (e.g., "Eggplant_V4.1" from Eggplant_V4.1.fa), which differs from the
-		# transcript FASTA tag used by M4/M5. Set accordingly before running.
-		if [[ ! -f "$PROJECT_ROOT/run_all_post_processing.sh" ]]; then
-			log_warn "run_all_post_processing.sh not found at $PROJECT_ROOT — skipping"
-		else
-			bash "$PROJECT_ROOT/run_all_post_processing.sh" 2>&1 \
-				&& log_info "Heatmap Wrapper completed successfully" \
-				|| log_error "Heatmap Wrapper failed with exit code $?"
-		fi
-	fi
-
-	if [[ $RUN_ZIP_RESULTS == "TRUE" ]]; then
-		log_step "Creating compressed archive: $POST_PROC_ROOT + logs"
-		TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-		tar -c \
-			--exclude="${POST_PROC_ROOT}/M3_STAR_Align" \
-			"$POST_PROC_ROOT" \
-			1_SRRs/logs 2_ALIGNMENT_RESULTs/logs 3_POST_PROC/logs \
-			| pigz -p "$THREADS" > "CMSC244_${TIMESTAMP}.tar.gz"
-		log_info "Archive created: CMSC244_${TIMESTAMP}.tar.gz"
+	if [[ ${#GENOME_REF_PAIRS[@]} -gt 0 ]]; then
+		for _pair in "${GENOME_REF_PAIRS[@]}"; do
+			gtf_file="${_pair%%|*}"
+			_remainder="${_pair#*|}"
+			_fasta="${_remainder%%|*}"
+			STAR_TRANSCRIPTOME_FASTA="${_remainder#*|}"
+			export gtf_file STAR_TRANSCRIPTOME_FASTA
+			run_all --FASTA "$_fasta" --RNASEQ_LIST "${SRR_COMBINED_LIST[@]}"
+		done
+		unset _pair _remainder _fasta
+	else
+		for fasta_input in "${ALL_FASTA_FILES[@]}"; do
+			run_all --FASTA "$fasta_input" --RNASEQ_LIST "${SRR_COMBINED_LIST[@]}"
+		done
 	fi
 
 	# --- Cleanup ---
