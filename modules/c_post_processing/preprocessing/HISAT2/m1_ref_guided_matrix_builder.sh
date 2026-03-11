@@ -156,7 +156,9 @@ merge_group_counts() {
 
     local tmpdir
     tmpdir=$(mktemp -d)
-    trap 'rm -rf "$tmpdir"' RETURN
+    # Clean up tmpdir on function return. Using a subshell-safe cleanup that also
+    # handles early returns (e.g., no abundance files found).
+    trap 'rm -rf "$tmpdir"; trap - RETURN' RETURN
 
     # Count available abundance files (paths are constructed directly per-sample)
     local files_found=0
