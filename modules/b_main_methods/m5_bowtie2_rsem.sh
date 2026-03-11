@@ -32,6 +32,9 @@ THREADS_PER_RSEM_JOB="${THREADS_PER_RSEM_JOB:-$((THREADS / MAX_PARALLEL_SAMPLES)
 # Set to "auto" to auto-detect using Salmon --libType A (recommended)
 RSEM_STRANDEDNESS="${RSEM_STRANDEDNESS:-auto}"
 
+# Random seed for RSEM's EM algorithm (reproducibility across runs)
+RSEM_SEED="${RSEM_SEED:-42}"
+
 # ==============================================================================
 # STRANDEDNESS AUTO-DETECTION (via Salmon --libType A)
 # ==============================================================================
@@ -213,7 +216,7 @@ bowtie2_rsem_pipeline() {
 	# QUANTIFY SAMPLES - parallel or sequential
 	if _rsem_should_use_parallel && [[ ${#rnaseq_list[@]} -gt 1 ]]; then
 		_rsem_quantify_parallel "$rsem_idx" "$quant_root" rnaseq_list[@] || \
-			log_warn "[RSEM] Some parallel quantification jobs failed — proceeding to matrix generation"
+			log_error "[RSEM] Some parallel quantification jobs failed — check logs before relying on matrix output"
 	else
 		_rsem_quantify_sequential "$rsem_idx" "$quant_root" rnaseq_list[@]
 	fi
@@ -336,6 +339,7 @@ _rsem_parallel_worker() {
 			--bowtie2 \
 			--bowtie2-sensitivity-level "${BOWTIE2_MODE:-sensitive}" \
 			--strandedness "${RSEM_STRANDEDNESS:-none}" \
+			--seed "$RSEM_SEED" \
 			--num-threads "$threads_per_job" \
 			"$trimmed1" "$trimmed2" "$rsem_idx" "$out_dir/$SRR" 2>&1 | tee "$rsem_log"
 		rsem_exit_code=${PIPESTATUS[0]}
@@ -344,6 +348,7 @@ _rsem_parallel_worker() {
 			--bowtie2 \
 			--bowtie2-sensitivity-level "${BOWTIE2_MODE:-sensitive}" \
 			--strandedness "${RSEM_STRANDEDNESS:-none}" \
+			--seed "$RSEM_SEED" \
 			--num-threads "$threads_per_job" \
 			"$trimmed1" "$rsem_idx" "$out_dir/$SRR" 2>&1 | tee "$rsem_log"
 		rsem_exit_code=${PIPESTATUS[0]}
@@ -403,7 +408,7 @@ _rsem_quantify_parallel() {
 
 	# Set up environment for parallel subshells using shared utility
 	_prepare_parallel_env
-	export rsem_idx quant_root threads_per_job OVERWRITE_MODE BOWTIE2_MODE RSEM_STRANDEDNESS
+	export rsem_idx quant_root threads_per_job OVERWRITE_MODE BOWTIE2_MODE RSEM_STRANDEDNESS RSEM_SEED
 
 	printf "%s\n" "${valid_samples[@]}" | parallel \
 		--env PATH \
@@ -419,7 +424,9 @@ _rsem_quantify_parallel() {
 		--env OVERWRITE_MODE \
 		--env BOWTIE2_MODE \
 		--env RSEM_STRANDEDNESS \
+		--env RSEM_SEED \
 		-j "$parallel_jobs" \
+		--halt soon,fail=1 \
 		--joblog "$quant_root/parallel_rsem.log" \
 		--progress \
 		_rsem_parallel_worker {}
@@ -779,6 +786,7 @@ _rsem_process_single_sample() {
 			--bowtie2 \
 			--bowtie2-sensitivity-level "${BOWTIE2_MODE:-sensitive}" \
 			--strandedness "${RSEM_STRANDEDNESS:-none}" \
+			--seed "$RSEM_SEED" \
 			--num-threads "$threads_to_use" \
 			"$trimmed1" "$trimmed2" "$rsem_idx" "$out_dir/$SRR" 2>&1 | tee "$rsem_log"
 		rsem_exit_code=${PIPESTATUS[0]}
@@ -788,6 +796,7 @@ _rsem_process_single_sample() {
 			--bowtie2 \
 			--bowtie2-sensitivity-level "${BOWTIE2_MODE:-sensitive}" \
 			--strandedness "${RSEM_STRANDEDNESS:-none}" \
+			--seed "$RSEM_SEED" \
 			--num-threads "$threads_to_use" \
 			"$trimmed1" "$rsem_idx" "$out_dir/$SRR" 2>&1 | tee "$rsem_log"
 		rsem_exit_code=${PIPESTATUS[0]}
