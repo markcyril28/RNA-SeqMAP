@@ -114,10 +114,10 @@ SRR_LIST_SAMN28540077=(
 	SRR20722232	# Mature_fruits (10 GB file); corrected.
 	SRR20722226 # Young_fruits
 	SRR20722234	# Flowers
-	SRR20722228	# sepals (too large; not included)
+	SRR20722228	# sepals (large file)
 	SRR4243802  # Buds, Adopted Dataset from ID: PRJNA341784
 	SRR20722233	# leaf_buds
-	SRR20722230	# mature_leaves (14 GB file; not included)
+	SRR20722230	# mature_leaves (14 GB file)
 	SRR20722227	# stems
 	SRR20722229	# roots
 )
@@ -127,10 +127,10 @@ SRR_LIST_SAMN28540068=(
 	SRR20722387 # mature_fruits
 	#SRR3884597 	# Flower — duplicate: already in SRR_LIST_PRJNA328564
 	SRR20722297 # flower_buds
-	SRR20722385 # sepals (not included)
+	SRR20722385 # sepals
 	SRR20722296 # leaf_buds
-	SRR20722386 # mature_leaves (not included)
-	SRR20722383 # young_leaves (not included)
+	SRR20722386 # mature_leaves
+	SRR20722383 # young_leaves
 	SRR20722384 # stems
 	SRR31755282 # Roots (https://www.ncbi.nlm.nih.gov/Traces/study/?acc=SRP552204&o=acc_s%3Aa)
 )
@@ -175,8 +175,8 @@ SRR_COMBINED_LIST=(
 # DIRECTORY STRUCTURE AND OUTPUT PATHS
 # ==============================================================================
 
-POST_PROC_ROOT="3_POST_PROC"
-export POST_PROC_ROOT
+POST_PROCESSING_ROOT="3_POST_PROC"
+export POST_PROCESSING_ROOT
 
 # Create required preprocessing directories
 mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT"
