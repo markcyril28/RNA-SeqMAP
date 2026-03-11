@@ -47,7 +47,7 @@ calculate_sample_correlation <- function(data_matrix, method = CORRELATION_METHO
   # Use GPU-accelerated correlation when available (for Pearson)
   # Falls back to CPU for Spearman/Kendall or when GPU unavailable
   if (method == "pearson" && GPU_AVAILABLE) {
-    cor_matrix <- gpu_cor(t(data_matrix), method = method)
+    cor_matrix <- gpu_cor(data_matrix, method = method)
   } else {
     cor_matrix <- cor(data_matrix, use = "pairwise.complete.obs", method = method)
   }
@@ -65,12 +65,19 @@ create_correlation_heatmap <- function(cor_matrix, output_path, title,
     ann_colors <- NULL
     if (!is.null(annotation_df)) {
       tissue_groups <- unique(annotation_df$TissueGroup)
-      group_colors <- brewer.pal(max(3, length(tissue_groups)), "Set2")[1:length(tissue_groups)]
+      n_groups <- length(tissue_groups)
+      group_colors <- if (n_groups <= 8) {
+        brewer.pal(max(3, n_groups), "Set2")[1:n_groups]
+      } else {
+        colorRampPalette(brewer.pal(8, "Set2"))(n_groups)
+      }
       names(group_colors) <- tissue_groups
       ann_colors <- list(TissueGroup = group_colors)
     }
     
     png(output_path, width = 1000, height = 900, res = 100)
+    # Strip R's make.unique suffixes (.1, .2) from organ labels for display
+    clean_labels <- sub("\\.[0-9]+$", "", rownames(cor_matrix))
     pheatmap(
       cor_matrix,
       main = title,
@@ -80,6 +87,8 @@ create_correlation_heatmap <- function(cor_matrix, output_path, title,
       display_numbers = show_numbers,
       number_format = "%.2f",
       fontsize_number = NUMBER_SIZE,
+      labels_row = clean_labels,
+      labels_col = clean_labels,
       annotation_row = annotation_df,
       annotation_col = annotation_df,
       annotation_colors = ann_colors,
@@ -103,6 +112,8 @@ create_dendrogram <- function(cor_matrix, output_path, title) {
     # Use GPU-accelerated distance if working with raw data
     dist_matrix <- as.dist(1 - cor_matrix)
     hc <- hclust(dist_matrix, method = CLUSTERING_METHOD)
+    # Strip R's make.unique suffixes (.1, .2) from organ labels for display
+    hc$labels <- sub("\\.[0-9]+$", "", hc$labels)
     
     png(output_path, width = 1000, height = 600, res = 100)
     plot(hc, main = title, xlab = "", sub = "", hang = -1)
@@ -139,7 +150,8 @@ run_sample_correlation <- function(config = NULL, matrices_dir = NULL) {
     cat("Processing:", gene_group, "\n")
     total <- total + 1
     
-    output_dir <- file.path(CORRELATION_OUT_DIR, gene_group)
+    output_folder_name <- get_output_folder_name(gene_group, CURRENT_DATASET)
+    output_dir <- file.path(CORRELATION_OUT_DIR, output_folder_name)
     ensure_output_dir(output_dir)
     
     input_file <- build_input_path(gene_group, PROCESSING_LEVELS[1],

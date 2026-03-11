@@ -251,7 +251,8 @@ run_gene_set_enrichment <- function(config = NULL, matrices_dir = NULL) {
     cat("Processing:", gene_group, "\n")
     total <- total + 1
     
-    output_dir <- file.path(GSEA_OUT_DIR, gene_group)
+    output_folder_name <- get_output_folder_name(gene_group, CURRENT_DATASET)
+    output_dir <- file.path(GSEA_OUT_DIR, output_folder_name)
     ensure_output_dir(output_dir)
     
     input_file <- build_input_path(gene_group, PROCESSING_LEVELS[1],

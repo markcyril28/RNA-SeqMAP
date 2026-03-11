@@ -12,6 +12,14 @@ suppressPackageStartupMessages({
   library(grid)
 })
 
+# Pre-initialize fontconfig to suppress "using without calling FcInit()" warning
+# that fires on the first graphics device creation in a new session.
+invisible(suppressWarnings({
+  tmp <- tempfile(fileext = ".png")
+  png(tmp, width = 1, height = 1); dev.off()
+  file.remove(tmp)
+}))
+
 SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", ".")
 source(file.path(SCRIPT_DIR, "0_shared_config.R"))
 source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
@@ -35,18 +43,19 @@ EXPORT_RAW_VALUES <- TRUE
 # Calculate Coefficient of Variation: CV = (SD / mean) * 100
 # NOTE: CV is most meaningful on raw or linear-scale data, not log-transformed.
 #       For log data, consider using SD directly as a variability measure.
-calculate_cv <- function(data_matrix, is_log_scale = FALSE) {
-  apply(data_matrix, 1, function(row) {
+# margin: 1 = row-wise (per gene), 2 = column-wise (per sample)
+calculate_cv <- function(data_matrix, is_log_scale = FALSE, margin = 1) {
+  apply(data_matrix, margin, function(vec) {
     # For log-transformed data, return SD as variability measure
     if (is_log_scale) {
-      row_sd <- sd(row, na.rm = TRUE)
-      return(if (is.finite(row_sd)) row_sd else NA)
+      vec_sd <- sd(vec, na.rm = TRUE)
+      return(if (is.finite(vec_sd)) vec_sd else NA)
     }
     # For linear data, calculate true CV
-    row_mean <- mean(row, na.rm = TRUE)
-    row_sd <- sd(row, na.rm = TRUE)
-    if (row_mean > 0 && is.finite(row_mean) && is.finite(row_sd)) {
-      return(row_sd / row_mean * 100)
+    vec_mean <- mean(vec, na.rm = TRUE)
+    vec_sd <- sd(vec, na.rm = TRUE)
+    if (vec_mean > 0 && is.finite(vec_mean) && is.finite(vec_sd)) {
+      return(vec_sd / vec_mean * 100)
     }
     return(NA)
   })
@@ -58,34 +67,50 @@ calculate_cv <- function(data_matrix, is_log_scale = FALSE) {
 
 generate_heatmap_with_cv <- function(data_matrix, output_path, title,
                                       count_type, label_type, normalization_type,
-                                      transpose = FALSE, sort_by_expression = FALSE) {
+                                      norm_scheme = NULL,
+                                      transpose = FALSE, sort_by_expression = FALSE,
+                                      raw_data_matrix = NULL) {
   tryCatch({
-    # Determine if data is log-scale based on normalization type
-    is_log_scale <- normalization_type %in% c("count_type_normalized", "cpm", 
-                                               "deseq2_normalized", "Count-Type_Normalized")
-    
-    # Calculate CV before any transformation (use raw scale CV if possible)
-    cv_values <- calculate_cv(data_matrix, is_log_scale = is_log_scale)
-    
+    # CV is most meaningful on raw linear-scale data (TPM/FPKM/coverage).
+    # When raw_data_matrix is provided (from the processing callback), use it so that
+    # z-score and other centered normalizations don't produce all-NA CV values.
+    # Fallback: use data_matrix directly (covers legacy / direct calls).
+    cv_source <- if (!is.null(raw_data_matrix)) raw_data_matrix else data_matrix
+    # Per-gene CV (row-wise on original orientation) and per-sample CV (column-wise)
+    gene_cv <- calculate_cv(cv_source, is_log_scale = FALSE, margin = 1)
+    sample_cv <- calculate_cv(cv_source, is_log_scale = FALSE, margin = 2)
+
     if (transpose) {
       data_matrix <- t(data_matrix)
+      # After transpose: rows = samples, columns = genes
+      # row_cv = per-sample CV, col_cv = per-gene CV
+      row_cv <- sample_cv
+      col_cv <- gene_cv
+      row_cv_label <- "Organ CV"
+      col_cv_label <- "Gene CV"
+    } else {
+      # Default: rows = genes, columns = samples
+      row_cv <- gene_cv
+      col_cv <- sample_cv
+      row_cv_label <- "Gene CV"
+      col_cv_label <- "Organ CV"
     }
-    
+
     # Sort by mean expression when sort_by_expression is TRUE
     # Goal: Put high expression genes closer to the organ/sample labels
     if (sort_by_expression) {
       if (transpose) {
         # Organs_as_Rows: genes are columns, sort columns so high expression is LEFT (near row labels)
         col_means <- colMeans(data_matrix, na.rm = TRUE)
-        data_matrix <- data_matrix[, order(col_means, decreasing = TRUE), drop = FALSE]
-        # Also reorder CV values to match (CV is per-gene, now in columns)
-        cv_values <- cv_values[order(col_means, decreasing = TRUE)]
+        sort_order <- order(col_means, decreasing = TRUE)
+        data_matrix <- data_matrix[, sort_order, drop = FALSE]
+        col_cv <- col_cv[sort_order]
       } else {
         # Genes_as_Rows: genes are rows, sort rows so high expression is TOP (near column labels)
         row_means <- rowMeans(data_matrix, na.rm = TRUE)
-        data_matrix <- data_matrix[order(row_means, decreasing = TRUE), , drop = FALSE]
-        # Also reorder CV values to match
-        cv_values <- cv_values[order(row_means, decreasing = TRUE)]
+        sort_order <- order(row_means, decreasing = TRUE)
+        data_matrix <- data_matrix[sort_order, , drop = FALSE]
+        row_cv <- row_cv[sort_order]
       }
     }
     
@@ -116,18 +141,17 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
     }
     
     # Configure legend breaks based on normalization type
-    # Use case-insensitive matching and check for key patterns
-    is_zscore_scaled <- grepl("zscore.*scaled.*ten|z-score.*scaled.*ten", normalization_type, ignore.case = TRUE)
-    
+    # All schemes use quantile-based color bounds so visual intensity is consistent.
+    # zscore_scaled_to_ten is a linear rescaling of zscore to [0,10]; using the same
+    # quantile approach ensures identical color patterns between the two.
+    # For zscore_scaled_to_ten: show a complete 0-10 legend (increment of 2) so the
+    # reader sees the full intuitive scale, even though colors are quantile-mapped.
+    is_zscore_scaled <- grepl("zscore.*scaled.*ten|z-score.*scaled.*ten",
+                              normalization_type, ignore.case = TRUE)
     if (is_zscore_scaled) {
-      # For zscore_scaled_to_ten: data is already scaled to 0-10
-      # Use fixed 0-10 color scale and legend with 5 parts (0, 2.5, 5, 7.5, 10)
-      legend_breaks <- c(0, 2.5, 5, 7.5, 10)
+      legend_breaks <- seq(0, 10, by = 2)
       legend_labels <- as.character(legend_breaks)
-      color_min <- 0
-      color_max <- 10
     } else {
-      # Divide range into 5 equal parts for other normalizations
       legend_breaks <- seq(color_min, color_max, length.out = 5)
       legend_labels <- sprintf("%.1f", legend_breaks)
     }
@@ -137,20 +161,31 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
       get_violet_color_scale(100)
     )
     
-    # CV color scale using blue-red diverging palette from utility functions
-    cv_range <- range(cv_values, na.rm = TRUE)
-    # Handle case where all CV values are identical
-    if (cv_range[1] == cv_range[2] || any(is.na(cv_range))) {
-      cv_range <- c(0, 100)  # Default CV range
+    # CV color scales: violet gradient matching heatmap (low CV = deep, high CV = pale)
+    # Row CV color scale
+    row_cv_range <- range(row_cv, na.rm = TRUE)
+    if (row_cv_range[1] == row_cv_range[2] || any(is.na(row_cv_range))) {
+      row_cv_range <- c(0, 100)
     }
-    cv_color_fun <- colorRamp2(
-      seq(cv_range[1], cv_range[2], length.out = 100),
-      get_blue_red_color_scale(100)
+    row_cv_color_fun <- colorRamp2(
+      seq(row_cv_range[1], row_cv_range[2], length.out = 100),
+      get_cv_color_scale(100)
+    )
+    # Column CV color scale
+    col_cv_range <- range(col_cv, na.rm = TRUE)
+    if (col_cv_range[1] == col_cv_range[2] || any(is.na(col_cv_range))) {
+      col_cv_range <- c(0, 100)
+    }
+    col_cv_color_fun <- colorRamp2(
+      seq(col_cv_range[1], col_cv_range[2], length.out = 100),
+      get_cv_color_scale(100)
     )
     
     # Legend layout
     legend_layout <- get_legend_layout(LEGEND_POSITION)
-    legend_title <- get_legend_title(normalization_type, count_type)
+    # Use internal norm_scheme for get_legend_title() (which switches on internal names);
+    # normalization_type is the display name used for file naming and log-scale detection.
+    legend_title <- get_legend_title(if (!is.null(norm_scheme)) norm_scheme else normalization_type, count_type)
     
     # Calculate dimensions for square cells with auto-sizing
     n_rows <- nrow(data_matrix)
@@ -158,12 +193,54 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
     cell_size <- unit(12, "mm")  # Square cell size
     
     # Auto-calculate image dimensions based on heatmap size
-    # Add extra margins for CV annotation column
-    margin_width <- 550   # Space for row names, CV annotation, and legend
-    margin_height <- 550  # Space for column names, title, legend, and top/bottom padding
+    # Add extra margins for CV annotation columns/rows (both row CV and column CV)
+    margin_width <- 650   # Space for row names, row CV annotation, and legend
+    margin_height <- 650  # Space for column names, column CV annotation, title, legend
     img_width <- max(900, n_cols * 60 + margin_width)
     img_height <- max(800, n_rows * 60 + margin_height)
     
+    # Build column CV annotation BEFORE the Heatmap call so it can be passed
+    # as top_annotation / bottom_annotation (avoids %v% mixing with row annotations)
+    top_cv_anno <- NULL
+    bottom_cv_anno <- NULL
+    if (length(col_cv) == ncol(data_matrix)) {
+      col_cv_text <- sprintf("%.1f", ifelse(is.na(col_cv), 0, col_cv))
+
+      cv_col_anno <- HeatmapAnnotation(
+        `CV` = unname(col_cv),
+        `CV%` = anno_text(col_cv_text, gp = gpar(fontsize = 9), rot = 45,
+                          location = 0.5, just = "center"),
+        col = list(`CV` = col_cv_color_fun),
+        show_legend = FALSE,
+        annotation_label = c(`CV` = col_cv_label, `CV%` = ""),
+        annotation_name_side = "left",
+        annotation_name_gp = gpar(fontsize = 10, fontface = "bold"),
+        gap = unit(2, "mm")
+      )
+
+      # Place column CV on the opposite side from the column labels
+      if (transpose) {
+        bottom_cv_anno <- cv_col_anno
+      } else {
+        top_cv_anno <- cv_col_anno
+      }
+    }
+
+    # Clean organ label suffixes (.1, .2) added by R's make.unique on duplicate names
+    # Only strip from the axis that carries organ/tissue labels
+    if (label_type == "Organ") {
+      if (transpose) {
+        clean_row_labels <- sub("\\.[0-9]+$", "", rownames(data_matrix))
+        clean_col_labels <- colnames(data_matrix)
+      } else {
+        clean_row_labels <- rownames(data_matrix)
+        clean_col_labels <- sub("\\.[0-9]+$", "", colnames(data_matrix))
+      }
+    } else {
+      clean_row_labels <- rownames(data_matrix)
+      clean_col_labels <- colnames(data_matrix)
+    }
+
     # Main heatmap without dendrograms, with square cells and visible borders
     ht <- Heatmap(
       data_matrix,
@@ -175,6 +252,9 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
       show_column_dend = FALSE,
       show_row_names = nrow(data_matrix) <= 50,
       show_column_names = TRUE,
+      row_labels = clean_row_labels,
+      column_labels = clean_col_labels,
+      column_names_side = if (transpose) "top" else "bottom",
       row_names_side = "left",
       row_names_gp = gpar(fontsize = 11),
       column_names_gp = gpar(fontsize = 11),
@@ -184,6 +264,8 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
       width = n_cols * cell_size,
       height = n_rows * cell_size,
       rect_gp = gpar(col = "white", lwd = 0.25),
+      top_annotation = top_cv_anno,
+      bottom_annotation = bottom_cv_anno,
       heatmap_legend_param = list(
         direction = legend_layout$direction,
         legend_height = legend_layout$height,
@@ -194,27 +276,21 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
         labels = legend_labels
       )
     )
-    
-    # CV annotation (only if not transposed - CV is per-gene and genes are rows)
-    if (!transpose && length(cv_values) == nrow(data_matrix)) {
-      # Calculate CV legend breaks
-      cv_legend_breaks <- seq(cv_range[1], cv_range[2], length.out = 5)
-      cv_legend_labels <- sprintf("%.0f", cv_legend_breaks)
-      
-      cv_anno <- rowAnnotation(
-        CV = cv_values,
-        col = list(CV = cv_color_fun),
-        annotation_legend_param = list(
-          CV = list(
-            title = if (is_log_scale) "SD (%)" else "CV (%)",
-            direction = legend_layout$direction,
-            legend_width = legend_layout$width,
-            at = cv_legend_breaks,
-            labels = cv_legend_labels
-          )
-        )
+
+    # Row CV annotation: color strip + numeric text (right side of heatmap)
+    if (length(row_cv) == nrow(data_matrix)) {
+      row_cv_text <- sprintf("%.1f", ifelse(is.na(row_cv), 0, row_cv))
+
+      cv_row_anno <- rowAnnotation(
+        `CV` = unname(row_cv),
+        `CV%` = anno_text(row_cv_text, gp = gpar(fontsize = 9), location = 0.5, just = "center"),
+        col = list(`CV` = row_cv_color_fun),
+        show_legend = FALSE,
+        annotation_label = c(`CV` = row_cv_label, `CV%` = ""),
+        annotation_name_gp = gpar(fontsize = 10, fontface = "bold"),
+        gap = unit(2, "mm")
       )
-      ht <- ht + cv_anno
+      ht <- ht + cv_row_anno
     }
     
     # Save with auto-adjusted dimensions
@@ -225,18 +301,32 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
     # Export raw values with CV as TSV alongside the PNG
     if (exists("EXPORT_RAW_VALUES") && EXPORT_RAW_VALUES) {
       tsv_path <- sub("\\.png$", "_values.tsv", output_path)
-      # Convert to data frame with row names and CV column
       if (transpose) {
-        # When transposed, genes are columns - add CV as a row
-        export_df <- data.frame(GeneID = rownames(data_matrix), data_matrix, check.names = FALSE)
-      } else {
-        # When not transposed, genes are rows - add CV as a column
+        # Organs as rows, genes as columns — row CV = sample CV
+        row_id_label <- if (label_type == "Organ") "OrganID" else "SampleID"
         export_df <- data.frame(
-          GeneID = rownames(data_matrix),
-          CV = cv_values,
+          row_id_label = rownames(data_matrix),
+          Sample_CV = row_cv,
           data_matrix,
           check.names = FALSE
         )
+        names(export_df)[1] <- row_id_label
+        # Append a summary row with per-gene (column) CV
+        stopifnot(length(col_cv) == ncol(data_matrix))
+        col_cv_row <- c("Gene_CV", NA, sprintf("%.1f", col_cv))
+        export_df <- rbind(export_df, setNames(as.list(col_cv_row), names(export_df)))
+      } else {
+        # Genes as rows, samples as columns — row CV = gene CV
+        export_df <- data.frame(
+          GeneID = rownames(data_matrix),
+          Gene_CV = row_cv,
+          data_matrix,
+          check.names = FALSE
+        )
+        # Append a summary row with per-sample (column) CV
+        stopifnot(length(col_cv) == ncol(data_matrix))
+        col_cv_row <- c("Sample_CV", NA, sprintf("%.1f", col_cv))
+        export_df <- rbind(export_df, setNames(as.list(col_cv_row), names(export_df)))
       }
       write.table(export_df, tsv_path, sep = "\t", row.names = FALSE, quote = FALSE)
       cat("      Exported values:", basename(tsv_path), "\n")
@@ -291,8 +381,10 @@ process_cv_heatmap <- function(gene_group, gene_group_output_dir, processing_lev
         count_type = count_type,
         label_type = label_type,
         normalization_type = norm_display,
+        norm_scheme = norm_scheme,
         transpose = orient$transpose,
-        sort_by_expression = sorting$sort
+        sort_by_expression = sorting$sort,
+        raw_data_matrix = raw_data_matrix
       )
       
       if (success) local_successful <- local_successful + 1

@@ -197,10 +197,10 @@ build_network_and_detect_modules <- function(data_matrix, soft_power, output_dir
         "<table>\n<tr><th>Module</th><th>Gene Count</th><th>Contains Query Genes</th></tr>\n"
       )
       
-      for (i in 1:nrow(module_counts)) {
+      for (i in seq_len(nrow(module_counts))) {
         html_content <- paste0(html_content,
           "<tr><td><span class='module-tag' style='background-color:", module_counts$Module[i], ";'>",
-          module_counts$Module[i], "</span></td><td>", module_counts$Gene_Count[i], 
+          module_counts$Module[i], "</span></td><td>", module_counts$Gene_Count[i],
           "</td><td>", ifelse(module_counts$Has_Query[i], "✓ YES", "No"), "</td></tr>\n"
         )
       }
@@ -211,9 +211,9 @@ build_network_and_detect_modules <- function(data_matrix, soft_power, output_dir
       )
       
       query_subset <- module_summary[module_summary$Is_Query, ]
-      for (i in 1:nrow(query_subset)) {
+      for (i in seq_len(nrow(query_subset))) {
         html_content <- paste0(html_content,
-          "<tr class='query'><td>", query_subset$Gene[i], 
+          "<tr class='query'><td>", query_subset$Gene[i],
           "</td><td><span class='module-tag' style='background-color:", query_subset$Module[i], ";'>",
           query_subset$Module[i], "</span></td></tr>\n"
         )
@@ -282,9 +282,9 @@ calculate_module_eigengenes <- function(data_matrix, module_colors, output_dir, 
             html_content <- paste0(html_content, "<th>", col, "</th>")
           }
           html_content <- paste0(html_content, "</tr>\n")
-          for (i in 1:nrow(ME_cor)) {
+          for (i in seq_len(nrow(ME_cor))) {
             html_content <- paste0(html_content, "<tr><th>", rownames(ME_cor)[i], "</th>")
-            for (j in 1:ncol(ME_cor)) {
+            for (j in seq_len(ncol(ME_cor))) {
               val <- round(ME_cor[i, j], 2)
               # Color based on correlation
               if (val > 0.5) bg <- "#f4a582"
@@ -593,7 +593,8 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     cat(paste(rep("=", 60), collapse = ""), "\n")
     total <- total + 1
     
-    output_dir <- file.path(WGCNA_OUT_DIR, gene_group)
+    output_folder_name <- get_output_folder_name(gene_group, CURRENT_DATASET)
+    output_dir <- file.path(WGCNA_OUT_DIR, output_folder_name)
     ensure_output_dir(output_dir)
     
     # ===== STEP 1: Read the QUERY GENES (from gene group matrix) =====
@@ -718,7 +719,7 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     
     MEs <- calculate_module_eigengenes(data_matrix, network$module_colors, output_dir, gene_group)
     
-    # ===== STEP 7: Export gene-module assignments (with query gene flag) =====
+    # ===== STEP 8: Export gene-module assignments (with query gene flag) =====
     kME <- signedKME(data_matrix, MEs, outputColumnName = "kME")
     gene_info <- data.frame(
       Gene = colnames(data_matrix),
@@ -734,7 +735,7 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     write.table(gene_info, file.path(output_dir, paste0(gene_group, "_module_assignments.tsv")),
                 sep = "\t", row.names = FALSE, quote = FALSE)
     
-    # ===== STEP 8: Query gene module summary =====
+    # ===== STEP 9: Query gene module summary =====
     query_gene_info <- gene_info[gene_info$Is_Query_Gene, ]
     cat("  Query genes module distribution:\n")
     print(table(query_gene_info$Module))
@@ -743,20 +744,20 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
                 file.path(output_dir, paste0(gene_group, "_query_genes_modules.tsv")),
                 sep = "\t", row.names = FALSE, quote = FALSE)
     
-    # ===== STEP 9: Hub genes =====
+    # ===== STEP 10: Hub genes =====
     hubs <- identify_hub_genes(gene_info)
     # Mark query genes in hub list
     hubs$Is_Query_Gene <- hubs$Gene %in% query_genes_matched
     write.table(hubs, file.path(output_dir, paste0(gene_group, "_hub_genes.tsv")),
                 sep = "\t", row.names = FALSE, quote = FALSE)
     
-    # ===== STEP 10: Correlation network with query genes bold =====
+    # ===== STEP 11: Correlation network with query genes bold =====
     cat("  Creating correlation network...\n")
     create_correlation_network(t(data_matrix), query_genes_matched, output_dir, gene_group)
     
-    # ===== STEP 11: Find genes co-expressed with query genes =====
+    # ===== STEP 12: Find genes co-expressed with query genes =====
     cat("  Finding genes co-expressed with query genes...\n")
-    cor_matrix <- gpu_cor(data_filtered)
+    cor_matrix <- gpu_cor(t(data_filtered))
     
     coexpr_results <- data.frame()
     for (qg in query_genes_matched) {
@@ -782,12 +783,12 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
                   sep = "\t", row.names = FALSE, quote = FALSE)
     }
     
-    # ===== STEP 12: Export RAW RESULTS for downstream analysis =====
+    # ===== STEP 13: Export RAW RESULTS for downstream analysis =====
     cat("  Exporting raw results...\n")
     raw_results_dir <- file.path(output_dir, "raw_results")
     if (!dir.exists(raw_results_dir)) dir.create(raw_results_dir, recursive = TRUE)
     
-    # 12a: Save full correlation matrix as TSV
+    # 13a: Save full correlation matrix as TSV
     cat("    Saving correlation matrix...\n")
     cor_df <- as.data.frame(cor_matrix)
     cor_df$Gene <- rownames(cor_matrix)
@@ -795,7 +796,7 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     write.table(cor_df, file.path(raw_results_dir, paste0(gene_group, "_correlation_matrix.tsv")),
                 sep = "\t", row.names = FALSE, quote = FALSE)
     
-    # 12b: Save module eigengenes
+    # 13b: Save module eigengenes
     cat("    Saving module eigengenes...\n")
     me_df <- as.data.frame(MEs)
     me_df$Sample <- rownames(MEs)
@@ -803,20 +804,20 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     write.table(me_df, file.path(raw_results_dir, paste0(gene_group, "_module_eigengenes.tsv")),
                 sep = "\t", row.names = FALSE, quote = FALSE)
     
-    # 12c: Save network as RDS for complete reproducibility
+    # 13c: Save network as RDS for complete reproducibility
     cat("    Saving network object (RDS)...\n")
     saveRDS(network, file.path(raw_results_dir, paste0(gene_group, "_network.rds")))
     
-    # 12d: Save gene info with kME as RDS
+    # 13d: Save gene info with kME as RDS
     saveRDS(gene_info, file.path(raw_results_dir, paste0(gene_group, "_gene_info.rds")))
     
-    # 12e: Save soft threshold analysis
-    sft_file <- file.path(output_dir, paste0(gene_group, "_soft_threshold.tsv"))
+    # 13e: Save soft threshold plot (PNG saved by pick_soft_threshold())
+    sft_file <- file.path(output_dir, paste0(gene_group, "_soft_threshold.png"))
     if (file.exists(sft_file)) {
-      file.copy(sft_file, file.path(raw_results_dir, paste0(gene_group, "_soft_threshold.tsv")))
+      file.copy(sft_file, file.path(raw_results_dir, paste0(gene_group, "_soft_threshold.png")))
     }
     
-    # 12f: Create a summary file with all parameters used
+    # 13f: Create a summary file with all parameters used
     params_summary <- data.frame(
       Parameter = c("TOP_VAR_GENES", "MIN_MODULE_SIZE_DEFAULT", "MIN_MODULE_SIZE_SMALL",
                     "COR_THRESHOLD", "N_HUB_GENES", "N_COEXPRESSED_GENES", "N_NETWORK_GENES",
@@ -831,7 +832,7 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     write.table(params_summary, file.path(raw_results_dir, paste0(gene_group, "_parameters.tsv")),
                 sep = "\t", row.names = FALSE, quote = FALSE)
     
-    # 12g: Save data matrix used (expression values)
+    # 13g: Save data matrix used (expression values)
     cat("    Saving expression matrix...\n")
     expr_df <- as.data.frame(t(data_matrix))  # Genes as rows
     expr_df$Gene <- rownames(expr_df)

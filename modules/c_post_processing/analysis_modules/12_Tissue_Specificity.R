@@ -82,7 +82,7 @@ calculate_tissue_specificity <- function(data_matrix) {
     Tau = tau_values,
     MaxTissue = max_tissue,
     MaxExpression = max_expr,
-    IsSpecific = tau_values >= TAU_THRESHOLD,
+    IsSpecific = !is.na(tau_values) & tau_values >= TAU_THRESHOLD,
     stringsAsFactors = FALSE
   )
   
@@ -132,12 +132,15 @@ create_tissue_specificity_heatmap <- function(data_matrix, specificity_df, outpu
   hm_scaled[is.na(hm_scaled)] <- 0
   
   png(output_path, width = 1000, height = 800, res = 100)
+  # Strip R's make.unique suffixes (.1, .2) from organ labels for display
+  clean_col_labels <- sub("\\.[0-9]+$", "", colnames(hm_scaled))
   pheatmap(
     hm_scaled,
     main = title,
     cluster_rows = TRUE,
     cluster_cols = TRUE,
     show_rownames = nrow(hm_scaled) <= 30,
+    labels_col = clean_col_labels,
     color = colorRampPalette(c("#2166AC", "#F7F7F7", "#B2182B"))(100),
     border_color = NA
   )
@@ -164,7 +167,7 @@ create_tissue_gene_counts <- function(specificity_df, output_path, title) {
     theme_minimal() +
     theme(legend.position = "none",
           plot.title = element_text(hjust = 0.5, face = "bold")) +
-    scale_fill_brewer(palette = "Set2")
+    scale_fill_manual(values = colorRampPalette(RColorBrewer::brewer.pal(8, "Set2"))(nrow(tissue_counts)))
   
   ggsave(output_path, p, width = 10, height = 6, dpi = 150)
   return(p)
@@ -187,7 +190,8 @@ run_tissue_specificity <- function(config = NULL, matrices_dir = NULL) {
     cat("Processing:", gene_group, "\n")
     total <- total + 1
     
-    output_dir <- file.path(TISSUE_SPEC_OUT_DIR, gene_group)
+    output_folder_name <- get_output_folder_name(gene_group, CURRENT_DATASET)
+    output_dir <- file.path(TISSUE_SPEC_OUT_DIR, output_folder_name)
     ensure_output_dir(output_dir)
     
     input_file <- build_input_path(gene_group, PROCESSING_LEVELS[1],
@@ -200,10 +204,37 @@ run_tissue_specificity <- function(config = NULL, matrices_dir = NULL) {
       next
     }
     
+    # Tau index (Yanai et al., 2005) requires LINEAR-scale expression values.
+    # Tau = sum(1 - x_i/x_max) / (n-1) — log transformation compresses dynamic range
+    # and artificially reduces Tau, making genes appear less tissue-specific.
+    # Use raw TPM/FPKM for Tau; log-transform only for visualization (heatmaps).
+    #
+    # Average biological replicates within each tissue before Tau calculation.
+    # Tau measures specificity across DISTINCT tissues, not individual samples.
+    # Without averaging, replicates inflate the denominator (n-1) while contributing
+    # near-identical expression values, systematically underestimating Tau.
+    tissue_data <- validation$data
+    col_names <- colnames(tissue_data)
+    # Strip R's make.unique suffixes (.1, .2, etc.) to recover base tissue names
+    base_tissues <- sub("\\.[0-9]+$", "", col_names)
+    unique_tissues <- unique(base_tissues)
+    if (length(unique_tissues) < length(col_names)) {
+      # Replicates present — average expression within each tissue
+      averaged_matrix <- sapply(unique_tissues, function(tissue) {
+        tissue_cols <- which(base_tissues == tissue)
+        if (length(tissue_cols) == 1) {
+          tissue_data[, tissue_cols]
+        } else {
+          rowMeans(tissue_data[, tissue_cols, drop = FALSE], na.rm = TRUE)
+        }
+      })
+      rownames(averaged_matrix) <- rownames(tissue_data)
+      tissue_data <- averaged_matrix
+    }
+    specificity <- calculate_tissue_specificity(tissue_data)
+
+    # Log-transformed data for heatmap visualization
     data_matrix <- apply_normalization(validation$data, NORM_SCHEMES[1], COUNT_TYPES[1])
-    
-    # Calculate tissue specificity
-    specificity <- calculate_tissue_specificity(data_matrix)
     
     # Save results
     write.table(specificity, file.path(output_dir, paste0(gene_group, "_tissue_specificity.tsv")),

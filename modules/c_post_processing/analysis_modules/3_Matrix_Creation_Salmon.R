@@ -7,10 +7,10 @@
 # Expects environment variables set by pipeline_utils.sh:
 #   CURRENT_METHOD, MASTER_REFERENCE, BASE_DIR,
 #   SRR_COMBINED_LIST_STR, GENE_GROUPS_STR, GENE_GROUPS_DIR,
-#   RSEM_GENERATE_GENE_LEVEL, RSEM_GENERATE_ISOFORM_LEVEL
+#   SALMON_GENERATE_GENE_LEVEL, SALMON_GENERATE_ISOFORM_LEVEL
 
-GENERATE_GENE_LEVEL    <- as.logical(Sys.getenv("RSEM_GENERATE_GENE_LEVEL",    "TRUE"))
-GENERATE_ISOFORM_LEVEL <- as.logical(Sys.getenv("RSEM_GENERATE_ISOFORM_LEVEL", "TRUE"))
+GENERATE_GENE_LEVEL    <- as.logical(Sys.getenv("SALMON_GENERATE_GENE_LEVEL",    "TRUE"))
+GENERATE_ISOFORM_LEVEL <- as.logical(Sys.getenv("SALMON_GENERATE_ISOFORM_LEVEL", "TRUE"))
 
 suppressPackageStartupMessages(library(tximport))
 
@@ -38,9 +38,11 @@ import_salmon <- function(quant_dir, sample_ids, tx2gene = NULL) {
   }
 
   if (!is.null(tx2gene)) {
-    tximport(files, type = "salmon", tx2gene = tx2gene)
+    tximport(files, type = "salmon", txIn = TRUE, txOut = FALSE,
+             tx2gene = tx2gene, ignoreTxVersion = TRUE, ignoreAfterBar = FALSE)
   } else {
-    tximport(files, type = "salmon", txOut = TRUE)
+    tximport(files, type = "salmon", txIn = TRUE, txOut = TRUE,
+             ignoreTxVersion = TRUE, ignoreAfterBar = FALSE)
   }
 }
 
