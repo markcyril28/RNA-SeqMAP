@@ -352,6 +352,7 @@ _create_rsem_matrices() {
 		else
 			run_with_space_time_log abundance_estimates_to_matrix.pl \
 				--est_method RSEM \
+				--gene_trans_map "$gene_trans_map" \
 				--out_prefix "$matrix_dir/genes" \
 				--name_sample_by_basedir "${rsem_result_files[@]}" || {
 				log_warn "abundance_estimates_to_matrix.pl failed. Creating manual count matrix..."
