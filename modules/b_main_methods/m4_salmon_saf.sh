@@ -243,7 +243,7 @@ _create_manual_salmon_matrix() {
 	if [[ ${#srr_list[@]} -eq 0 ]]; then
 		while IFS= read -r _qf; do
 			srr_list+=("$(basename "$(dirname "$_qf")")");
-		done < <(find "$quant_root" -name "quant.sf" 2>/dev/null)
+		done < <(find "$quant_root" -name "quant.sf" 2>/dev/null | sort)
 	fi
 
 	local temp_gene_ids="$matrix_dir/temp_gene_ids.txt"
