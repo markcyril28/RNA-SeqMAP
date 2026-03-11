@@ -68,6 +68,8 @@ PREPROCESSING_TOOLS=(
     "fastqc"
     "multiqc"
     "parallel"
+    "wget"    # ENA FTP fallback downloader (download_srrs_wget)
+    "curl"    # ENA portal API queries (download_srrs_wget)
 )
 
 # Core alignment / quantification tools
@@ -80,6 +82,7 @@ ALIGNMENT_TOOLS=(
     "rsem"
     "star"
     "trinity"
+    "gffread"  # Transcript FASTA generation from genome+GTF (required to build inputs/fasta/ reference files for M3/M4/M5)
 )
 
 # R base and essentials
@@ -283,7 +286,7 @@ log_info "Activating environment..."
 conda activate "${ENV_NAME}"
 
 log_info "Verifying key executables..."
-VERIFY_CMDS=("R" "Rscript" "samtools" "salmon" "hisat2" "STAR" "fastqc" "trim_galore" "prefetch")
+VERIFY_CMDS=("R" "Rscript" "samtools" "salmon" "hisat2" "STAR" "fastqc" "trim_galore" "prefetch" "fasterq-dump" "trimmomatic" "stringtie" "bowtie2" "rsem-calculate-expression" "gffread")
 for cmd in "${VERIFY_CMDS[@]}"; do
     if check_command "$cmd"; then
         log_info "  ✓ $cmd"
