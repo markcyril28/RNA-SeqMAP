@@ -27,6 +27,10 @@ SALMON_KMER_SIZE="${SALMON_KMER_SIZE:-31}"
 # Number of bootstraps for uncertainty estimation (0 = off; 100 for sleuth/Swish)
 SALMON_NUM_BOOTSTRAPS="${SALMON_NUM_BOOTSTRAPS:-0}"
 
+# REPRODUCIBILITY NOTE: Salmon's EM algorithm convergence is thread-schedule dependent.
+# For exact reproducibility, always use the same --threads value across runs.
+# Salmon does not expose a --seed flag for its internal EM algorithm.
+
 # ==============================================================================
 # SALMON SAF PIPELINE
 # ==============================================================================

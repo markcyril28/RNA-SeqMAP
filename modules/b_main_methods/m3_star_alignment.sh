@@ -29,6 +29,10 @@ STAR_READ_LENGTH="${STAR_READ_LENGTH:-100}"
 # Set to "false" to keep 2-pass genome, unsorted BAM, etc. for debugging
 STAR_DELETE_TRANSIENT="${STAR_DELETE_TRANSIENT:-true}"
 
+# REPRODUCIBILITY NOTE: Salmon's EM algorithm convergence is thread-schedule dependent.
+# For exact reproducibility, always use the same --threads value across runs.
+# Salmon does not expose a --seed flag for its internal EM algorithm.
+
 # GTF annotation file for splice junction detection (resolved at runtime in pipeline)
 # NOTE: STAR_GTF_FILE is resolved inside star_alignment_pipeline() from $gtf_file
 
