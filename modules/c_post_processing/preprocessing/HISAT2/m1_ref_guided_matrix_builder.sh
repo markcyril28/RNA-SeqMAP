@@ -79,7 +79,8 @@ load_samples_from_csv() {
         return 1
     fi
 
-    for csv_file in "$csv_dir"/*.csv; do
+    # Sort CSV files for deterministic processing order across filesystems
+    while IFS= read -r csv_file; do
         [[ ! -f "$csv_file" ]] && continue
         while IFS=',' read -r srr_id organ notes || [[ -n "$srr_id" ]]; do
             [[ "$srr_id" =~ ^#.*$ || "$srr_id" == "SRR_ID" || -z "$srr_id" ]] && continue
@@ -90,7 +91,7 @@ load_samples_from_csv() {
                 srr_to_organ_ref["$srr_id"]="$organ"
             fi
         done < "$csv_file"
-    done
+    done < <(find "$csv_dir" -maxdepth 1 -name "*.csv" -type f | sort)
 }
 
 SAMPLE_IDS=()
