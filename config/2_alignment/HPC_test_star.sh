@@ -32,9 +32,6 @@ PIPELINE_STAGES=(
 	"METHOD_3_STAR_ALIGNMENT"
 	#"METHOD_4_SALMON_SAF"
 	#"METHOD_5_BOWTIE2_RSEM"
-
-	#"HEATMAP_WRAPPER"
-	#"ZIP_RESULTS"
 )
 
 # ==============================================================================
@@ -68,16 +65,14 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 
 # ------------------------------------------------------------------------------
 # GENOME REFERENCE PAIRS  (M1: HISAT2 Ref-Guided  |  M3: STAR)
-# Format: "GTF_FILE|FASTA_FILE"
-# Uncomment exactly ONE pair — comment out all others.
+# Format: "GTF_FILE|FASTA_FILE|STAR_TRANSCRIPTOME_FASTA"
+#   Field 3 is optional — leave empty ("GTF|FASTA|") to use auto-detect.
+# The pipeline loops through all uncommented pairs.
 # ------------------------------------------------------------------------------
 GENOME_REF_PAIRS=(
-	"inputs/gtf/reference/GPE001970.gtf|inputs/fasta/reference_genomes/GPE001970.fa"                              # GPE001970
-	#"inputs/gtf/reference/Eggplant_V4.1_function_IPR_final.gtf|inputs/fasta/reference_genomes/Eggplant_V4.1.fa"  # Eggplant V4.1
+	"inputs/gtf/reference/GPE001970.gtf|inputs/fasta/reference_genomes/GPE001970_genome.fa|"                              # GPE001970
+	#"inputs/gtf/reference/Eggplant_V4.1_function_IPR_final.gtf|inputs/fasta/reference_genomes/Eggplant_V4.1.fa|inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"  # Eggplant V4.1
 )
-
-gtf_file="${GENOME_REF_PAIRS[0]%%|*}"
-ALL_FASTA_FILES=("${GENOME_REF_PAIRS[0]#*|}")
 
 # ==============================================================================
 # RNA-SEQ DATA SOURCES (SRR LISTS)
@@ -167,7 +162,7 @@ OTHER_SRR_LIST=(
 	# Possible Source: https://www.ncbi.nlm.nih.gov/Traces/study/?acc=SRP390977&o=acc_s%3Aa
 	SRR34564302	# Fruits (https://trace.ncbi.nlm.nih.gov/Traces/?view=run_browser&acc=SRR34564302&display=metadata)
 	SRR34848077 # Leaves (https://trace.ncbi.nlm.nih.gov/Traces/?view=run_browser&page_size=10&acc=SRR34848077&display=metadata)
-	PRJNA613773 # Leaf (https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA613773&o=acc_s%3Aa)
+	#PRJNA613773 # BioProject, not SRR — expand to individual SRR IDs before use (https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA613773&o=acc_s%3Aa)
 		# Cotyledons (https://trace.ncbi.nlm.nih.gov/Traces/?view=run_browser&acc=SRR3884677&display=metadata)
 	SRR3479277 # Pistil (https://trace.ncbi.nlm.nih.gov/Traces/?view=run_browser&acc=SRR3479277&display=metadata)
 	SRR3884597 # Flowers (https://trace.ncbi.nlm.nih.gov/Traces/?view=run_browser&acc=SRR3884597&display=metadata)

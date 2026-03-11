@@ -17,8 +17,8 @@
 # ==============================================================================
 
 # Runtime Configuration
-THREADS=96                              # Threads for parallel operations
-JOBS=6									# Parallel jobs for GNU Parallel
+THREADS=128	                            # Threads for parallel operations
+JOBS=4									# Parallel jobs for GNU Parallel
 USE_GNU_PARALLEL="TRUE"                 # TRUE/FALSE for GNU Parallel
 keep_bam_global="n"                     # y=keep BAM files, n=delete after
 
@@ -44,9 +44,6 @@ PIPELINE_STAGES=(
 	#"METHOD_3_STAR_ALIGNMENT"
 	"METHOD_4_SALMON_SAF"
 	"METHOD_5_BOWTIE2_RSEM"
-
-	#"HEATMAP_WRAPPER"
-	#"ZIP_RESULTS"
 )
 
 # ==============================================================================
@@ -82,6 +79,7 @@ decoy="inputs/fasta/experimental/TEST.fasta"
 # FASTA Files for Analysis (transcripts, required for M2, M4, and M5)
 ALL_FASTA_FILES=(
 	"inputs/fasta/reference_genomes/GPE001970_transcripts.fa"
+	"inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
 )
 
 # ==============================================================================

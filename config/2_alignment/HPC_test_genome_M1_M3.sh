@@ -20,6 +20,8 @@ THREADS=96                              # Threads for parallel operations
 JOBS=3									# Parallel jobs for GNU Parallel
 USE_GNU_PARALLEL="TRUE"                 # TRUE/FALSE for GNU Parallel
 keep_bam_global="n"                     # y=keep BAM files, n=delete after
+STAR_READ_LENGTH=89                     # Actual read length for PRJNA328564 (89 bp)
+export STAR_READ_LENGTH
 
 # Pipeline Stages
 PIPELINE_STAGES=(
@@ -43,9 +45,6 @@ PIPELINE_STAGES=(
 	"METHOD_3_STAR_ALIGNMENT"
 	#"METHOD_4_SALMON_SAF"
 	#"METHOD_5_BOWTIE2_RSEM"
-
-	#"HEATMAP_WRAPPER"
-	#"ZIP_RESULTS"
 )
 
 # ==============================================================================
@@ -77,21 +76,14 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 
 # ------------------------------------------------------------------------------
 # GENOME REFERENCE PAIRS  (M1: HISAT2 Ref-Guided  |  M3: STAR)
-# Format: "GTF_FILE|FASTA_FILE"
-# Uncomment exactly ONE pair — comment out all others.
+# Format: "GTF_FILE|FASTA_FILE|STAR_TRANSCRIPTOME_FASTA"
+#   Field 3 is optional — leave empty ("GTF|FASTA|") to use auto-detect.
+# The pipeline loops through all uncommented pairs.
 # ------------------------------------------------------------------------------
 GENOME_REF_PAIRS=(
-	#"inputs/gtf/reference/GPE001970_genome.gtf|inputs/fasta/reference_genomes/GPE001970_genome.fa"                			# GPE001970
-	"inputs/gtf/reference/Eggplant_V4.1_function_IPR_final_stringtie.gtf|inputs/fasta/reference_genomes/Eggplant_V4.1.fa"  	# Eggplant V4.1
+	"inputs/gtf/reference/GPE001970_genome.gtf|inputs/fasta/reference_genomes/GPE001970_genome.fa|inputs/fasta/reference_genomes/GPE001970_transcripts.fa"                                       	# GPE001970
+	"inputs/gtf/reference/Eggplant_V4.1_function_IPR_final_stringtie.gtf|inputs/fasta/reference_genomes/Eggplant_V4.1.fa|inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"  	# Eggplant V4.1
 )
-
-gtf_file="${GENOME_REF_PAIRS[0]%%|*}"
-ALL_FASTA_FILES=("${GENOME_REF_PAIRS[0]#*|}")
-
-# M3 (STAR) transcriptome FASTA for Salmon quantification step
-# Auto-detect looks for <genome_basename>_transcripts.fa; set explicitly when name differs.
-STAR_TRANSCRIPTOME_FASTA="inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
-export STAR_TRANSCRIPTOME_FASTA
 
 # ==============================================================================
 # RNA-SEQ DATA SOURCES (SRR LISTS) — 3 samples for testing
@@ -122,7 +114,7 @@ export POST_PROC_ROOT
 # WARNING: These are destructive operations — verify before uncommenting.
 # ==============================================================================
 
-ACTIVATE_RM=TRUE
+ACTIVATE_RM=FALSE
 
 # --- Method 1: HISAT2 Reference-Guided ---
 [[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_REF_GUIDED_ROOT"

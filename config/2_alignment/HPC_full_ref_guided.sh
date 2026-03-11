@@ -5,10 +5,12 @@
 # ==============================================================================
 
 # Runtime Configuration
-THREADS=64                              # Threads for parallel operations
-JOBS=4									# Parallel jobs for GNU Parallel
-USE_GNU_PARALLEL="TRUE"                 # TRUE/FALSE for GNU Parallel
+THREADS=24                              # Threads for parallel operations
+JOBS=1									# Parallel jobs for GNU Parallel
+USE_GNU_PARALLEL="FALSE"                 # TRUE/FALSE for GNU Parallel
 keep_bam_global="n"                     # y=keep BAM files, n=delete after
+STAR_READ_LENGTH=89                      # Actual read length for PRJNA328564 (89 bp)
+export STAR_READ_LENGTH
 
 # Pipeline Stages (comment/uncomment to enable/disable)
 PIPELINE_STAGES=(
@@ -32,9 +34,6 @@ PIPELINE_STAGES=(
 	"METHOD_3_STAR_ALIGNMENT"
 	#"METHOD_4_SALMON_SAF"
 	#"METHOD_5_BOWTIE2_RSEM"
-
-	#"HEATMAP_WRAPPER"
-	#"ZIP_RESULTS"
 )
 
 # ==============================================================================
@@ -68,20 +67,14 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 
 # ------------------------------------------------------------------------------
 # GENOME REFERENCE PAIRS  (M1: HISAT2 Ref-Guided  |  M3: STAR)
-# Format: "GTF_FILE|FASTA_FILE"
-# Uncomment exactly ONE pair — comment out all others.
+# Format: "GTF_FILE|FASTA_FILE|STAR_TRANSCRIPTOME_FASTA"
+#   Field 3 is optional — leave empty ("GTF|FASTA|") to use auto-detect.
+# The pipeline loops through all uncommented pairs.
 # ------------------------------------------------------------------------------
 GENOME_REF_PAIRS=(
-	#"inputs/gtf/reference/GPE001970_genome.gtf|inputs/fasta/reference_genomes/GPE001970.fa"                      # GPE001970
-	"inputs/gtf/reference/Eggplant_V4.1_function_IPR_final_stringtie.gtf|inputs/fasta/reference_genomes/Eggplant_V4.1.fa"  # Eggplant V4.1
+	"inputs/gtf/reference/GPE001970_genome.gtf|inputs/fasta/reference_genomes/GPE001970_genome.fa|inputs/fasta/reference_genomes/GPE001970_transcripts.fa"                                       	# GPE001970
+	"inputs/gtf/reference/Eggplant_V4.1_function_IPR_final_stringtie.gtf|inputs/fasta/reference_genomes/Eggplant_V4.1.fa|inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"  	# Eggplant V4.1
 )
-
-gtf_file="${GENOME_REF_PAIRS[0]%%|*}"
-ALL_FASTA_FILES=("${GENOME_REF_PAIRS[0]#*|}")
-
-# M3 (STAR) transcriptome FASTA for Salmon quantification step
-STAR_TRANSCRIPTOME_FASTA="inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
-export STAR_TRANSCRIPTOME_FASTA
 
 # ==============================================================================
 # RNA-SEQ DATA SOURCES (SRR LISTS)
@@ -100,7 +93,7 @@ SRR_LIST_PRJNA328564=(
 	SRR3884684	# Senescent_leaves (leaf aging)
 	SRR3884686	# Buds_0.7cm (flower bud initiation) [MAIN INTEREST]
 	SRR3884687	# Opened_Buds (flower development) 	 [MAIN INTEREST]
-	SRR3884597	# Flowers (anthesis)/				 [MAIN INTEREST]
+	SRR3884597	# Flowers (anthesis)				 [MAIN INTEREST]
 	SRR3884679	# Pistils (female reproductive parts)
 	SRR3884608	# Fruits_1cm (early fruit development)
 	SRR3884620	# Fruits_Stage_1 (early fruit stage)
@@ -118,23 +111,22 @@ SRR_LIST_SAMN28540077=(
 	SRR20722232	# Mature_fruits (10 GB file); corrected.
 	SRR20722226 # Young_fruits
 	SRR20722234	# Flowers
-	SRR20722228	# sepals (too large; not included)
+	SRR20722228	# sepals (too large)
 	SRR4243802 # Buds, Adopted Dataset from ID: PRJNA341784
 	SRR20722233	# leaf_buds
-	SRR20722230	# mature_leaves (14 GB file; not included)
+	SRR20722230	# mature_leaves (14 GB file)
 	SRR20722227	# stems
 	SRR20722229	# roots
 )
 
 SRR_LIST_SAMN28540068=(
-	#Source: https://www.ncbi.nlm.nih.gov/Traces/study/?acc=SAMN28540068&o=acc_s%3Aa
+	# Source: https://www.ncbi.nlm.nih.gov/Traces/study/?acc=SAMN28540068&o=acc_s%3Aa
 	SRR20722387 # mature_fruits
-	SRR3884597 	# Flower
 	SRR20722297 # flower_buds
-	SRR20722385 # sepals (not included)
+	SRR20722385 # sepals 
 	SRR20722296 # leaf_buds
-	SRR20722386 # mature_leaves (not included)
-	SRR20722383 # young_leaves (not included)
+	SRR20722386 # mature_leaves 
+	SRR20722383 # young_leaves 
 	SRR20722384 # stems
 	SRR31755282 # Roots (https://www.ncbi.nlm.nih.gov/Traces/study/?acc=SRP552204&o=acc_s%3Aa)
 )
@@ -203,11 +195,6 @@ mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT" \
 # ==============================================================================
 
 ACTIVATE_RM=FALSE
-
-# --- Preprocessing ---
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$RAW_DIR_ROOT"                          # Raw SRR downloads
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$TRIM_DIR_ROOT"                         # Trimmed FASTQ files
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$FASTQC_ROOT"                           # FastQC reports
 
 # --- Method 1: HISAT2 Reference-Guided ---
 [[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_REF_GUIDED_ROOT"                # HISAT2 ref-guided alignments

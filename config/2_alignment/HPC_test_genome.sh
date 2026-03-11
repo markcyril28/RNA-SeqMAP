@@ -42,9 +42,6 @@ PIPELINE_STAGES=(
 	"METHOD_3_STAR_ALIGNMENT"
 	#"METHOD_4_SALMON_SAF"
 	#"METHOD_5_BOWTIE2_RSEM"
-
-	#"HEATMAP_WRAPPER"
-	#"ZIP_RESULTS"
 )
 
 # ==============================================================================
@@ -76,16 +73,14 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 
 # ------------------------------------------------------------------------------
 # GENOME REFERENCE PAIRS  (M1: HISAT2 Ref-Guided  |  M3: STAR)
-# Format: "GTF_FILE|FASTA_FILE"
-# Uncomment exactly ONE pair — comment out all others.
+# Format: "GTF_FILE|FASTA_FILE|STAR_TRANSCRIPTOME_FASTA"
+#   Field 3 is optional — leave empty ("GTF|FASTA|") to use auto-detect.
+# The pipeline loops through all uncommented pairs.
 # ------------------------------------------------------------------------------
 GENOME_REF_PAIRS=(
-	"inputs/gtf/reference/GPE001970.gtf|inputs/fasta/reference_genomes/GPE001970.fa"                              # GPE001970
-	#"inputs/gtf/reference/Eggplant_V4.1_function_IPR_final.gtf|inputs/fasta/reference_genomes/Eggplant_V4.1.fa"  # Eggplant V4.1
+	"inputs/gtf/reference/GPE001970.gtf|inputs/fasta/reference_genomes/GPE001970.fa|"                              # GPE001970
+	#"inputs/gtf/reference/Eggplant_V4.1_function_IPR_final.gtf|inputs/fasta/reference_genomes/Eggplant_V4.1.fa|inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"  # Eggplant V4.1
 )
-
-gtf_file="${GENOME_REF_PAIRS[0]%%|*}"
-ALL_FASTA_FILES=("${GENOME_REF_PAIRS[0]#*|}")
 
 # ==============================================================================
 # RNA-SEQ DATA SOURCES (SRR LISTS) — 3 samples for testing

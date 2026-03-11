@@ -5,9 +5,9 @@
 # ==============================================================================
 
 # Runtime Configuration
-THREADS=64                              # Threads for parallel operations
-JOBS=4									# Parallel jobs for GNU Parallel
-USE_GNU_PARALLEL="TRUE"                 # TRUE/FALSE for GNU Parallel
+THREADS=24                              # Threads for parallel operations
+JOBS=1									# Parallel jobs for GNU Parallel
+USE_GNU_PARALLEL="FALSE"                 # TRUE/FALSE for GNU Parallel
 keep_bam_global="n"                     # y=keep BAM files, n=delete after
 
 # Pipeline Stages (comment/uncomment to enable/disable)
@@ -32,9 +32,6 @@ PIPELINE_STAGES=(
 	#"METHOD_3_STAR_ALIGNMENT"
 	"METHOD_4_SALMON_SAF"
 	"METHOD_5_BOWTIE2_RSEM"
-
-	#"HEATMAP_WRAPPER"
-	#"ZIP_RESULTS"
 )
 
 # ==============================================================================
@@ -72,7 +69,6 @@ decoy="inputs/fasta/experimental/TEST.fasta"
 ALL_FASTA_FILES=(
 	"inputs/fasta/reference_genomes/GPE001970_transcripts.fa"
 	"inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
-
 )
 
 # ==============================================================================
@@ -195,11 +191,6 @@ mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT" \
 # ==============================================================================
 
 ACTIVATE_RM=FALSE
-
-# --- Preprocessing ---
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$RAW_DIR_ROOT"                          # Raw SRR downloads
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$TRIM_DIR_ROOT"                         # Trimmed FASTQ files
-[[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$FASTQC_ROOT"                           # FastQC reports
 
 # --- Method 2: HISAT2 De Novo ---
 [[ "$ACTIVATE_RM" == "TRUE" ]] && rm -rf "$HISAT2_DE_NOVO_ROOT"                   # HISAT2 de novo alignments

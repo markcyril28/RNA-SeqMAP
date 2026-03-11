@@ -32,8 +32,6 @@ PIPELINE_STAGES=(
 	"METHOD_3_STAR_ALIGNMENT"
 	"METHOD_4_SALMON_SAF"
 	"METHOD_5_BOWTIE2_RSEM"
-	#"HEATMAP_WRAPPER"
-	#"ZIP_RESULTS"
 )
 
 # ==============================================================================
@@ -112,7 +110,7 @@ SRR_LIST_PRJNA328564=(
 	#SRR3884653	# Fruits_Flesh_Stage_2 (mid fruit development)
 	#SRR3884664	# Fruits_Calyx_Stage_2 (mid fruit development)
 	#SRR3884680	# Fruits_Skin_Stage_3 (late fruit development)
-	#RR3884681	# Fruits_Flesh_Stage_3 (late fruit development)
+	#SRR3884681	# Fruits_Flesh_Stage_3 (late fruit development)
 	#SRR3884678	# Fruits_peduncle (fruit attachment)
 )
 
@@ -174,7 +172,7 @@ OTHER_SRR_LIST=(
 	# Possible Source: https://www.ncbi.nlm.nih.gov/Traces/study/?acc=SRP390977&o=acc_s%3Aa
 	SRR34564302	# Fruits (https://trace.ncbi.nlm.nih.gov/Traces/?view=run_browser&acc=SRR34564302&display=metadata)
 	SRR34848077 # Leaves (https://trace.ncbi.nlm.nih.gov/Traces/?view=run_browser&page_size=10&acc=SRR34848077&display=metadata)
-	PRJNA613773 # Leaf (https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA613773&o=acc_s%3Aa)
+	#PRJNA613773 # BioProject, not SRR — expand to individual SRR IDs before use (https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA613773&o=acc_s%3Aa)
 		# Cotyledons (https://trace.ncbi.nlm.nih.gov/Traces/?view=run_browser&acc=SRR3884677&display=metadata)
 	SRR3479277 # Pistil (https://trace.ncbi.nlm.nih.gov/Traces/?view=run_browser&acc=SRR3479277&display=metadata)
 	SRR3884597 # Flowers (https://trace.ncbi.nlm.nih.gov/Traces/?view=run_browser&acc=SRR3884597&display=metadata)

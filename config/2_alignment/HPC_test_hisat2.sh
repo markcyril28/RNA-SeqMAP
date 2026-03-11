@@ -32,9 +32,6 @@ PIPELINE_STAGES=(
 	#"METHOD_3_STAR_ALIGNMENT"
 	#"METHOD_4_SALMON_SAF"
 	#"METHOD_5_BOWTIE2_RSEM"
-
-	#"HEATMAP_WRAPPER"
-	#"ZIP_RESULTS"
 )
 
 # ==============================================================================
