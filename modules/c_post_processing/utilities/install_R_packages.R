@@ -24,7 +24,10 @@ required_cran <- c(
   "Rtsne",
   "umap",
   "factoextra",
-  "igraph"
+  "igraph",
+  "networkD3",
+  "htmlwidgets",
+  "visNetwork"
 )
 
 required_bioc <- c(

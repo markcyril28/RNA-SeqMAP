@@ -461,7 +461,7 @@ read_config_file <- function(file_path, default_value, is_boolean = FALSE) {
 load_runtime_config <- function(method_modules_dir = ".") {
   gene_groups <- read_config_file(
     file.path(method_modules_dir, ".gene_groups_temp.txt"),
-    default_value = c("SmelDMPs", "SmelGRF-GIFs")
+    default_value = c("SmelDMPs", "SmelGRF-GIF")
   )
   
   master_reference <- read_config_file(
