@@ -101,7 +101,7 @@ SRR_LIST_PRJNA328564=(
 	#SRR3884684	# Senescent_leaves (leaf aging)
 	SRR3884686	# Buds_0.7cm (flower bud initiation) [MAIN INTEREST]
 	SRR3884687	# Opened_Buds (flower development) 	 [MAIN INTEREST]
-	SRR3884597	# Flowers (anthesis)/				 [MAIN INTEREST]	
+	SRR3884597	# Flowers (anthesis)				 [MAIN INTEREST]
 	#SRR3884679	# Pistils (female reproductive parts)
 	#SRR3884608	# Fruits_1cm (early fruit development)
 	#SRR3884620	# Fruits_Stage_1 (early fruit stage)
@@ -130,8 +130,8 @@ SRR_LIST_SAMN28540077=(
 SRR_LIST_SAMN28540068=(
 	#Source: https://www.ncbi.nlm.nih.gov/Traces/study/?acc=SAMN28540068&o=acc_s%3Aa
 	SRR20722387 # mature_fruits
-	SRR3884597 	# Flower
-	SRR20722297 # flower_buds 
+	#SRR3884597 	# Flower — duplicate: already in SRR_LIST_PRJNA328564
+	SRR20722297 # flower_buds
 	SRR20722385 # sepals (not included)
 	SRR20722296 # leaf_buds 
 	SRR20722386 # mature_leaves (not included)
@@ -175,7 +175,7 @@ OTHER_SRR_LIST=(
 	#PRJNA613773 # BioProject, not SRR — expand to individual SRR IDs before use (https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA613773&o=acc_s%3Aa)
 		# Cotyledons (https://trace.ncbi.nlm.nih.gov/Traces/?view=run_browser&acc=SRR3884677&display=metadata)
 	SRR3479277 # Pistil (https://trace.ncbi.nlm.nih.gov/Traces/?view=run_browser&acc=SRR3479277&display=metadata)
-	SRR3884597 # Flowers (https://trace.ncbi.nlm.nih.gov/Traces/?view=run_browser&acc=SRR3884597&display=metadata)
+	#SRR3884597 # Flowers — duplicate: already in SRR_LIST_PRJNA328564 (https://trace.ncbi.nlm.nih.gov/Traces/?view=run_browser&acc=SRR3884597&display=metadata)
 
 	#PRJNA341784 # Flower buds lang (https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA341784&o=acc_s%3Aa)
 	#PRJNA477924 # Leaf and Root (https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA477924&o=acc_s%3Aa)

@@ -125,7 +125,7 @@ SRR_LIST_SAMN28540077=(
 SRR_LIST_SAMN28540068=(
 	#Source: https://www.ncbi.nlm.nih.gov/Traces/study/?acc=SAMN28540068&o=acc_s%3Aa
 	SRR20722387 # mature_fruits
-	SRR3884597 	# Flower
+	#SRR3884597 	# Flower — duplicate: already in SRR_LIST_PRJNA328564
 	SRR20722297 # flower_buds
 	SRR20722385 # sepals (not included)
 	SRR20722296 # leaf_buds
