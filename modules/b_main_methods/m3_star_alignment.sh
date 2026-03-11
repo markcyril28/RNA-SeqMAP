@@ -791,6 +791,23 @@ star_alignment_pipeline() {
 		log_info "[SALMON INDEX] Index built successfully: $salmon_idx"
 	fi
 
+	# Validate transcriptome FASTA IDs match GTF transcript IDs (prevents tximport failures)
+	if [[ -f "${STAR_GTF_FILE:-}" && -f "$transcriptome_fasta" ]]; then
+		local _fasta_ids _gtf_ids _overlap _fasta_count
+		_fasta_ids=$(grep '^>' "$transcriptome_fasta" | head -20 | sed 's/^>//; s/ .*//' | sed 's/\.[0-9]*$//')
+		_fasta_count=$(echo "$_fasta_ids" | wc -l)
+		_gtf_ids=$(awk '$3=="transcript" { for(i=9;i<=NF;i++) if($i=="transcript_id") { gsub(/[";]/,"",$(i+1)); print $(i+1) } }' "$STAR_GTF_FILE" | sed 's/\.[0-9]*$//' | sort -u)
+		_overlap=$(echo "$_fasta_ids" | grep -cFxf <(echo "$_gtf_ids") || true)
+		if [[ "$_overlap" -eq 0 && "$_fasta_count" -gt 0 ]]; then
+			log_warn "[SALMON] Transcript ID mismatch: transcriptome FASTA IDs do not match GTF transcript_id attributes"
+			log_warn "[SALMON]   FASTA example: $(echo "$_fasta_ids" | head -3 | tr '\n' ', ')"
+			log_warn "[SALMON]   GTF example:   $(echo "$_gtf_ids" | head -3 | tr '\n' ', ')"
+			log_warn "[SALMON]   Gene-level tximport will FAIL. Isoform-level will still work."
+			log_warn "[SALMON]   Fix: use a transcriptome FASTA derived from the same annotation as the GTF,"
+			log_warn "[SALMON]   or set STAR_TRANSCRIPTOME_FASTA to a FASTA whose IDs match: ${STAR_GTF_FILE}"
+		fi
+	fi
+
 	# Quantify samples
 	log_info "[SALMON] Starting quantification for ${#rnaseq_list[@]} samples"
 
