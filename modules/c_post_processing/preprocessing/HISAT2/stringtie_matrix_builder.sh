@@ -178,6 +178,7 @@ merge_group_counts() {
 
     local tmpdir
     tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
 
     # Collect abundance files
     local files=()
@@ -197,14 +198,19 @@ merge_group_counts() {
     if [[ ${#files[@]} -eq 0 ]]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: No abundance files found for gene group '$gene_group'"
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Hint: MASTER_REFERENCE='$MASTER_REFERENCE' must match the fasta_tag used during M2 alignment"
-        rm -rf "$tmpdir"
         return 1
     fi
 
     # Extract gene names from reference CSV (first column is Gene_ID)
     tail -n +2 "${ref_csv}" | cut -d',' -f1 > "$tmpdir/gene_names.txt" \
-        || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: Failed to extract gene names from $ref_csv"; rm -rf "$tmpdir"; return 1; }
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gene names extracted: $(grep -c . "$tmpdir/gene_names.txt") lines."
+        || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: Failed to extract gene names from $ref_csv"; return 1; }
+    local gene_name_count
+    gene_name_count=$(grep -c . "$tmpdir/gene_names.txt" || true)
+    if [[ "$gene_name_count" -eq 0 ]]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: No genes found in reference CSV: $ref_csv"
+        return 1
+    fi
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gene names extracted: $gene_name_count lines."
 
     for count_type in coverage fpkm tpm; do
         local COUNT_COL_VAR="${count_type^^}_COL"
@@ -253,7 +259,7 @@ merge_group_counts() {
             printf "\n"
 
             python3 "$UTILITIES_DIR/matrix_builder.py" "$tmpdir/gene_names.txt" "$tmpdir/sample_files_list.txt"
-        } > "$output_geneName_SRR_tsv" || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: matrix_builder.py failed for SRR matrix: $group_name"; rm -rf "$tmpdir"; return 1; }
+        } > "$output_geneName_SRR_tsv" || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: matrix_builder.py failed for SRR matrix: $group_name"; return 1; }
 
         # Create matrix with Organ headers
         local output_geneName_Organ_tsv="$OUT_DIR/$group_name/${group_name}_${count_type}_counts_geneName_Organ${MASTER_SUFFIX}.tsv"
@@ -274,13 +280,12 @@ merge_group_counts() {
             printf "\n"
 
             python3 "$UTILITIES_DIR/matrix_builder.py" "$tmpdir/gene_names.txt" "$tmpdir/sample_files_list.txt"
-        } > "$output_geneName_Organ_tsv" || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: matrix_builder.py failed for Organ matrix: $group_name"; rm -rf "$tmpdir"; return 1; }
+        } > "$output_geneName_Organ_tsv" || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: matrix_builder.py failed for Organ matrix: $group_name"; return 1; }
 
         rm -f "${sample_files[@]}"
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Completed $count_type matrix generation"
     done
     
-    rm -rf "$tmpdir"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Completed processing for $group_name"
 }
 
@@ -302,6 +307,7 @@ build_full_transcriptome_matrix() {
     # file may be missing genes that are expressed in other samples.
     local tmp_csv
     tmp_csv=$(mktemp --suffix=.csv)
+    trap 'rm -f "$tmp_csv"' RETURN
     echo "Gene_ID" > "$tmp_csv"
 
     local files_found=0
@@ -315,7 +321,6 @@ build_full_transcriptome_matrix() {
 
     if [[ "$files_found" -eq 0 ]]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: No abundance files found - skipping full-transcriptome matrix"
-        rm -f "$tmp_csv"
         return 1
     fi
 
@@ -336,8 +341,6 @@ build_full_transcriptome_matrix() {
     else
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Failed to build full-transcriptome matrix"
     fi
-
-    rm -f "$tmp_csv"
 }
 
 # ===============================================

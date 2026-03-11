@@ -132,11 +132,30 @@ for (level_name in names(processing_levels)) {
   cat("Step 2: Importing RSEM data with tximport...\n")
   
   # tximport for RSEM
-  txi <- tximport(files, type = "rsem", txIn = level_config$tx_in, txOut = level_config$tx_out)
-  
+  txi <- tryCatch(
+    tximport(files, type = "rsem", txIn = level_config$tx_in, txOut = level_config$tx_out),
+    error = function(e) {
+      cat("ERROR: tximport failed for", level_config$label, ":", e$message, "\n")
+      cat("  Check RSEM output files for corruption or format issues\n")
+      return(NULL)
+    }
+  )
+  if (is.null(txi)) {
+    cat("Skipping", level_config$label, "due to tximport failure\n\n")
+    next
+  }
+
   entity_type <- if (level_config$tx_out) "transcripts" else "genes"
   cat("Successfully imported data for", ncol(txi$counts), "samples\n")
   cat("Total", entity_type, ":", nrow(txi$counts), "\n\n")
+
+  # Save full tximport object for DESeq2 (preserves transcript-length offsets)
+  if (!level_config$tx_out) {
+    txi_rds_dir <- file.path(output_dir, level_name)
+    dir.create(txi_rds_dir, recursive = TRUE, showWarnings = FALSE)
+    saveRDS(txi, file.path(txi_rds_dir, "tximport_gene_level.rds"))
+    cat("Saved tximport RDS for DESeq2: tximport_gene_level.rds\n\n")
+  }
 
   # ===============================================
   # STEP 3: CREATE SAMPLE METADATA

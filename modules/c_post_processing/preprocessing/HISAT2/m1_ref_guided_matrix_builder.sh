@@ -187,6 +187,7 @@ merge_group_counts() {
         local COUNT_COL="${!COUNT_COL_VAR}"
 
         local -a sample_files=()
+        local -a processed_srrs=()
 
         for srr in "${SAMPLE_IDS[@]}"; do
             # Construct path directly — no need to scan files[] array
@@ -194,6 +195,7 @@ merge_group_counts() {
             if [[ -f "$sample_file" ]]; then
                 tail -n +2 "$sample_file" | cut -f"$GENENAME_COL","$COUNT_COL" > "$tmpdir/${srr}.txt"
                 sample_files+=("$tmpdir/${srr}.txt")
+                processed_srrs+=("$srr")
             fi
         done
 
@@ -212,9 +214,8 @@ merge_group_counts() {
 
         {
             printf "GeneName"
-            for srr in "${SAMPLE_IDS[@]}"; do
-                local sample_file="$INPUTS_DIR/$MASTER_REFERENCE/$srr/${srr}_${MASTER_REFERENCE}${ABUNDANCE_SUFFIX}"
-                [[ -f "$sample_file" ]] && printf "\t%s" "$srr"
+            for srr in "${processed_srrs[@]}"; do
+                printf "\t%s" "$srr"
             done
             printf "\n"
             python3 "$UTILITIES_DIR/matrix_builder.py" "$tmpdir/gene_names.txt" "$tmpdir/sample_files_list.txt"
@@ -226,12 +227,9 @@ merge_group_counts() {
 
         {
             printf "GeneName"
-            for srr in "${SAMPLE_IDS[@]}"; do
-                local sample_file="$INPUTS_DIR/$MASTER_REFERENCE/$srr/${srr}_${MASTER_REFERENCE}${ABUNDANCE_SUFFIX}"
-                if [[ -f "$sample_file" ]]; then
-                    local organ="${SRR_TO_ORGAN[$srr]:-Unknown}"
-                    printf "\t%s" "$organ"
-                fi
+            for srr in "${processed_srrs[@]}"; do
+                local organ="${SRR_TO_ORGAN[$srr]:-Unknown}"
+                printf "\t%s" "$organ"
             done
             printf "\n"
             python3 "$UTILITIES_DIR/matrix_builder.py" "$tmpdir/gene_names.txt" "$tmpdir/sample_files_list.txt"
@@ -245,6 +243,60 @@ merge_group_counts() {
 }
 
 # ===============================================
+# FULL TRANSCRIPTOME MATRIX
+# ===============================================
+# Build a full-transcriptome matrix (all genes from abundance files) so that
+# WGCNA and genome-wide analyses can consume M1 data.
+# Uses MASTER_REFERENCE as the gene group name to match build_input_path() conventions.
+
+build_full_transcriptome_matrix() {
+    local group_name
+    group_name=$(get_output_folder_name "$MASTER_REFERENCE")
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ========================================"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Building full-transcriptome matrix: $group_name"
+
+    # Collect the UNION of gene IDs from ALL sample abundance files.
+    # In ref-guided mode all samples share the same gene set, but taking the
+    # union keeps this robust if any file is truncated or filtered.
+    local tmp_csv
+    tmp_csv=$(mktemp --suffix=.csv)
+    trap 'rm -f "$tmp_csv"' RETURN
+    echo "Gene_ID" > "$tmp_csv"
+
+    local files_found=0
+    for srr in "${SAMPLE_IDS[@]}"; do
+        local file_path="$INPUTS_DIR/$MASTER_REFERENCE/$srr/${srr}_${MASTER_REFERENCE}${ABUNDANCE_SUFFIX}"
+        if [[ -f "$file_path" ]]; then
+            tail -n +2 "$file_path" | cut -f"$GENENAME_COL" >> "$tmp_csv"
+            files_found=$((files_found + 1))
+        fi
+    done
+
+    if [[ "$files_found" -eq 0 ]]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: No abundance files found - skipping full-transcriptome matrix"
+        return 1
+    fi
+
+    # De-duplicate the collected gene IDs (header line is already first)
+    local tmp_dedup
+    tmp_dedup=$(mktemp --suffix=.csv)
+    head -1 "$tmp_csv" > "$tmp_dedup"
+    tail -n +2 "$tmp_csv" | sort -u >> "$tmp_dedup"
+    mv "$tmp_dedup" "$tmp_csv"
+
+    local gene_count
+    gene_count=$(tail -n +2 "$tmp_csv" | grep -c .)
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Full transcriptome: $gene_count genes (union from $files_found samples)"
+
+    # Reuse merge_group_counts with MASTER_REFERENCE as the gene group name
+    if merge_group_counts "$MASTER_REFERENCE" "$tmp_csv"; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Full-transcriptome matrix complete"
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Failed to build full-transcriptome matrix"
+    fi
+}
+
+# ===============================================
 # MAIN EXECUTION
 # ===============================================
 
@@ -252,6 +304,9 @@ GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-$SCRIPT_DIR/../..
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gene groups CSV directory: $GENE_GROUPS_CSV_DIR"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting count matrix generation for ${#GENE_GROUPS[@]} gene groups"
+
+# Build full-transcriptome matrix first (enables WGCNA and genome-wide analyses)
+build_full_transcriptome_matrix
 
 for gene_group in "${GENE_GROUPS[@]}"; do
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ========================================"

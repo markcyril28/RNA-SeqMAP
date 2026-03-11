@@ -225,6 +225,14 @@ for (level_name in names(processing_levels)) {
   cat("Successfully imported data for", ncol(txi$counts), "samples\n")
   cat("Total", entity_type, ":", nrow(txi$counts), "\n\n")
 
+  # Save full tximport object for DESeq2 (preserves transcript-length offsets)
+  if (!level_config$tx_out) {
+    txi_rds_dir <- file.path(output_dir, level_name)
+    dir.create(txi_rds_dir, recursive = TRUE, showWarnings = FALSE)
+    saveRDS(txi, file.path(txi_rds_dir, "tximport_gene_level.rds"))
+    cat("Saved tximport RDS for DESeq2: tximport_gene_level.rds\n\n")
+  }
+
   # ===============================================
   # STEP 3: CREATE SAMPLE METADATA
   # ===============================================
