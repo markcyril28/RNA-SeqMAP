@@ -8,7 +8,6 @@
 suppressPackageStartupMessages({
   library(ggplot2)
   library(dplyr)
-  library(tidyr)
   library(pheatmap)
   library(RColorBrewer)
 })
@@ -74,8 +73,11 @@ calculate_tissue_specificity <- function(data_matrix) {
     colnames(data_matrix)[which.max(x)]
   })
   
-  # Calculate max expression
-  max_expr <- apply(data_matrix, 1, max, na.rm = TRUE)
+  # Calculate max expression (guard against all-NA rows returning -Inf)
+  max_expr <- apply(data_matrix, 1, function(x) {
+    val <- max(x, na.rm = TRUE)
+    if (!is.finite(val)) NA_real_ else val
+  })
   
   result <- data.frame(
     Gene = rownames(data_matrix),
@@ -178,7 +180,12 @@ create_tissue_gene_counts <- function(specificity_df, output_path, title) {
 # ===============================================
 
 run_tissue_specificity <- function(config = NULL, matrices_dir = NULL) {
-  if (is.null(config)) config <- load_runtime_config()
+  # Get method base directory from environment for config file loading
+  method_base_dir <- Sys.getenv("METHOD_BASE_DIR", unset = ".")
+  if (is.null(config)) config <- load_runtime_config(method_base_dir)
+  if (is.null(matrices_dir)) {
+    matrices_dir <- file.path(method_base_dir, get_matrices_dir(CURRENT_METHOD))
+  }
   ensure_output_dir(TISSUE_SPEC_OUT_DIR)
   
   print_config_summary("TISSUE SPECIFICITY ANALYSIS", config)
@@ -228,6 +235,12 @@ run_tissue_specificity <- function(config = NULL, matrices_dir = NULL) {
           rowMeans(tissue_data[, tissue_cols, drop = FALSE], na.rm = TRUE)
         }
       })
+      # sapply returns a vector (not a matrix) when tissue_data has a single row;
+      # force back to matrix so downstream apply()/rownames() calls work correctly.
+      if (!is.matrix(averaged_matrix)) {
+        averaged_matrix <- matrix(averaged_matrix, nrow = nrow(tissue_data),
+                                  dimnames = list(rownames(tissue_data), unique_tissues))
+      }
       rownames(averaged_matrix) <- rownames(tissue_data)
       tissue_data <- averaged_matrix
     }

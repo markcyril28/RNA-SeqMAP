@@ -124,6 +124,11 @@ if (GENERATE_GENE_LEVEL) {
     if (!is.null(txi)) {
       results$gene_level     <- txi$counts
       results$gene_level_tpm <- txi$abundance
+      # Save full tximport object for DESeq2 (preserves transcript-length offsets)
+      txi_rds_dir <- file.path(output_dir, MASTER_REFERENCE, "gene_level")
+      ensure_output_dir(txi_rds_dir)
+      saveRDS(txi, file.path(txi_rds_dir, "tximport_gene_level.rds"))
+      cat("Saved tximport RDS for DESeq2: tximport_gene_level.rds\n")
     }
   }
 }

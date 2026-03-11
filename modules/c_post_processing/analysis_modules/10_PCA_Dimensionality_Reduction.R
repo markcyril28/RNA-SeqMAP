@@ -37,7 +37,7 @@ N_PCS_TO_PLOT <- 10                # More principal components for thorough anal
 # Dynamically adjusted in run_tsne_analysis()
 TSNE_PERPLEXITY <- 15              # Higher perplexity for global structure
 TSNE_MAX_ITER <- 5000              # Maximum iterations for full convergence
-TSNE_SEED <- 42                    # Reproducibility
+TSNE_SEED <- GLOBAL_RANDOM_SEED     # Reproducibility (from shared config)
 MIN_SAMPLES_TSNE <- 4              # t-SNE needs >= 4 samples
 TSNE_THETA <- 0.0                  # Exact t-SNE (0 = exact, no approximation)
 
@@ -45,7 +45,7 @@ TSNE_THETA <- 0.0                  # Exact t-SNE (0 = exact, no approximation)
 UMAP_N_NEIGHBORS <- 15             # More neighbors for global structure
 UMAP_MIN_DIST <- 0.05              # Tighter clustering for better separation
 UMAP_METRIC <- "cosine"            # Cosine similarity (best for expression data)
-UMAP_SEED <- 42
+UMAP_SEED <- GLOBAL_RANDOM_SEED
 UMAP_N_EPOCHS <- 1000              # Maximum epochs for full convergence
 
 # Figure toggles
@@ -98,12 +98,18 @@ run_pca_analysis <- function(data_matrix, metadata, output_dir, gene_group) {
   cat("    Running PCA")
   if (GPU_AVAILABLE) cat(" (GPU accelerated)")
   cat("\n")
-  
+
+  # PCA needs at least 3 samples for meaningful 2D projection
+  if (ncol(data_matrix) < 3) {
+    cat("    Too few samples for PCA (need >= 3, have", ncol(data_matrix), ")\n")
+    return(NULL)
+  }
+
   data_t <- t(data_matrix)
-  
+
   col_vars <- apply(data_t, 2, var, na.rm = TRUE)
   data_t <- data_t[, col_vars > 0, drop = FALSE]
-  
+
   if (ncol(data_t) < 3) {
     cat("    Too few variable genes for PCA\n")
     return(NULL)
@@ -250,7 +256,12 @@ run_umap_analysis <- function(data_matrix, metadata, output_dir, gene_group) {
 # ===============================================
 
 run_dimensionality_reduction <- function(config = NULL, matrices_dir = NULL) {
-  if (is.null(config)) config <- load_runtime_config()
+  # Get method base directory from environment for config file loading
+  method_base_dir <- Sys.getenv("METHOD_BASE_DIR", unset = ".")
+  if (is.null(config)) config <- load_runtime_config(method_base_dir)
+  if (is.null(matrices_dir)) {
+    matrices_dir <- file.path(method_base_dir, get_matrices_dir(CURRENT_METHOD))
+  }
   ensure_output_dir(DIM_REDUCTION_OUT_DIR)
   
   print_config_summary("PCA & DIMENSIONALITY REDUCTION", config)
@@ -290,9 +301,12 @@ run_dimensionality_reduction <- function(config = NULL, matrices_dir = NULL) {
     
     metadata <- prepare_sample_metadata(colnames(data_matrix))
     
-    run_pca_analysis(data_matrix, metadata, output_dir, gene_group)
-    run_tsne_analysis(data_matrix, metadata, output_dir, gene_group)
-    run_umap_analysis(data_matrix, metadata, output_dir, gene_group)
+    tryCatch(run_pca_analysis(data_matrix, metadata, output_dir, gene_group),
+             error = function(e) cat("  PCA failed:", e$message, "\n"))
+    tryCatch(run_tsne_analysis(data_matrix, metadata, output_dir, gene_group),
+             error = function(e) cat("  t-SNE failed:", e$message, "\n"))
+    tryCatch(run_umap_analysis(data_matrix, metadata, output_dir, gene_group),
+             error = function(e) cat("  UMAP failed:", e$message, "\n"))
     
     successful <- successful + 1
     cat("  Complete\n")

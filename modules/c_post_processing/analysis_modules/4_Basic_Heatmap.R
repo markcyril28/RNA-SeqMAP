@@ -265,7 +265,12 @@ process_basic_heatmap <- function(gene_group, gene_group_output_dir, processing_
 # ===============================================
 
 run_basic_heatmap <- function(config = NULL, matrices_dir = NULL) {
-  if (is.null(config)) config <- load_runtime_config()
+  # Get method base directory from environment for config file loading
+  method_base_dir <- Sys.getenv("METHOD_BASE_DIR", unset = ".")
+  if (is.null(config)) config <- load_runtime_config(method_base_dir)
+  if (is.null(matrices_dir)) {
+    matrices_dir <- file.path(method_base_dir, get_matrices_dir(CURRENT_METHOD))
+  }
   ensure_output_dir(HEATMAP_OUT_DIR)
   
   print_config_summary("BASIC HEATMAP GENERATION", config)
