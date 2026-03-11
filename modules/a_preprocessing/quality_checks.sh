@@ -83,9 +83,6 @@ run_quality_control() {
 	else
 		log_warn "FastQC not found. Skipping QC for $SRR."
 	fi
-
-	# Run MultiQC to aggregate results
-	run_multiqc
 }
 
 run_multiqc() {
@@ -130,37 +127,37 @@ run_quality_control_parallel() {
 	export PATH CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_EXE
 	export RAW_DIR_ROOT TRIM_DIR_ROOT FASTQC_ROOT THREADS_PER_JOB
 	export -f log_info log_warn log_error log_step run_with_space_time_log rename_fastqc_outputs 2>/dev/null || true
-	
+
 	_qc_worker() {
 		local SRR="$1"
-		
+
 		# Activate conda environment in subshell
 		if [[ -n "$CONDA_PREFIX" ]]; then
 			source "$(dirname "$CONDA_EXE")/../etc/profile.d/conda.sh" 2>/dev/null || true
 			conda activate "$CONDA_DEFAULT_ENV" 2>/dev/null || true
 		fi
-		
+
 		local RAW_DIR="$RAW_DIR_ROOT/$SRR"
 		local TrimGalore_DIR="$TRIM_DIR_ROOT/$SRR"
 		local srr_outdir="$FASTQC_ROOT/$SRR"
 		mkdir -p "$srr_outdir"
-		
+
 		# QC for raw files (single folder per SRR)
 		if [[ -d "$RAW_DIR" ]]; then
 			if ! compgen -G "$srr_outdir/*_raw_fastqc.html" >/dev/null; then
-				echo "[INFO] Running FastQC on raw files for $SRR"
+				log_info "Running FastQC on raw files for $SRR"
 				fastqc -t "${THREADS_PER_JOB:-2}" -o "$srr_outdir" \
-					"$RAW_DIR"/${SRR}*.fastq* 2>/dev/null || echo "[WARN] FastQC failed for raw $SRR"
+					"$RAW_DIR"/${SRR}*.fastq* 2>/dev/null || log_warn "FastQC failed for raw $SRR"
 				rename_fastqc_outputs "$srr_outdir" "raw" "$RAW_DIR"/${SRR}*.fastq*
 			fi
 		fi
-		
+
 		# QC for trimmed files (same SRR folder, renamed as trimmed)
 		if [[ -d "$TrimGalore_DIR" ]]; then
 			if ! compgen -G "$srr_outdir/*_trimmed_fastqc.html" >/dev/null; then
-				echo "[INFO] Running FastQC on trimmed files for $SRR"
+				log_info "Running FastQC on trimmed files for $SRR"
 				fastqc -t "${THREADS_PER_JOB:-2}" -o "$srr_outdir" \
-					"$TrimGalore_DIR"/${SRR}*val*.fq* 2>/dev/null || echo "[WARN] FastQC failed for trimmed $SRR"
+					"$TrimGalore_DIR"/${SRR}*val*.fq* 2>/dev/null || log_warn "FastQC failed for trimmed $SRR"
 				rename_fastqc_outputs "$srr_outdir" "trimmed" "$TrimGalore_DIR"/${SRR}*val*.fq*
 			fi
 		fi
