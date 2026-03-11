@@ -461,16 +461,22 @@ run_differential_expression <- function(config = NULL, matrices_dir = NULL) {
       cat("  Skipped: fewer than 2 tissue groups defined\n")
       next
     }
+
+    # Pre-cache sample membership per tissue group (avoids repeated %in% per pair)
+    samples_by_group <- lapply(TISSUE_GROUPS, function(tissues) {
+      sample_ids[sample_tissues %in% tissues]
+    })
+
     for (i in 1:(length(group_names) - 1)) {
       for (j in (i + 1):length(group_names)) {
         total <- total + 1
-        
+
         group1 <- group_names[i]
         group2 <- group_names[j]
-        
-        # Identify samples in each group
-        samples_g1 <- sample_ids[sample_tissues %in% TISSUE_GROUPS[[group1]]]
-        samples_g2 <- sample_ids[sample_tissues %in% TISSUE_GROUPS[[group2]]]
+
+        # Use pre-cached lookups
+        samples_g1 <- samples_by_group[[group1]]
+        samples_g2 <- samples_by_group[[group2]]
         
         if (length(samples_g1) < 2 || length(samples_g2) < 2) {
           cat("  Skipped", group1, "vs", group2, ": insufficient samples (",

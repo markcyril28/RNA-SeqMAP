@@ -215,13 +215,13 @@ build_network_and_detect_modules <- function(data_matrix, soft_power, output_dir
         "<table>\n<tr><th>Module</th><th>Gene Count</th><th>Contains Query Genes</th></tr>\n"
       )
       
-      for (i in seq_len(nrow(module_counts))) {
-        html_content <- paste0(html_content,
-          "<tr><td><span class='module-tag' style='background-color:", module_counts$Module[i], ";'>",
-          module_counts$Module[i], "</span></td><td>", module_counts$Gene_Count[i],
-          "</td><td>", ifelse(module_counts$Has_Query[i], "✓ YES", "No"), "</td></tr>\n"
-        )
-      }
+      # Vectorized HTML row generation (avoids O(n²) paste0 string growth)
+      mc_rows <- sprintf(
+        "<tr><td><span class='module-tag' style='background-color:%s;'>%s</span></td><td>%s</td><td>%s</td></tr>",
+        module_counts$Module, module_counts$Module, module_counts$Gene_Count,
+        ifelse(module_counts$Has_Query, "\u2713 YES", "No")
+      )
+      html_content <- paste0(html_content, paste0(mc_rows, collapse = "\n"), "\n")
       
       html_content <- paste0(html_content, "</table>\n",
         "<h2>Query Genes</h2>\n",
@@ -229,13 +229,12 @@ build_network_and_detect_modules <- function(data_matrix, soft_power, output_dir
       )
       
       query_subset <- module_summary[module_summary$Is_Query, ]
-      for (i in seq_len(nrow(query_subset))) {
-        html_content <- paste0(html_content,
-          "<tr class='query'><td>", query_subset$Gene[i],
-          "</td><td><span class='module-tag' style='background-color:", query_subset$Module[i], ";'>",
-          query_subset$Module[i], "</span></td></tr>\n"
-        )
-      }
+      # Vectorized HTML row generation
+      qs_rows <- sprintf(
+        "<tr class='query'><td>%s</td><td><span class='module-tag' style='background-color:%s;'>%s</span></td></tr>",
+        query_subset$Gene, query_subset$Module, query_subset$Module
+      )
+      html_content <- paste0(html_content, paste0(qs_rows, collapse = "\n"), "\n")
       
       html_content <- paste0(html_content, "</table>\n</body>\n</html>")
       
@@ -296,23 +295,18 @@ calculate_module_eigengenes <- function(data_matrix, module_colors, output_dir, 
             "<h1>", gene_group, " - Module Eigengene Correlations</h1>\n",
             "<table>\n<tr><th></th>"
           )
-          for (col in colnames(ME_cor)) {
-            html_content <- paste0(html_content, "<th>", col, "</th>")
-          }
-          html_content <- paste0(html_content, "</tr>\n")
-          for (i in seq_len(nrow(ME_cor))) {
-            html_content <- paste0(html_content, "<tr><th>", rownames(ME_cor)[i], "</th>")
-            for (j in seq_len(ncol(ME_cor))) {
-              val <- round(ME_cor[i, j], 2)
-              # Color based on correlation
-              if (val > 0.5) bg <- "#f4a582"
-              else if (val < -0.5) bg <- "#92c5de"
-              else bg <- "#f7f7f7"
-              html_content <- paste0(html_content, 
-                "<td style='background-color:", bg, ";'>", val, "</td>")
-            }
-            html_content <- paste0(html_content, "</tr>\n")
-          }
+          html_content <- paste0(html_content,
+            paste0("<th>", colnames(ME_cor), "</th>", collapse = ""),
+            "</tr>\n")
+          # Vectorized: build all rows at once using sprintf + apply
+          me_rounded <- round(ME_cor, 2)
+          me_bg <- ifelse(me_rounded > 0.5, "#f4a582",
+                          ifelse(me_rounded < -0.5, "#92c5de", "#f7f7f7"))
+          me_rows <- vapply(seq_len(nrow(ME_cor)), function(i) {
+            cells <- sprintf("<td style='background-color:%s;'>%s</td>", me_bg[i, ], me_rounded[i, ])
+            paste0("<tr><th>", rownames(ME_cor)[i], "</th>", paste0(cells, collapse = ""), "</tr>")
+          }, character(1))
+          html_content <- paste0(html_content, paste0(me_rows, collapse = "\n"), "\n")
           html_content <- paste0(html_content, "</table>\n</body>\n</html>")
           writeLines(html_content, file.path(output_dir, paste0(gene_group, "_eigengene_correlations.html")))
         }
@@ -757,24 +751,24 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     # Sort to show query genes first
     gene_info <- gene_info[order(-gene_info$Is_Query_Gene, gene_info$Module), ]
     
-    write.table(gene_info, file.path(output_dir, paste0(gene_group, "_module_assignments.tsv")),
-                sep = "\t", row.names = FALSE, quote = FALSE)
+    data.table::fwrite(gene_info, file.path(output_dir, paste0(gene_group, "_module_assignments.tsv")),
+                       sep = "\t", quote = FALSE)
     
     # ===== STEP 9: Query gene module summary =====
     query_gene_info <- gene_info[gene_info$Is_Query_Gene, ]
     cat("  Query genes module distribution:\n")
     print(table(query_gene_info$Module))
     
-    write.table(query_gene_info, 
-                file.path(output_dir, paste0(gene_group, "_query_genes_modules.tsv")),
-                sep = "\t", row.names = FALSE, quote = FALSE)
+    data.table::fwrite(query_gene_info,
+                       file.path(output_dir, paste0(gene_group, "_query_genes_modules.tsv")),
+                       sep = "\t", quote = FALSE)
     
     # ===== STEP 10: Hub genes =====
     hubs <- identify_hub_genes(gene_info)
     # Mark query genes in hub list
     hubs$Is_Query_Gene <- hubs$Gene %in% query_genes_matched
-    write.table(hubs, file.path(output_dir, paste0(gene_group, "_hub_genes.tsv")),
-                sep = "\t", row.names = FALSE, quote = FALSE)
+    data.table::fwrite(hubs, file.path(output_dir, paste0(gene_group, "_hub_genes.tsv")),
+                       sep = "\t", quote = FALSE)
     
     # ===== STEP 11: Compute correlation matrix (once, reuse in Steps 11-13) =====
     cat("  Computing gene-gene correlation matrix...\n")
@@ -808,9 +802,9 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     coexpr_results <- do.call(rbind, coexpr_list)
     
     if (nrow(coexpr_results) > 0) {
-      write.table(coexpr_results, 
-                  file.path(output_dir, paste0(gene_group, "_coexpressed_genes.tsv")),
-                  sep = "\t", row.names = FALSE, quote = FALSE)
+      data.table::fwrite(coexpr_results,
+                         file.path(output_dir, paste0(gene_group, "_coexpressed_genes.tsv")),
+                         sep = "\t", quote = FALSE)
     }
     
     # ===== STEP 13: Export RAW RESULTS for downstream analysis =====
@@ -823,16 +817,16 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     cor_df <- as.data.frame(cor_matrix)
     cor_df$Gene <- rownames(cor_matrix)
     cor_df <- cor_df[, c("Gene", setdiff(names(cor_df), "Gene"))]  # Move Gene to first column
-    write.table(cor_df, file.path(raw_results_dir, paste0(gene_group, "_correlation_matrix.tsv")),
-                sep = "\t", row.names = FALSE, quote = FALSE)
+    data.table::fwrite(cor_df, file.path(raw_results_dir, paste0(gene_group, "_correlation_matrix.tsv")),
+                       sep = "\t", quote = FALSE)
     
     # 13b: Save module eigengenes
     cat("    Saving module eigengenes...\n")
     me_df <- as.data.frame(MEs)
     me_df$Sample <- rownames(MEs)
     me_df <- me_df[, c("Sample", setdiff(names(me_df), "Sample"))]
-    write.table(me_df, file.path(raw_results_dir, paste0(gene_group, "_module_eigengenes.tsv")),
-                sep = "\t", row.names = FALSE, quote = FALSE)
+    data.table::fwrite(me_df, file.path(raw_results_dir, paste0(gene_group, "_module_eigengenes.tsv")),
+                       sep = "\t", quote = FALSE)
     
     # 13c: Save network as RDS for complete reproducibility
     cat("    Saving network object (RDS)...\n")
@@ -859,16 +853,16 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
                 ncol(data_matrix), length(query_genes_matched)),
       stringsAsFactors = FALSE
     )
-    write.table(params_summary, file.path(raw_results_dir, paste0(gene_group, "_parameters.tsv")),
-                sep = "\t", row.names = FALSE, quote = FALSE)
+    data.table::fwrite(params_summary, file.path(raw_results_dir, paste0(gene_group, "_parameters.tsv")),
+                       sep = "\t", quote = FALSE)
     
     # 13g: Save data matrix used (expression values)
     cat("    Saving expression matrix...\n")
     expr_df <- as.data.frame(t(data_matrix))  # Genes as rows
     expr_df$Gene <- rownames(expr_df)
     expr_df <- expr_df[, c("Gene", setdiff(names(expr_df), "Gene"))]
-    write.table(expr_df, file.path(raw_results_dir, paste0(gene_group, "_expression_matrix.tsv")),
-                sep = "\t", row.names = FALSE, quote = FALSE)
+    data.table::fwrite(expr_df, file.path(raw_results_dir, paste0(gene_group, "_expression_matrix.tsv")),
+                       sep = "\t", quote = FALSE)
     
     cat("  Raw results saved to:", raw_results_dir, "\n")
     
