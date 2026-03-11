@@ -74,23 +74,27 @@ load_samples_from_csv() {
     local csv_dir="$1"
     local -n sample_ids_ref=$2
     local -n srr_to_organ_ref=$3
-    
+
     if [[ ! -d "$csv_dir" ]]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: SRR_csv directory not found: $csv_dir"
         return 1
     fi
-    
+
+    # O(1) dedup via associative array (replaces O(n) string-scan per entry)
+    local -A _seen=()
+
     # Sort CSV files for deterministic processing order across filesystems
     while IFS= read -r csv_file; do
         [[ ! -f "$csv_file" ]] && continue
         while IFS=',' read -r srr_id organ notes || [[ -n "$srr_id" ]]; do
             # Skip header and comments
             [[ "$srr_id" =~ ^#.*$ || "$srr_id" == "SRR_ID" || -z "$srr_id" ]] && continue
-            srr_id=$(echo "$srr_id" | tr -d '[:space:]')
-            organ=$(echo "$organ" | tr -d '[:space:]')
+            srr_id="${srr_id//[[:space:]]/}"
+            organ="${organ//[[:space:]]/}"
 
-            # Add if not already present
-            if [[ ! " ${sample_ids_ref[*]} " =~ " ${srr_id} " ]]; then
+            # Add if not already present (O(1) hash lookup)
+            if [[ -z "${_seen[$srr_id]+x}" ]]; then
+                _seen["$srr_id"]=1
                 sample_ids_ref+=("$srr_id")
                 srr_to_organ_ref["$srr_id"]="$organ"
             fi
@@ -123,9 +127,12 @@ if [[ -n "${SRR_COMBINED_LIST_STR:-}" ]]; then
     
     # Use CONFIGURED_SRRS order (preserves CSV file order)
     # Only include samples that exist in SAMPLE_IDS (have data files)
+    # Build O(1) lookup set from SAMPLE_IDS
+    declare -A _sample_set=()
+    for srr in "${SAMPLE_IDS[@]}"; do _sample_set["$srr"]=1; done
     declare -a FILTERED_SAMPLE_IDS=()
     for srr in "${CONFIGURED_SRRS[@]}"; do
-        if [[ " ${SAMPLE_IDS[*]} " =~ " ${srr} " ]]; then
+        if [[ -n "${_sample_set[$srr]+x}" ]]; then
             FILTERED_SAMPLE_IDS+=("$srr")
         fi
     done
@@ -180,26 +187,28 @@ merge_group_counts() {
     local tmpdir
     tmpdir=$(mktemp -d)
     # NOTE: Do NOT use 'trap ... RETURN' here. This function is called from
-    # build_full_transcriptome_matrix() which also sets a RETURN trap.
-    # In bash, nested RETURN traps replace each other, causing the outer
-    # function to reference $tmpdir (unbound) instead of its own $tmp_csv.
+    # build_full_transcriptome_matrix(), and in bash nested RETURN traps
+    # replace each other — the inner trap would clobber the outer, causing
+    # unbound-variable errors under set -u. Use explicit rm at each exit.
 
-    # Collect abundance files
-    local files=()
+    # Collect abundance files and build SRR→file map (O(n) instead of O(n²) nested loops)
+    local -A srr_to_file=()
+    local -a processed_srrs=()
     local files_found=0
     for srr in "${SAMPLE_IDS[@]}"; do
         local file_path="$INPUTS_DIR/$MASTER_REFERENCE/$srr/${srr}_${MASTER_REFERENCE}${ABUNDANCE_SUFFIX}"
         if [[ -f "$file_path" ]]; then
-            files+=("$file_path")
-            ((files_found++))
+            srr_to_file["$srr"]="$file_path"
+            processed_srrs+=("$srr")
+            files_found=$((files_found + 1))
         else
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: File not found: $file_path"
         fi
     done
-    
+
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Found $files_found abundance files"
-    
-    if [[ ${#files[@]} -eq 0 ]]; then
+
+    if [[ $files_found -eq 0 ]]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: No abundance files found for gene group '$gene_group'"
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Hint: MASTER_REFERENCE='$MASTER_REFERENCE' must match the fasta_tag used during M2 alignment"
         rm -rf "$tmpdir"
@@ -222,22 +231,12 @@ merge_group_counts() {
         local COUNT_COL_VAR="${count_type^^}_COL"
         local COUNT_COL="${!COUNT_COL_VAR}"
 
-        # Extract count data from each sample file
+        # Extract count data from each sample file (O(1) lookup via srr_to_file map)
         local sample_files=()
 
-        for srr in "${SAMPLE_IDS[@]}"; do
-            local sample_file=""
-            for f in "${files[@]}"; do
-                if [[ "$(basename "$f")" == "${srr}_"* ]]; then
-                    sample_file="$f"
-                    break
-                fi
-            done
-            
-            if [[ -n "$sample_file" ]]; then
-                tail -n +2 "$sample_file" | cut -f"$GENENAME_COL","$COUNT_COL" > "$tmpdir/${srr}.txt"
-                sample_files+=("$tmpdir/${srr}.txt")
-            fi
+        for srr in "${processed_srrs[@]}"; do
+            tail -n +2 "${srr_to_file[$srr]}" | cut -f"$GENENAME_COL","$COUNT_COL" > "$tmpdir/${srr}.txt"
+            sample_files+=("$tmpdir/${srr}.txt")
         done
 
         if [[ ${#sample_files[@]} -eq 0 ]]; then
@@ -251,16 +250,11 @@ merge_group_counts() {
 
         printf "%s\n" "${sample_files[@]}" > "$tmpdir/sample_files_list.txt"
         
-        # Create matrix with SRR headers
+        # Create matrix with SRR headers (direct iteration, no nested search)
         {
             printf "GeneName"
-            for srr in "${SAMPLE_IDS[@]}"; do
-                for f in "${files[@]}"; do
-                    if [[ "$(basename "$f")" == "${srr}_"* ]]; then
-                        printf "\t%s" "$srr"
-                        break
-                    fi
-                done
+            for srr in "${processed_srrs[@]}"; do
+                printf "\t%s" "$srr"
             done
             printf "\n"
 
@@ -274,14 +268,8 @@ merge_group_counts() {
         
         {
             printf "GeneName"
-            for srr in "${SAMPLE_IDS[@]}"; do
-                for f in "${files[@]}"; do
-                    if [[ "$(basename "$f")" == "${srr}_"* ]]; then
-                        local organ="${SRR_TO_ORGAN[$srr]:-Unknown}"
-                        printf "\t%s" "$organ"
-                        break
-                    fi
-                done
+            for srr in "${processed_srrs[@]}"; do
+                printf "\t%s" "${SRR_TO_ORGAN[$srr]:-Unknown}"
             done
             printf "\n"
 

@@ -79,14 +79,20 @@ load_samples_from_csv() {
         return 1
     fi
 
+    # O(1) dedup via associative array (replaces O(n) string-scan per entry)
+    local -A _seen=()
+
     # Sort CSV files for deterministic processing order across filesystems
     while IFS= read -r csv_file; do
         [[ ! -f "$csv_file" ]] && continue
         while IFS=',' read -r srr_id organ notes || [[ -n "$srr_id" ]]; do
             [[ "$srr_id" =~ ^#.*$ || "$srr_id" == "SRR_ID" || -z "$srr_id" ]] && continue
-            srr_id=$(echo "$srr_id" | tr -d '[:space:]')
-            organ=$(echo "$organ" | tr -d '[:space:]')
-            if [[ ! " ${sample_ids_ref[*]} " =~ " ${srr_id} " ]]; then
+            srr_id="${srr_id//[[:space:]]/}"
+            organ="${organ//[[:space:]]/}"
+
+            # Add if not already present (O(1) hash lookup)
+            if [[ -z "${_seen[$srr_id]+x}" ]]; then
+                _seen["$srr_id"]=1
                 sample_ids_ref+=("$srr_id")
                 srr_to_organ_ref["$srr_id"]="$organ"
             fi
@@ -112,9 +118,12 @@ if [[ -n "${SRR_COMBINED_LIST_STR:-}" ]]; then
         srr_id="${entry%%:*}"
         CONFIGURED_SRRS+=("$srr_id")
     done
+    # Build O(1) lookup set from SAMPLE_IDS
+    declare -A _sample_set=()
+    for srr in "${SAMPLE_IDS[@]}"; do _sample_set["$srr"]=1; done
     declare -a FILTERED_SAMPLE_IDS=()
     for srr in "${CONFIGURED_SRRS[@]}"; do
-        if [[ " ${SAMPLE_IDS[*]} " =~ " ${srr} " ]]; then
+        if [[ -n "${_sample_set[$srr]+x}" ]]; then
             FILTERED_SAMPLE_IDS+=("$srr")
         fi
     done
@@ -157,16 +166,21 @@ merge_group_counts() {
 
     local tmpdir
     tmpdir=$(mktemp -d)
-    # Clean up tmpdir on function return. Using a subshell-safe cleanup that also
-    # handles early returns (e.g., no abundance files found).
-    trap 'rm -rf "$tmpdir"; trap - RETURN' RETURN
+    # NOTE: Do NOT use 'trap ... RETURN' here. This function is called from
+    # build_full_transcriptome_matrix(), and in bash nested RETURN traps
+    # replace each other — the inner trap would clobber the outer, causing
+    # unbound-variable errors under set -u. Use explicit rm at each exit.
 
-    # Count available abundance files (paths are constructed directly per-sample)
+    # Collect abundance files and build SRR→file map (O(n) instead of re-checking per count_type)
+    local -A srr_to_file=()
+    local -a processed_srrs=()
     local files_found=0
     for srr in "${SAMPLE_IDS[@]}"; do
         local file_path="$INPUTS_DIR/$MASTER_REFERENCE/$srr/${srr}_${MASTER_REFERENCE}${ABUNDANCE_SUFFIX}"
         if [[ -f "$file_path" ]]; then
-            (( files_found++ )) || true
+            srr_to_file["$srr"]="$file_path"
+            processed_srrs+=("$srr")
+            files_found=$((files_found + 1))
         else
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: File not found: $file_path"
         fi
@@ -176,40 +190,44 @@ merge_group_counts() {
 
     if [[ $files_found -eq 0 ]]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: No abundance files found for $gene_group"
+        rm -rf "$tmpdir"
         return 1
     fi
 
     # Extract gene names from reference CSV (first column is Gene_ID)
-    tail -n +2 "${ref_csv}" | cut -d',' -f1 > "$tmpdir/gene_names.txt"
-    echo "Gene names extracted: $(grep -c . "$tmpdir/gene_names.txt") lines."
+    tail -n +2 "${ref_csv}" | cut -d',' -f1 > "$tmpdir/gene_names.txt" \
+        || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: Failed to extract gene names from $ref_csv"; rm -rf "$tmpdir"; return 1; }
+    local gene_name_count
+    gene_name_count=$(grep -c . "$tmpdir/gene_names.txt" || true)
+    if [[ "$gene_name_count" -eq 0 ]]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: No genes found in reference CSV: $ref_csv"
+        rm -rf "$tmpdir"
+        return 1
+    fi
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gene names extracted: $gene_name_count lines."
 
     for count_type in coverage fpkm tpm; do
         local COUNT_COL_VAR="${count_type^^}_COL"
         local COUNT_COL="${!COUNT_COL_VAR}"
 
+        # Extract count data from each sample file (O(1) lookup via srr_to_file map)
         local -a sample_files=()
-        local -a processed_srrs=()
 
-        for srr in "${SAMPLE_IDS[@]}"; do
-            # Construct path directly — no need to scan files[] array
-            local sample_file="$INPUTS_DIR/$MASTER_REFERENCE/$srr/${srr}_${MASTER_REFERENCE}${ABUNDANCE_SUFFIX}"
-            if [[ -f "$sample_file" ]]; then
-                tail -n +2 "$sample_file" | cut -f"$GENENAME_COL","$COUNT_COL" > "$tmpdir/${srr}.txt"
-                sample_files+=("$tmpdir/${srr}.txt")
-                processed_srrs+=("$srr")
-            fi
+        for srr in "${processed_srrs[@]}"; do
+            tail -n +2 "${srr_to_file[$srr]}" | cut -f"$GENENAME_COL","$COUNT_COL" > "$tmpdir/${srr}.txt"
+            sample_files+=("$tmpdir/${srr}.txt")
         done
+
+        if [[ ${#sample_files[@]} -eq 0 ]]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: No sample files for $count_type in $gene_group, skipping matrix"
+            continue
+        fi
 
         # NOTE: Filename uses "geneName" (camelCase) while the TSV header column is "GeneName" (PascalCase).
         # build_input_path() in 0_shared_config.R maps gene_type=="Shortened_Name" -> "geneName" to match this convention.
         local output_geneName_SRR_tsv="$OUT_DIR/$group_name/${group_name}_${count_type}_counts_geneName_SRR${MASTER_SUFFIX}.tsv"
 
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Creating SRR matrix: $(basename "$output_geneName_SRR_tsv")"
-
-        if [[ ${#sample_files[@]} -eq 0 ]]; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: No sample files for $count_type in $gene_group, skipping matrix"
-            continue
-        fi
 
         printf "%s\n" "${sample_files[@]}" > "$tmpdir/sample_files_list.txt"
 
@@ -220,7 +238,7 @@ merge_group_counts() {
             done
             printf "\n"
             python3 "$UTILITIES_DIR/matrix_builder.py" "$tmpdir/gene_names.txt" "$tmpdir/sample_files_list.txt"
-        } > "$output_geneName_SRR_tsv" || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: matrix_builder.py failed for SRR matrix: $group_name"; return 1; }
+        } > "$output_geneName_SRR_tsv" || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: matrix_builder.py failed for SRR matrix: $group_name"; rm -rf "$tmpdir"; return 1; }
 
         local output_geneName_Organ_tsv="$OUT_DIR/$group_name/${group_name}_${count_type}_counts_geneName_Organ${MASTER_SUFFIX}.tsv"
 
@@ -229,16 +247,17 @@ merge_group_counts() {
         {
             printf "GeneName"
             for srr in "${processed_srrs[@]}"; do
-                local organ="${SRR_TO_ORGAN[$srr]:-Unknown}"
-                printf "\t%s" "$organ"
+                printf "\t%s" "${SRR_TO_ORGAN[$srr]:-Unknown}"
             done
             printf "\n"
             python3 "$UTILITIES_DIR/matrix_builder.py" "$tmpdir/gene_names.txt" "$tmpdir/sample_files_list.txt"
-        } > "$output_geneName_Organ_tsv" || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: matrix_builder.py failed for Organ matrix: $group_name"; return 1; }
+        } > "$output_geneName_Organ_tsv" || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: matrix_builder.py failed for Organ matrix: $group_name"; rm -rf "$tmpdir"; return 1; }
 
         rm -f "${sample_files[@]}"
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Completed $count_type matrix generation"
     done
+
+    rm -rf "$tmpdir"
 
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Completed processing for $group_name"
 }
@@ -261,7 +280,8 @@ build_full_transcriptome_matrix() {
     # union keeps this robust if any file is truncated or filtered.
     local tmp_csv
     tmp_csv=$(mktemp --suffix=.csv)
-    trap 'rm -f "$tmp_csv"' RETURN
+    # NOTE: Do NOT use 'trap ... RETURN' here — merge_group_counts() is called
+    # below, and nested RETURN traps clobber each other in bash. Use explicit rm.
     echo "Gene_ID" > "$tmp_csv"
 
     local files_found=0
@@ -275,6 +295,7 @@ build_full_transcriptome_matrix() {
 
     if [[ "$files_found" -eq 0 ]]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: No abundance files found - skipping full-transcriptome matrix"
+        rm -f "$tmp_csv"
         return 1
     fi
 
@@ -286,7 +307,7 @@ build_full_transcriptome_matrix() {
     mv "$tmp_dedup" "$tmp_csv"
 
     local gene_count
-    gene_count=$(tail -n +2 "$tmp_csv" | grep -c .)
+    gene_count=$(tail -n +2 "$tmp_csv" | grep -c . || true)
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Full transcriptome: $gene_count genes (union from $files_found samples)"
 
     # Reuse merge_group_counts with MASTER_REFERENCE as the gene group name
@@ -295,6 +316,7 @@ build_full_transcriptome_matrix() {
     else
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Failed to build full-transcriptome matrix"
     fi
+    rm -f "$tmp_csv"
 }
 
 # ===============================================
