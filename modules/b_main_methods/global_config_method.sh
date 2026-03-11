@@ -175,13 +175,17 @@ set_fasta_output_dirs() {
 	HISAT2_REF_GUIDED_ROOT="$ALIGNMENT_RESULTS_ROOT/M1_HISAT2_RefGuided/HISAT2_WD/$fasta_tag"
 	HISAT2_REF_GUIDED_INDEX_DIR="$HISAT2_REF_GUIDED_ROOT/index"
 	STRINGTIE_HISAT2_REF_GUIDED_ROOT="$ALIGNMENT_RESULTS_ROOT/M1_HISAT2_RefGuided/stringtie_WD/$fasta_tag"
-	HISAT2_REF_GUIDED_MATRIX_ROOT="$POST_PROCESSING_ROOT/M1_HISAT2_RefGuided/count_matrices_from_stringtie/$fasta_tag"
+	# Matrix root does NOT include fasta_tag — stringtie_matrix_builder.sh writes
+	# gene-group folders directly under count_matrices_from_stringtie/
+	HISAT2_REF_GUIDED_MATRIX_ROOT="$POST_PROCESSING_ROOT/M1_HISAT2_RefGuided/count_matrices_from_stringtie"
 
 	# Method 2: HISAT2 De Novo
 	HISAT2_DE_NOVO_ROOT="$ALIGNMENT_RESULTS_ROOT/M2_HISAT2_DeNovo/HISAT2_WD/$fasta_tag"
 	HISAT2_DE_NOVO_INDEX_DIR="$HISAT2_DE_NOVO_ROOT/index"
 	STRINGTIE_HISAT2_DE_NOVO_ROOT="$ALIGNMENT_RESULTS_ROOT/M2_HISAT2_DeNovo/stringtie_WD/$fasta_tag"
-	HISAT2_DE_NOVO_MATRIX_ROOT="$POST_PROCESSING_ROOT/M2_HISAT2_DeNovo/count_matrices_from_stringtie/$fasta_tag"
+	# Matrix root does NOT include fasta_tag — stringtie_matrix_builder.sh writes
+	# gene-group folders directly under count_matrices_from_stringtie/
+	HISAT2_DE_NOVO_MATRIX_ROOT="$POST_PROCESSING_ROOT/M2_HISAT2_DeNovo/count_matrices_from_stringtie"
 
 	# Method 3: STAR Alignment
 	STAR_ALIGN_ROOT="$ALIGNMENT_RESULTS_ROOT/M3_STAR_Align"
