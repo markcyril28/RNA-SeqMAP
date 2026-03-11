@@ -44,7 +44,7 @@ CLEAR_OUTPUT_FOLDER="TRUE"
 #
 # Reference → Source files:
 #   Eggplant_V4.1  →  inputs/fasta/reference_genomes/Eggplant_V4.1.fa
-#                      inputs/gtf/reference/Eggplant_V4.1_function_IPR_final.gtf
+#                      inputs/gtf/reference/Eggplant_V4.1_function_IPR_final_stringtie.gtf
 
 MASTER_REFERENCES=(
     "Eggplant_V4.1"
@@ -59,11 +59,11 @@ GENE_GROUPS=(
     #"SmelDMPs"
     #"SmelDMPs_with_2_18s_rRNA"
     #"SmelDMPs_with_SmelCyclo"
-    #"SmelGRF-GIFs"              # Needs stringtie_matrix_builder.sh first
-    #"SmelGRF-GIFs_with_1_18s_rRNA"
+    #"SmelGRF-GIF"              # Needs stringtie_matrix_builder.sh first
+    #"SmelGRF-GIF_with_1_18s_rRNA"
     #"SmelGRFs"
-    #"SmelGIFs"
-    #"Selected_GRF_GIF_Genes_vAll_GIFs"
+    #"SmelGIF"
+    #"Selected_GRF_GIF_Genes_vAll_GIF"
 )
 
 # ==============================================================================

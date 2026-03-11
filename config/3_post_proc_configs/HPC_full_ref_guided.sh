@@ -20,7 +20,7 @@
 # ==============================================================================
 
 THREADS=64
-ENABLE_GPU="false"
+ENABLE_GPU="FALSE"
 ENABLE_GNU_PARALLEL="TRUE"
 DESIRED_CPU_PER_JOB=4
 AVAILABLE_RAM_GB=32
@@ -54,11 +54,11 @@ GENE_GROUPS=(
     #"SmelDMPs"
     #"SmelDMPs_with_2_18s_rRNA"
     #"SmelDMPs_with_SmelCyclo"
-    #"SmelGRF-GIFs"              # Needs stringtie_matrix_builder.sh first
-    #"SmelGRF-GIFs_with_1_18s_rRNA"
+    #"SmelGRF-GIF"              # Needs stringtie_matrix_builder.sh first
+    #"SmelGRF-GIF_with_1_18s_rRNA"
     #"SmelGRFs"
-    #"SmelGIFs"
-    #"Selected_GRF_GIF_Genes_vAll_GIFs"
+    #"SmelGIF"
+    #"Selected_GRF_GIF_Genes_vAll_GIF"
 )
 
 # ==============================================================================

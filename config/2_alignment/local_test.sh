@@ -10,6 +10,7 @@ JOBS=2									# Parallel jobs for GNU Parallel
 USE_GNU_PARALLEL="FALSE"                 # TRUE/FALSE for GNU Parallel
 keep_bam_global="n"                     # y=keep BAM files, n=delete after
 STAR_READ_LENGTH=89                    # Actual read length detected from FASTQ (89 bp)
+export STAR_READ_LENGTH
 
 # Pipeline Stages (comment/uncomment to enable/disable)
 PIPELINE_STAGES=(
@@ -63,9 +64,6 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 # INPUT FILES AND DATA SOURCES
 # ==============================================================================
 
-# Legacy GTF and FASTA references (commented out)
-#All_SmelGIF_GTF_FILE="inputs/All_SmelDMP_Head_Gene_Name_v4.gtf"
-Eggplant_V4_1_transcripts_function_FASTA_FILE="inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
 decoy="inputs/fasta/experimental/TEST.fasta"
 gtf_file="inputs/gtf/reference/Eggplant_V4.1_function_IPR_final_stringtie.gtf"
 
@@ -119,10 +117,10 @@ SRR_LIST_SAMN28540077=(
 	SRR20722232	# Mature_fruits (10 GB file); corrected.
 	SRR20722226 # Young_fruits
 	SRR20722234	# Flowers 
-	SRR20722228	# sepals (too large; not included)
-	SRR4243802 # Buds, Adopted Dataset from ID: PRJNA341784 
-	SRR20722233	# leaf_buds 
-	SRR20722230	# mature_leaves (14 GB file; not included)
+	SRR20722228	# sepals (large file)
+	SRR4243802 # Buds, Adopted Dataset from ID: PRJNA341784
+	SRR20722233	# leaf_buds
+	SRR20722230	# mature_leaves (14 GB file)
 	SRR20722227	# stems
 	SRR20722229	# roots
 )
@@ -132,10 +130,10 @@ SRR_LIST_SAMN28540068=(
 	SRR20722387 # mature_fruits
 	#SRR3884597 	# Flower — duplicate: already in SRR_LIST_PRJNA328564
 	SRR20722297 # flower_buds
-	SRR20722385 # sepals (not included)
-	SRR20722296 # leaf_buds 
-	SRR20722386 # mature_leaves (not included)
-	SRR20722383 # young_leaves (not included)
+	SRR20722385 # sepals
+	SRR20722296 # leaf_buds
+	SRR20722386 # mature_leaves
+	SRR20722383 # young_leaves
 	SRR20722384 # stems
 	SRR31755282 # Roots (https://www.ncbi.nlm.nih.gov/Traces/study/?acc=SRP552204&o=acc_s%3Aa)
 )
@@ -179,10 +177,7 @@ OTHER_SRR_LIST=(
 
 	#PRJNA341784 # Flower buds lang (https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA341784&o=acc_s%3Aa)
 	#PRJNA477924 # Leaf and Root (https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA477924&o=acc_s%3Aa)
-	 # Leaves
-	 # Stems
-	 # Radicles
-	
+
 	# Add other SRR IDs here if needed
 )
 
@@ -198,8 +193,8 @@ SRR_COMBINED_LIST=(
 # DIRECTORY STRUCTURE AND OUTPUT PATHS
 # ==============================================================================
 
-POST_PROC_ROOT="3_POST_PROC"
-export POST_PROC_ROOT
+POST_PROCESSING_ROOT="3_POST_PROC"
+export POST_PROCESSING_ROOT
 
 # Create required directories
 mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT" \

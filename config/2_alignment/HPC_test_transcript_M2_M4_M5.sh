@@ -101,8 +101,8 @@ SRR_COMBINED_LIST=(
 # DIRECTORY STRUCTURE AND OUTPUT PATHS
 # ==============================================================================
 
-POST_PROC_ROOT="3_POST_PROC"
-export POST_PROC_ROOT
+POST_PROCESSING_ROOT="3_POST_PROC"
+export POST_PROCESSING_ROOT
 
 # ==============================================================================
 # CLEANUP OPTIONS AND TESTING ESSENTIALS
