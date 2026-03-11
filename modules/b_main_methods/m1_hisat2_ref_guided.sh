@@ -167,7 +167,7 @@ hisat2_ref_guided_pipeline() {
 						-U "$trimmed1" -S "$sam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
 					align_exit=${PIPESTATUS[0]}
 				fi
-				[[ $align_exit -ne 0 ]] && { _parallel_log HISAT2_RG "$SRR" ERROR "HISAT2 failed (exit=$align_exit)"; return $align_exit; }
+				[[ $align_exit -ne 0 ]] && { _parallel_log HISAT2_RG "$SRR" ERROR "HISAT2 failed (exit=$align_exit)"; rm -f "$sam"; return $align_exit; }
 
 				samtools sort -@ "$threads_per_job" -o "$bam" "$sam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
 				[[ ${PIPESTATUS[0]} -ne 0 ]] && { rm -f "$sam"; _parallel_log HISAT2_RG "$SRR" ERROR "samtools sort failed"; return 1; }
@@ -247,10 +247,23 @@ hisat2_ref_guided_pipeline() {
 						hisat2 -p "${THREADS}" --dta $hisat2_strand_opts -x "$index_prefix" -U "$trimmed1" -S "$sam"
 				fi
 
+				# Verify alignment produced a SAM file before proceeding
+				if [[ ! -s "$sam" ]]; then
+					log_error "[ALIGN] HISAT2 failed to produce SAM for $SRR — skipping sample"
+					rm -f "$sam"
+					continue
+				fi
+
 				log_info "[SAMTOOLS] Converting to sorted BAM..."
 				run_with_space_time_log --input "$sam" --output "$bam" samtools sort -@ "${THREADS}" -o "$bam" "$sam"
 				run_with_space_time_log samtools index -@ "${THREADS}" "$bam"
 				rm -f "$sam"
+
+				# Verify BAM was created before downstream steps
+				if [[ ! -f "$bam" ]]; then
+					log_error "[ALIGN] samtools sort/index failed for $SRR — skipping sample"
+					continue
+				fi
 
 				# Infer strandness once on the first sample
 				if [[ -z "$strandness" && -z "${_m1_strand_inferred:-}" ]]; then
@@ -302,20 +315,32 @@ hisat2_ref_guided_pipeline() {
 	printf '%s' "$prepde_list_content" > "$prepde_sample_list"
 
 	if [[ ! -f "$gene_count_matrix" || "${OVERWRITE_MODE:-skip}" == "overwrite" ]]; then
-		# Detect read length from first available sample (applied to all samples)
-		local read_length=150
+		# Auto-detect read length from first available trimmed FASTQ
+		local read_length=""
 		for SRR in "${rnaseq_list[@]}"; do
 			find_trimmed_fastq "$SRR"
-			if [[ -n "$trimmed1" ]]; then
-				read_length=$(detect_read_length "$trimmed1" 150)
-				break
+			if [[ -n "$trimmed1" && -f "$trimmed1" ]]; then
+				read_length=$(detect_read_length "$trimmed1" 0)
+				if [[ -n "$read_length" && "$read_length" -gt 0 ]]; then
+					break
+				fi
+				read_length=""
 			fi
 		done
-		log_warn "[PREPDE] Using read length $read_length for all samples — verify this matches all datasets in this run"
+		if [[ -z "$read_length" || "$read_length" -eq 0 ]]; then
+			log_error "[PREPDE] Failed to auto-detect read length from any trimmed FASTQ. Cannot run prepDE.py without accurate read length."
+			log_error "[PREPDE] Ensure trimmed FASTQs exist in $TRIM_DIR_ROOT for at least one sample."
+			return 1
+		fi
+		log_info "[PREPDE] Auto-detected read length: ${read_length} bp (from first available trimmed FASTQ)"
 
 		if command -v prepDE.py >/dev/null 2>&1; then
 			run_with_space_time_log prepDE.py -i "$prepde_sample_list" \
 				-g "$gene_count_matrix" -t "$transcript_count_matrix" -l "$read_length"
+			if [[ ! -f "$gene_count_matrix" ]]; then
+				log_error "[PREPDE] prepDE.py did not produce gene count matrix: $gene_count_matrix"
+				return 1
+			fi
 		else
 			log_error "prepDE.py not found"
 			return 1
