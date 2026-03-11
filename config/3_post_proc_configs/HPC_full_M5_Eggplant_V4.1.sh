@@ -59,7 +59,7 @@ GENE_GROUPS=(
     #"SmelGRF-GIF_with_1_18s_rRNA"
     #"SmelGRFs"
     #"SmelGIF"
-    #"Selected_GRF_GIF_Genes_vAll_GIF"
+    "Selected_GRF_GIF_Genes_vAll_GIF"
 )
 
 # ==============================================================================
@@ -67,8 +67,8 @@ GENE_GROUPS=(
 # ==============================================================================
 
 SRR_DATASETS=(
-    "PRJNA328564"             # Main Dataset — Eggplant tissue atlas (full)
-    #"PRJNA328564_selected"
+    #"PRJNA328564"             # Main Dataset — Eggplant tissue atlas (full)
+    "PRJNA328564_selected"
     #"PRJNA865018"            # SET_1: Good Dataset for SmelDMP GEA
     #"PRJNA941250"            # SET_2: Good Dataset for SmelDMP GEA
     #"PRJNA865018_and_PRJNA941250"
@@ -105,9 +105,9 @@ ANALYSES=(
 
     # ---- Statistics ----
     #"Differential_Expression"   # Possible for M5 (tximport counts)
-    "PCA_Dimensionality_Reduction"
-    "Sample_Correlation_Clustering"
-    "Tissue_Specificity"        # Applicable — transcript-level quantification
+    #"PCA_Dimensionality_Reduction"
+    #"Sample_Correlation_Clustering"
+    #"Tissue_Specificity"        # Applicable — transcript-level quantification
     #"Coexpression_using_WGCNA"
     #"Gene_Set_Enrichment"
 )

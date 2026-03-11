@@ -61,8 +61,8 @@ GENE_GROUPS=(
 # ==============================================================================
 
 SRR_DATASETS=(
-    "PRJNA328564"             # Main Dataset — Eggplant tissue atlas (full)
-    #"PRJNA328564_selected"
+    #"PRJNA328564"             # Main Dataset — Eggplant tissue atlas (full)
+    "PRJNA328564_selected"
     #"PRJNA865018"            # SET_1: Good Dataset for SmelDMP GEA
     #"PRJNA941250"            # SET_2: Good Dataset for SmelDMP GEA
     #"PRJNA865018_and_PRJNA941250"

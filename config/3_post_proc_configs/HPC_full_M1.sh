@@ -70,7 +70,7 @@ GENE_GROUPS=(
     #"SmelGRF-GIF_with_1_18s_rRNA"
     #"SmelGRFs"
     #"SmelGIF"
-    #"Selected_GRF_GIF_Genes_vAll_GIF"
+    "Selected_GRF_GIF_Genes_vAll_GIF"
 )
 
 # ==============================================================================

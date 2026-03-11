@@ -7,7 +7,7 @@
 # Runtime Configuration
 THREADS=24                              # Threads for parallel operations
 JOBS=1									# Parallel jobs for GNU Parallel
-USE_GNU_PARALLEL="FALSE"                 # TRUE/FALSE for GNU Parallel
+USE_GNU_PARALLEL="TRUE"                 # TRUE/FALSE for GNU Parallel
 keep_bam_global="n"                     # y=keep BAM files, n=delete after
 STAR_READ_LENGTH=89                      # Actual read length for PRJNA328564 (89 bp)
 export STAR_READ_LENGTH
