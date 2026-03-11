@@ -75,8 +75,17 @@ cat("Found", length(files), "quant.sf files\n")
 # ---------------------------------------------------------------------------
 # Load tx2gene mapping (transcript_id -> gene_id, created from GTF)
 # ---------------------------------------------------------------------------
-tx2gene <- read.delim(tx2gene_file, header = FALSE, stringsAsFactors = FALSE,
-                      col.names = c("TXNAME", "GENEID"))
+# Detect column order: tximport needs c(TXNAME, GENEID)
+# star_alignment_pipeline writes: transcript_id TAB gene_id  (col1=TX, col2=GENE)
+# gene_trans_map fallback writes: gene_id TAB transcript_id  (col1=GENE, col2=TX)
+raw_tx2gene <- read.delim(tx2gene_file, header = FALSE, stringsAsFactors = FALSE,
+                          colClasses = "character")
+if (grepl("gene_trans_map$", tx2gene_file)) {
+  tx2gene <- raw_tx2gene[, c(2, 1), drop = FALSE]
+} else {
+  tx2gene <- raw_tx2gene[, 1:2, drop = FALSE]
+}
+colnames(tx2gene) <- c("TXNAME", "GENEID")
 tx2gene$TXNAME <- trimws(tx2gene$TXNAME)
 tx2gene$GENEID <- trimws(tx2gene$GENEID)
 cat("Loaded tx2gene:", nrow(tx2gene), "entries\n\n")
@@ -85,7 +94,16 @@ cat("Loaded tx2gene:", nrow(tx2gene), "entries\n\n")
 # Import with tximport (gene-level via tx2gene)
 # ---------------------------------------------------------------------------
 cat("Running tximport...\n")
-txi <- tximport(files, type = "salmon", tx2gene = tx2gene, ignoreTxVersion = TRUE)
+txi <- tryCatch(
+  tximport(files, type = "salmon", tx2gene = tx2gene, ignoreTxVersion = TRUE),
+  error = function(e) {
+    stop("tximport failed: ", conditionMessage(e))
+  }
+)
+if (nrow(txi$counts) == 0 || ncol(txi$counts) == 0) {
+  stop("tximport returned empty counts matrix (",
+       nrow(txi$counts), " genes x ", ncol(txi$counts), " samples)")
+}
 cat("Imported:", ncol(txi$counts), "samples,", nrow(txi$counts), "genes\n\n")
 
 # ---------------------------------------------------------------------------
