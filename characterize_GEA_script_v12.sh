@@ -91,11 +91,15 @@ run_all() {
 
 	setup_logging
 	switch_log_stage "1_SRRs"
+	catalog_all_software
 	log_configuration
 	log_step "Script started at: $(date -d @$start_time)"
 
 	log_info "SRR samples to process:"
 	for srr in "${rnaseq_list[@]}"; do log_info "$srr"; done
+
+	# Track method failures for aggregate exit code
+	local method_failures=0
 
 	# --- Preprocessing ---
 	if [[ $RUN_DOWNLOAD_SRR == "TRUE" ]]; then
@@ -137,13 +141,17 @@ run_all() {
 	# --- Alignment Methods ---
 	if [[ $RUN_METHOD_1_HISAT2_REF_GUIDED == "TRUE" ]]; then
 		log_step "STEP 02a: HISAT2 Reference-Guided Pipeline"
-		if [[ -z "$gtf_file" || ! -f "$gtf_file" ]]; then
-			log_error "GTF file required for reference-guided alignment: $gtf_file"
+		if [[ -z "${gtf_file:-}" || ! -f "${gtf_file:-}" ]]; then
+			log_error "GTF file required for reference-guided alignment: ${gtf_file:-<unset>}"
 			log_error "Skipping Method 1 — configure gtf_file variable"
-		elif hisat2_ref_guided_pipeline --FASTA "$fasta" --GTF "$gtf_file" --STRANDNESS FR --RNASEQ_LIST "${rnaseq_list[@]}"; then
+			((method_failures++)) || true
+		elif hisat2_ref_guided_pipeline --FASTA "$fasta" --GTF "$gtf_file" \
+			${HISAT2_STRANDNESS:+--STRANDNESS "$HISAT2_STRANDNESS"} \
+			--RNASEQ_LIST "${rnaseq_list[@]}"; then
 			log_info "Method 1 completed successfully"
 		else
 			log_error "Method 1 failed (exit code: $?) — continuing"
+			((method_failures++)) || true
 		fi
 	fi
 
@@ -153,32 +161,40 @@ run_all() {
 			log_info "Method 2 completed successfully"
 		else
 			log_error "Method 2 failed (exit code: $?) — continuing"
+			((method_failures++)) || true
 		fi
 	fi
 
 	if [[ $RUN_METHOD_3_STAR_ALIGNMENT == "TRUE" ]]; then
 		log_step "STEP 03: STAR Splice-Aware Alignment"
-		star_alignment_pipeline --FASTA "$fasta" --RNASEQ_LIST "${rnaseq_list[@]}" \
-			&& log_info "Method 3 completed successfully" \
-			|| log_error "Method 3 failed (exit code: $?) — continuing"
+		if star_alignment_pipeline --FASTA "$fasta" --RNASEQ_LIST "${rnaseq_list[@]}"; then
+			log_info "Method 3 completed successfully"
+		else
+			log_error "Method 3 failed (exit code: $?) — continuing"
+			((method_failures++)) || true
+		fi
 	fi
 
 	if [[ $RUN_METHOD_4_SALMON_SAF == "TRUE" ]]; then
 		log_step "STEP 04: Salmon SAF Quantification"
-		if [[ ! -f "$decoy" ]]; then
-			log_warn "Genome file '$decoy' not found — skipping Salmon SAF pipeline."
+		if [[ ! -f "${decoy:-}" ]]; then
+			log_warn "Genome file '${decoy:-<unset>}' not found — skipping Salmon SAF pipeline."
+		elif salmon_saf_pipeline --FASTA "$fasta" --GENOME "$decoy" --RNASEQ_LIST "${rnaseq_list[@]}"; then
+			log_info "Method 4 completed successfully"
 		else
-			salmon_saf_pipeline --FASTA "$fasta" --GENOME "$decoy" --RNASEQ_LIST "${rnaseq_list[@]}" \
-				&& log_info "Method 4 completed successfully" \
-				|| log_error "Method 4 failed (exit code: $?) — continuing"
+			log_error "Method 4 failed (exit code: $?) — continuing"
+			((method_failures++)) || true
 		fi
 	fi
 
 	if [[ $RUN_METHOD_5_BOWTIE2_RSEM == "TRUE" ]]; then
 		log_step "STEP 05: Bowtie2 + RSEM Quantification"
-		bowtie2_rsem_pipeline --FASTA "$fasta" --RNASEQ_LIST "${rnaseq_list[@]}" \
-			&& log_info "Method 5 completed successfully" \
-			|| log_error "Method 5 failed (exit code: $?) — continuing"
+		if bowtie2_rsem_pipeline --FASTA "$fasta" --RNASEQ_LIST "${rnaseq_list[@]}"; then
+			log_info "Method 5 completed successfully"
+		else
+			log_error "Method 5 failed (exit code: $?) — continuing"
+			((method_failures++)) || true
+		fi
 	fi
 
 	compare_methods_summary "$fasta_tag"
@@ -189,6 +205,11 @@ run_all() {
 	log_step "Final timing"
 	log_info "Script ended at: $(date -d @$end_time)"
 	log_info "Elapsed time: $(date -u -d @${elapsed} +%H:%M:%S)"
+
+	if [[ $method_failures -gt 0 ]]; then
+		log_error "$method_failures method(s) failed for $fasta_tag"
+	fi
+	return $method_failures
 }
 
 # ==============================================================================
@@ -196,6 +217,20 @@ run_all() {
 # ==============================================================================
 
 [[ ${#CONFIG_FILES[@]} -eq 0 ]] && { echo "ERROR: No configuration files listed in CONFIG_FILES."; exit 1; }
+
+# Cleanup trap: log summary on exit; clean up STAR temp dirs on signal kill
+_pipeline_cleanup() {
+	local rc=$?
+	# Remove any orphan STAR temp directories left by interrupted runs
+	find "${PROJECT_ROOT}" -maxdepth 4 -type d -name '_STARtmp*' -exec rm -rf {} + 2>/dev/null || true
+	if [[ $rc -ne 0 ]]; then
+		echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] Pipeline terminated with exit code $rc" >&2
+	fi
+	echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] Pipeline finished. See logs under: 1_SRRs/logs/ and 2_ALIGNMENT_RESULTs/logs/"
+}
+trap _pipeline_cleanup EXIT
+
+total_failures=0
 
 for config_file in "${CONFIG_FILES[@]}"; do
 	echo ""
@@ -206,6 +241,7 @@ for config_file in "${CONFIG_FILES[@]}"; do
 	[[ -f "$config_file" ]] || { echo "ERROR: Configuration file not found: $config_file"; exit 1; }
 	GENOME_REF_PAIRS=()
 	ALL_FASTA_FILES=()
+	unset gtf_file STAR_TRANSCRIPTOME_FASTA decoy 2>/dev/null || true
 	source "$config_file"
 	set_pipeline_flags
 
@@ -226,13 +262,19 @@ for config_file in "${CONFIG_FILES[@]}"; do
 			_fasta="${_remainder%%|*}"
 			STAR_TRANSCRIPTOME_FASTA="${_remainder#*|}"
 			export gtf_file STAR_TRANSCRIPTOME_FASTA
-			run_all --FASTA "$_fasta" --RNASEQ_LIST "${SRR_COMBINED_LIST[@]}"
+			local _rc=0
+			run_all --FASTA "$_fasta" --RNASEQ_LIST "${SRR_COMBINED_LIST[@]}" || _rc=$?
+			total_failures=$((total_failures + _rc))
 		done
-		unset _pair _remainder _fasta
-	else
+		unset _pair _remainder _fasta gtf_file STAR_TRANSCRIPTOME_FASTA
+	elif [[ ${#ALL_FASTA_FILES[@]} -gt 0 ]]; then
 		for fasta_input in "${ALL_FASTA_FILES[@]}"; do
-			run_all --FASTA "$fasta_input" --RNASEQ_LIST "${SRR_COMBINED_LIST[@]}"
+			local _rc=0
+			run_all --FASTA "$fasta_input" --RNASEQ_LIST "${SRR_COMBINED_LIST[@]}" || _rc=$?
+			total_failures=$((total_failures + _rc))
 		done
+	else
+		log_warn "No GENOME_REF_PAIRS or ALL_FASTA_FILES defined in $config_file — skipping alignment"
 	fi
 
 	# --- Cleanup ---
@@ -248,4 +290,8 @@ for config_file in "${CONFIG_FILES[@]}"; do
 	echo "=============================================================================="
 done
 
+if [[ $total_failures -gt 0 ]]; then
+	echo "PIPELINE COMPLETED WITH $total_failures METHOD FAILURE(S)"
+	exit 1
+fi
 echo "END OF SCRIPT"
