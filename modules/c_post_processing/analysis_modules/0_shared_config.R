@@ -614,16 +614,18 @@ should_skip_existing <- function(output_path, overwrite) {
 # SECTION 5: INITIALIZATION (runs at load time)
 # ===============================================
 
-# Initialize GPU detection
-.gpu_info <- detect_gpu()
-GPU_AVAILABLE <- .gpu_info$available
-GPU_BACKEND <- .gpu_info$backend
-
-# Log GPU status (quieter - only log if GPU is used or explicitly requested)
-if (GPU_AVAILABLE) {
-  message("[GPU] ", .gpu_info$message)
-} else if (ENABLE_GPU && interactive()) {
-  message("[GPU] ", .gpu_info$message)
+# Initialize GPU detection — skip the (slow) nvidia-smi / nvcc probes when
+# the user has explicitly disabled GPU support, saving ~0.5-1s per script load.
+if (ENABLE_GPU) {
+  .gpu_info <- detect_gpu()
+  GPU_AVAILABLE <- .gpu_info$available
+  GPU_BACKEND <- .gpu_info$backend
+  if (GPU_AVAILABLE || interactive()) {
+    message("[GPU] ", .gpu_info$message)
+  }
+} else {
+  GPU_AVAILABLE <- FALSE
+  GPU_BACKEND <- "none"
 }
 
 # Initialize COUNT_TYPES based on current method

@@ -65,19 +65,29 @@ calculate_tau <- function(expression_vector) {
 
 # Calculate tissue specificity for all genes
 calculate_tissue_specificity <- function(data_matrix) {
-  tau_values <- apply(data_matrix, 1, calculate_tau)
-  
-  # Find tissue with max expression
-  max_tissue <- apply(data_matrix, 1, function(x) {
-    if (all(is.na(x)) || max(x, na.rm = TRUE) == 0) return(NA)
-    colnames(data_matrix)[which.max(x)]
-  })
-  
-  # Calculate max expression (guard against all-NA rows returning -Inf)
-  max_expr <- apply(data_matrix, 1, function(x) {
-    val <- max(x, na.rm = TRUE)
-    if (!is.finite(val)) NA_real_ else val
-  })
+  # Vectorized Tau calculation: avoid 3 separate apply() loops
+  data_clean <- data_matrix
+  data_clean[data_clean < 0 | is.na(data_clean)] <- 0
+  row_max <- do.call(pmax, c(as.data.frame(data_clean), na.rm = TRUE))
+  n_tissues <- ncol(data_matrix)
+
+  # Tau = sum(1 - x_i/x_max) / (n - 1), vectorized across all genes
+  valid_rows <- row_max > 0 & is.finite(row_max)
+  tau_values <- rep(NA_real_, nrow(data_matrix))
+  if (any(valid_rows)) {
+    data_norm <- data_clean[valid_rows, , drop = FALSE] / row_max[valid_rows]
+    tau_values[valid_rows] <- rowSums(1 - data_norm, na.rm = TRUE) / (n_tissues - 1)
+    tau_values[valid_rows] <- pmax(0, pmin(1, tau_values[valid_rows]))
+  }
+
+  # Vectorized max tissue (column index of max value per row)
+  max_col_idx <- max.col(data_clean, ties.method = "first")
+  max_tissue <- colnames(data_matrix)[max_col_idx]
+  max_tissue[!valid_rows] <- NA_character_
+
+  # Vectorized max expression
+  max_expr <- row_max
+  max_expr[!valid_rows] <- NA_real_
   
   result <- data.frame(
     Gene = rownames(data_matrix),

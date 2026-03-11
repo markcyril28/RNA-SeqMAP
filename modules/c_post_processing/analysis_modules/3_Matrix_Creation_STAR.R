@@ -49,12 +49,40 @@ results <- list()
 
 # ----- Gene-level (requires tx2gene mapping) --------------------------------
 if (GENERATE_GENE_LEVEL) {
-  tx2gene_files <- list.files(file.path(output_dir, MASTER_REFERENCE),
-                               pattern = "^tx2gene.*\\.tsv$", full.names = TRUE)
+  tx2gene_dir <- file.path(output_dir, MASTER_REFERENCE)
+  tx2gene_files <- list.files(tx2gene_dir, pattern = "^tx2gene.*\\.tsv$", full.names = TRUE)
+
+  # Generate tx2gene from GTF if missing (alignment step may not have been run)
+  if (length(tx2gene_files) == 0) {
+    gtf_candidates <- c(
+      Sys.getenv("STAR_GTF_FILE", unset = ""),
+      file.path(base_dir, "inputs", "gtf", "reference", paste0(MASTER_REFERENCE, ".gtf"))
+    )
+    gtf_file <- Filter(file.exists, gtf_candidates)[1]
+    if (!is.na(gtf_file) && nzchar(gtf_file)) {
+      cat("  Generating tx2gene from GTF:", gtf_file, "\n")
+      dir.create(tx2gene_dir, recursive = TRUE, showWarnings = FALSE)
+      tx2gene_out <- file.path(tx2gene_dir, paste0("tx2gene_", MASTER_REFERENCE, ".tsv"))
+      awk_cmd <- sprintf(
+        "awk '$3==\"transcript\" { tid=\"\"; gid=\"\"; for(i=9;i<=NF;i++) { if($i==\"transcript_id\") { gsub(/[\";]/,\"\",$(i+1)); tid=$(i+1) } if($i==\"gene_id\") { gsub(/[\";]/,\"\",$(i+1)); gid=$(i+1) } } if(tid!=\"\" && gid!=\"\") print tid \"\\t\" gid }' '%s' | sort -u > '%s'",
+        gtf_file, tx2gene_out)
+      system(awk_cmd)
+      if (file.exists(tx2gene_out) && file.size(tx2gene_out) > 0) {
+        tx2gene_files <- tx2gene_out
+        cat("  Created tx2gene mapping:", tx2gene_out, "\n")
+      } else {
+        cat("  Error: Failed to generate tx2gene from GTF\n")
+      }
+    }
+  }
+
   if (length(tx2gene_files) > 0) {
     tx2gene <- read.delim(tx2gene_files[1], header = FALSE,
                           col.names = c("TXNAME", "GENEID"),
                           stringsAsFactors = FALSE)
+    # Pre-strip version suffixes so tximport matching works reliably
+    # (tximport 1.30 strips versions from quant IDs but not from tx2gene)
+    tx2gene$TXNAME <- sub("\\.[0-9]+$", "", tx2gene$TXNAME)
     if (nrow(tx2gene) == 0 || ncol(tx2gene) < 2) {
       cat("  Error: tx2gene file is empty or malformed:", tx2gene_files[1], "\n")
     } else {

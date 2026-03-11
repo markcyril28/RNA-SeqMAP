@@ -329,18 +329,19 @@ identify_hub_genes <- function(gene_info, n_top = N_HUB_GENES) {
   modules <- unique(gene_info$Module)
   modules <- modules[modules != "grey"]
   
-  hub_genes <- data.frame()
-  for (mod in modules) {
+  hub_list <- vector("list", length(modules))
+  for (i in seq_along(modules)) {
+    mod <- modules[i]
     mod_genes <- gene_info[gene_info$Module == mod, ]
     kME_col <- paste0("kME", mod)
     if (kME_col %in% colnames(mod_genes)) {
       mod_genes <- mod_genes[order(-mod_genes[[kME_col]]), ]
       top_n <- min(n_top, nrow(mod_genes))
-      hub_genes <- rbind(hub_genes, mod_genes[1:top_n, ])
+      hub_list[[i]] <- mod_genes[1:top_n, ]
     }
   }
-  
-  return(hub_genes)
+
+  return(do.call(rbind, hub_list))
 }
 
 create_correlation_network <- function(data_matrix, query_genes, output_dir, gene_group,
@@ -680,7 +681,7 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     if (MIN_EXPR_THRESHOLD > 0) {
       raw_data <- validation$data
       # Count how many samples have expression >= threshold for each gene
-      samples_expressed <- apply(raw_data, 1, function(x) sum(x >= MIN_EXPR_THRESHOLD, na.rm = TRUE))
+      samples_expressed <- rowSums(raw_data >= MIN_EXPR_THRESHOLD, na.rm = TRUE)
       
       # Keep genes expressed in at least MIN_EXPR_SAMPLES samples
       # BUT always keep query genes regardless of expression level
@@ -701,8 +702,10 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     # ===== STEP 5: Variance stabilization and filtering =====
     data_log <- log2(validation$data + 1)
     
-    # Filter genes with low variance
-    gene_vars <- apply(data_log, 1, var, na.rm = TRUE)
+    # Filter genes with low variance (vectorized: rowMeans + rowSums avoids apply loop)
+    n_cols <- ncol(data_log)
+    row_means_log <- rowMeans(data_log, na.rm = TRUE)
+    gene_vars <- (rowSums((data_log - row_means_log)^2, na.rm = TRUE)) / (n_cols - 1)
     var_threshold <- quantile(gene_vars, 0.25, na.rm = TRUE)
     
     # IMPORTANT: Always keep query genes even if low variance
@@ -715,7 +718,8 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     # ===== STEP 6: Subsample for speed if too many genes =====
     if (nrow(data_filtered) > TOP_VAR_GENES) {
       # Keep top variable genes BUT always include query genes
-      gene_vars_filtered <- apply(data_filtered, 1, var, na.rm = TRUE)
+      row_means_filt <- rowMeans(data_filtered, na.rm = TRUE)
+      gene_vars_filtered <- (rowSums((data_filtered - row_means_filt)^2, na.rm = TRUE)) / (ncol(data_filtered) - 1)
       top_var_genes <- names(sort(gene_vars_filtered, decreasing = TRUE)[1:TOP_VAR_GENES])
       
       # Ensure query genes are included
@@ -784,23 +788,24 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     # ===== STEP 12: Find genes co-expressed with query genes =====
     cat("  Finding genes co-expressed with query genes...\n")
     
-    coexpr_results <- data.frame()
-    for (qg in query_genes_matched) {
+    coexpr_list <- vector("list", length(query_genes_matched))
+    for (i in seq_along(query_genes_matched)) {
+      qg <- query_genes_matched[i]
       if (qg %in% rownames(cor_matrix)) {
         cors <- cor_matrix[qg, ]
         cors <- cors[names(cors) != qg]  # Remove self-correlation
         top_coexpr <- sort(cors, decreasing = TRUE)[1:min(N_COEXPRESSED_GENES, length(cors))]
-        
-        qg_coexpr <- data.frame(
+
+        coexpr_list[[i]] <- data.frame(
           Query_Gene = qg,
           Coexpressed_Gene = names(top_coexpr),
           Correlation = as.numeric(top_coexpr),
           Is_Also_Query = names(top_coexpr) %in% query_genes_matched,
           stringsAsFactors = FALSE
         )
-        coexpr_results <- rbind(coexpr_results, qg_coexpr)
       }
     }
+    coexpr_results <- do.call(rbind, coexpr_list)
     
     if (nrow(coexpr_results) > 0) {
       write.table(coexpr_results, 

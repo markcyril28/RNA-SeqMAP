@@ -77,6 +77,11 @@ for (.cand in .candidates) {
                      colClasses = c("character", "character"))
   colnames(.t2g) <- c("GENEID", "TXNAME")
   .t2g$GENEID <- trimws(.t2g$GENEID); .t2g$TXNAME <- trimws(.t2g$TXNAME)
+  # Pre-strip version suffixes (e.g. ".1") so tx2gene IDs match quant.sf IDs.
+  # tximport's ignoreTxVersion strips versions from quant.sf but may not fully
+  # apply to tx2gene in all versions, causing "None of the transcripts" errors.
+  .t2g$TXNAME <- sub("\\.[0-9]+$", "", .t2g$TXNAME)
+  .t2g$GENEID <- sub("\\.[0-9]+$", "", .t2g$GENEID)
   .t2g[, c("TXNAME", "GENEID")]
 } else {
   cat("  Warning: tx2gene mapping not found for M4 — gene-level import will be transcript-level\n")
@@ -120,7 +125,9 @@ if (GENERATE_GENE_LEVEL) {
     cat("WARNING: Skipping gene-level import — tx2gene mapping not found.\n")
     cat("  Gene-level matrices require a .gene_trans_map file to aggregate transcripts to genes.\n")
   } else {
-    txi <- import_salmon(quant_dir, SAMPLE_IDS, tx2gene = .tx2gene)
+    txi <- tryCatch(
+      import_salmon(quant_dir, SAMPLE_IDS, tx2gene = .tx2gene),
+      error = function(e) { cat("  Gene-level import error:", e$message, "\n"); NULL })
     if (!is.null(txi)) {
       results$gene_level     <- txi$counts
       results$gene_level_tpm <- txi$abundance

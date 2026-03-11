@@ -204,9 +204,10 @@ gpu_dist <- function(x, method = "euclidean") {
 
 read_count_matrix <- function(file_path) {
   tryCatch({
-    data <- read.table(file_path, header = TRUE, sep = "\t",
-                      stringsAsFactors = FALSE,
-                      na.strings = c("", " ", "NA", "null"))
+    # data.table::fread() is 10-50x faster than read.table() for large matrices
+    data <- data.table::fread(file_path, header = TRUE, sep = "\t",
+                              na.strings = c("", " ", "NA", "null"),
+                              data.table = FALSE)
     if (any(duplicated(data[, 1]))) {
       data[, 1] <- make.unique(as.character(data[, 1]), sep = "_")
     }
@@ -235,8 +236,8 @@ save_matrix_data <- function(data_matrix, output_path, metadata = NULL) {
       stringsAsFactors = FALSE,
       check.names = FALSE
     )
-    write.table(matrix_df, file = paste0(base_path, ".tsv"), 
-                sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE)
+    data.table::fwrite(matrix_df, file = paste0(base_path, ".tsv"),
+                       sep = "\t", quote = FALSE)
     return(TRUE)
   }, error = function(e) {
     cat("Error saving matrix:", e$message, "\n")
@@ -292,24 +293,40 @@ match_gene_ids <- function(gene_list, data_rownames) {
   base_ids <- sub("\\.[0-9]+\\.[0-9]+$", "", data_rownames)
   base_ids <- sub("\\.[0-9]+$", "", base_ids)
 
-  matched <- character(0)
-  for (gene in gene_list) {
-    if (gene %in% data_rownames) {
-      # Exact match
-      matched <- c(matched, gene)
+  # Build lookup: base_id -> data_rownames (vectorized)
+  # Use environment as hash map for O(1) lookups
+  base_to_rows <- new.env(hash = TRUE, parent = emptyenv(), size = length(data_rownames))
+  for (i in seq_along(data_rownames)) {
+    key <- base_ids[i]
+    existing <- base_to_rows[[key]]
+    if (is.null(existing)) {
+      base_to_rows[[key]] <- data_rownames[i]
     } else {
-      # Forward: gene_list ID is a base ID matching data rows with suffixes
-      hits <- data_rownames[base_ids == gene]
-      if (length(hits) > 0) {
+      base_to_rows[[key]] <- c(existing, data_rownames[i])
+    }
+  }
+  rowname_set <- new.env(hash = TRUE, parent = emptyenv(), size = length(data_rownames))
+  for (rn in data_rownames) rowname_set[[rn]] <- TRUE
+
+  # Vectorized: exact matches first
+  exact_mask <- gene_list %in% data_rownames
+  matched <- gene_list[exact_mask]
+
+  # Non-exact: try forward match (gene_list ID is base -> find suffixed data rows)
+  non_exact <- gene_list[!exact_mask]
+  if (length(non_exact) > 0) {
+    for (gene in non_exact) {
+      hits <- base_to_rows[[gene]]
+      if (!is.null(hits)) {
         matched <- c(matched, hits)
       } else {
         # Reverse: strip suffix from gene_list ID to match base-level row IDs
         gene_base <- sub("\\.[0-9]+$", "", gene)
         if (gene_base != gene) {
-          hits2 <- data_rownames[base_ids == gene_base]
-          if (length(hits2) > 0) {
+          hits2 <- base_to_rows[[gene_base]]
+          if (!is.null(hits2)) {
             matched <- c(matched, hits2)
-          } else if (gene_base %in% data_rownames) {
+          } else if (!is.null(rowname_set[[gene_base]])) {
             matched <- c(matched, gene_base)
           }
         }
@@ -350,13 +367,13 @@ preprocess_for_count_type_normalized <- function(data_matrix, count_type) {
   return(data_processed)
 }
 
-preprocess_for_zscore <- function(data_matrix, count_type) {
+preprocess_for_zscore <- function(data_matrix, count_type, .log2_cache = NULL) {
   # Z-score normalization: GLOBAL standardization (across entire matrix)
   # All values scaled using global mean and sd
   # This preserves relative gene stability - housekeeping genes will show consistent values
   # while variable genes will show high/low extremes
   if (is.null(data_matrix) || nrow(data_matrix) == 0) return(NULL)
-  data_norm <- preprocess_for_count_type_normalized(data_matrix, count_type)
+  data_norm <- if (!is.null(.log2_cache)) .log2_cache else preprocess_for_count_type_normalized(data_matrix, count_type)
   if (nrow(data_norm) > 1 && ncol(data_norm) > 1) {
     # Global z-score (preserves relative stability across genes)
     global_mean <- mean(as.matrix(data_norm), na.rm = TRUE)
@@ -369,34 +386,35 @@ preprocess_for_zscore <- function(data_matrix, count_type) {
   return(data_norm)
 }
 
-preprocess_for_zscore_row <- function(data_matrix, count_type) {
+preprocess_for_zscore_row <- function(data_matrix, count_type, .log2_cache = NULL) {
   # Z-score normalization: ROW-WISE (per-gene) standardization
   # Each gene is scaled to its own mean and sd across samples
   # This makes all genes equally visible - good for pattern comparison
   # but hides absolute expression level differences between genes
   if (is.null(data_matrix) || nrow(data_matrix) == 0) return(NULL)
-  data_norm <- preprocess_for_count_type_normalized(data_matrix, count_type)
+  data_norm <- if (!is.null(.log2_cache)) .log2_cache else preprocess_for_count_type_normalized(data_matrix, count_type)
   if (nrow(data_norm) > 1 && ncol(data_norm) > 1) {
     # Row-wise z-score (each gene normalized independently)
+    # Vectorized SD: avoid apply() loop using matrix arithmetic
     row_means <- rowMeans(data_norm, na.rm = TRUE)
-    row_sds <- apply(data_norm, 1, sd, na.rm = TRUE)
+    n_c <- ncol(data_norm)
+    row_sds <- sqrt(rowSums((data_norm - row_means)^2, na.rm = TRUE) / (n_c - 1))
     row_sds[row_sds == 0 | !is.finite(row_sds)] <- 1  # Avoid division by zero
-    data_zscore <- sweep(data_norm, 1, row_means, "-")
-    data_zscore <- sweep(data_zscore, 1, row_sds, "/")
+    data_zscore <- (data_norm - row_means) / row_sds
     data_zscore[is.na(data_zscore) | is.infinite(data_zscore)] <- 0
     return(data_zscore)
   }
   return(data_norm)
 }
 
-preprocess_for_zscore_scaled_to_ten <- function(data_matrix, count_type) {
+preprocess_for_zscore_scaled_to_ten <- function(data_matrix, count_type, .log2_cache = NULL) {
   # Z-score normalization scaled to 0-10 range
   # First applies global z-score (like preprocess_for_zscore), then rescales to 0-10
   # This preserves z-score patterns but with an intuitive 0-10 scale
   if (is.null(data_matrix) || nrow(data_matrix) == 0) return(NULL)
-  
-  # First apply global z-score normalization
-  data_zscore <- preprocess_for_zscore(data_matrix, count_type)
+
+  # First apply global z-score normalization (pass cache to avoid redundant log2)
+  data_zscore <- preprocess_for_zscore(data_matrix, count_type, .log2_cache)
   if (is.null(data_zscore)) return(NULL)
   
   # Then scale z-scores to 0-10 range
@@ -437,7 +455,7 @@ preprocess_for_deseq2_normalized <- function(data_matrix, count_type = "expected
   
   # Calculate size factors (median of ratios for each sample)
   ratios <- sweep(data_clean[valid_genes, , drop = FALSE], 1, geo_means[valid_genes], FUN = "/")
-  size_factors <- apply(ratios, 2, median, na.rm = TRUE)
+  size_factors <- matrixStats::colMedians(ratios, na.rm = TRUE)
   size_factors[size_factors == 0 | !is.finite(size_factors)] <- 1
   
   # Normalize counts by size factors
@@ -450,14 +468,19 @@ preprocess_for_deseq2_normalized <- function(data_matrix, count_type = "expected
   return(data_normalized)
 }
 
-apply_normalization <- function(data_matrix, normalization_scheme, count_type) {
+apply_normalization <- function(data_matrix, normalization_scheme, count_type, .log2_cache = NULL) {
+  # .log2_cache: optional pre-computed log2(data_matrix + 1) to avoid redundant computation
+  # when calling multiple normalization schemes on the same raw data.
   switch(normalization_scheme,
     "raw" = preprocess_for_raw(data_matrix),
-    "count_type_normalized" = preprocess_for_count_type_normalized(data_matrix, count_type),
+    "count_type_normalized" = {
+      if (!is.null(.log2_cache)) .log2_cache
+      else preprocess_for_count_type_normalized(data_matrix, count_type)
+    },
     "deseq2_normalized" = preprocess_for_deseq2_normalized(data_matrix, count_type),
-    "zscore" = preprocess_for_zscore(data_matrix, count_type),
-    "zscore_row" = preprocess_for_zscore_row(data_matrix, count_type),
-    "zscore_scaled_to_ten" = preprocess_for_zscore_scaled_to_ten(data_matrix, count_type),
+    "zscore" = preprocess_for_zscore(data_matrix, count_type, .log2_cache),
+    "zscore_row" = preprocess_for_zscore_row(data_matrix, count_type, .log2_cache),
+    "zscore_scaled_to_ten" = preprocess_for_zscore_scaled_to_ten(data_matrix, count_type, .log2_cache),
     "cpm" = preprocess_for_cpm(data_matrix, count_type),
     stop("Unknown normalization scheme: ", normalization_scheme)
   )
@@ -671,7 +694,8 @@ apply_labels <- function(counts_matrix, gene_group, gene_type, label_type) {
       # Columns not matched by the expected order (keep at end)
       unmatched_indices <- which(!used)
       ordered_indices <- c(matched_indices, unmatched_indices)
-      if (length(ordered_indices) == ncol(result)) {
+      if (length(ordered_indices) == ncol(result) &&
+          !identical(ordered_indices, seq_len(ncol(result)))) {
         result <- result[, ordered_indices, drop = FALSE]
       }
     } else if (any(current_cols %in% SAMPLE_IDS)) {
@@ -679,7 +703,7 @@ apply_labels <- function(counts_matrix, gene_group, gene_type, label_type) {
       matched_cols <- SAMPLE_IDS[SAMPLE_IDS %in% current_cols]
       unmatched_cols <- current_cols[!current_cols %in% matched_cols]
       ordered_cols <- c(matched_cols, unmatched_cols)
-      if (length(ordered_cols) > 0) {
+      if (length(ordered_cols) > 0 && !identical(ordered_cols, current_cols)) {
         result <- result[, ordered_cols, drop = FALSE]
       }
     }

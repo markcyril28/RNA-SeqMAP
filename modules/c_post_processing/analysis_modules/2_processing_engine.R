@@ -115,8 +115,14 @@ process_all_combinations <- function(
             # Filter configured NORM_SCHEMES to only those valid for this count type
             # (e.g., "raw"/"cpm"/"deseq2_normalized" are invalid for pre-normalized TPM/FPKM)
             active_norm_schemes <- NORM_SCHEMES[sapply(NORM_SCHEMES, function(ns) is_valid_norm_for_count(count_type, ns))]
+            # Pre-compute log2 once for all norm schemes that need it (avoids redundant computation)
+            .log2_cache <- NULL
+            needs_log2 <- any(active_norm_schemes %in% c("count_type_normalized", "zscore", "zscore_row", "zscore_scaled_to_ten"))
+            if (needs_log2) {
+              .log2_cache <- preprocess_for_count_type_normalized(validation$data, count_type)
+            }
             for (norm_scheme in active_norm_schemes) {
-              data_normalized <- apply_normalization(validation$data, norm_scheme, count_type)
+              data_normalized <- apply_normalization(validation$data, norm_scheme, count_type, .log2_cache)
               
               if (is.null(data_normalized)) {
                 cat("    Failed normalization:", norm_scheme, "\n")

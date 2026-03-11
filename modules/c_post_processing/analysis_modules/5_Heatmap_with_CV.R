@@ -45,20 +45,36 @@ EXPORT_RAW_VALUES <- TRUE
 #       For log data, consider using SD directly as a variability measure.
 # margin: 1 = row-wise (per gene), 2 = column-wise (per sample)
 calculate_cv <- function(data_matrix, is_log_scale = FALSE, margin = 1) {
-  apply(data_matrix, margin, function(vec) {
-    # For log-transformed data, return SD as variability measure
+  # Vectorized CV: avoid apply() loop over rows/columns
+  if (margin == 1) {
+    # Row-wise (per gene)
     if (is_log_scale) {
-      vec_sd <- sd(vec, na.rm = TRUE)
-      return(if (is.finite(vec_sd)) vec_sd else NA)
+      rm <- rowMeans(data_matrix, na.rm = TRUE)
+      n_c <- ncol(data_matrix)
+      row_sds <- sqrt(rowSums((data_matrix - rm)^2, na.rm = TRUE) / (n_c - 1))
+      row_sds[!is.finite(row_sds)] <- NA
+      return(row_sds)
     }
-    # For linear data, calculate true CV
-    vec_mean <- mean(vec, na.rm = TRUE)
-    vec_sd <- sd(vec, na.rm = TRUE)
-    if (vec_mean > 0 && is.finite(vec_mean) && is.finite(vec_sd)) {
-      return(vec_sd / vec_mean * 100)
+    rm <- rowMeans(data_matrix, na.rm = TRUE)
+    n_c <- ncol(data_matrix)
+    row_sds <- sqrt(rowSums((data_matrix - rm)^2, na.rm = TRUE) / (n_c - 1))
+    cv <- ifelse(rm > 0 & is.finite(rm) & is.finite(row_sds), row_sds / rm * 100, NA)
+    return(cv)
+  } else {
+    # Column-wise (per sample)
+    if (is_log_scale) {
+      cm <- colMeans(data_matrix, na.rm = TRUE)
+      n_r <- nrow(data_matrix)
+      col_sds <- sqrt(colSums((data_matrix - rep(cm, each = n_r))^2, na.rm = TRUE) / (n_r - 1))
+      col_sds[!is.finite(col_sds)] <- NA
+      return(col_sds)
     }
-    return(NA)
-  })
+    cm <- colMeans(data_matrix, na.rm = TRUE)
+    n_r <- nrow(data_matrix)
+    col_sds <- sqrt(colSums((data_matrix - rep(cm, each = n_r))^2, na.rm = TRUE) / (n_r - 1))
+    cv <- ifelse(cm > 0 & is.finite(cm) & is.finite(col_sds), col_sds / cm * 100, NA)
+    return(cv)
+  }
 }
 
 # ===============================================
