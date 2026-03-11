@@ -1,28 +1,61 @@
 #!/bin/bash
 
 # ===============================================
-# StringTie Matrix Builder - M2 HISAT2 De Novo
+# Unified StringTie Matrix Builder (M1 + M2)
 # ===============================================
 # Description:
-# Generates TPM/FPKM/Coverage matrices from M2 HISAT2 De Novo StringTie
-# abundance files (_gene_abundances_de_novo.tsv) for heatmap visualization.
-# Process:
-# 1. For each gene group, locate de novo abundance files for all samples
-# 2. Extract gene names from reference CSV files (centralized in gene_groups_csv/)
-# 3. Build matrices (coverage, FPKM, TPM) with genes as rows, samples/organs as columns
-# 4. Output matrices to: 3_POST_PROC/M2_HISAT2_DeNovo/count_matrices_from_stringtie/
+# Generates TPM/FPKM/Coverage matrices from HISAT2 StringTie abundance files
+# for heatmap visualization. Handles both M1 (ref-guided) and M2 (de novo).
 #
-# M1 HISAT2 Ref-Guided: use m1_ref_guided_matrix_builder.sh instead.
+# Process:
+# 1. For each gene group, locate abundance files for all samples
+# 2. Extract gene names from reference CSV files (centralized in gene_groups_csv/)
+# 3. Call matrix_builder.py ONCE per count_type; reuse body for both SRR + Organ headers
+# 4. Output matrices to: 3_POST_PROC/{method}/count_matrices_from_stringtie/
+#
+# Usage:
+#   STRINGTIE_METHOD=M1  bash stringtie_matrix_builder.sh   # ref-guided
+#   STRINGTIE_METHOD=M2  bash stringtie_matrix_builder.sh   # de novo (default)
+#
+# Called by: prepde_matrix_linker.sh (M1) or pipeline_utils.sh (M2)
 # ===============================================
 
 set -euo pipefail
 
 # ===============================================
-# CONFIGURATION
+# METHOD CONFIGURATION
+# ===============================================
+# STRINGTIE_METHOD selects M1 (ref-guided) vs M2 (de novo) defaults.
+# All derived values can still be overridden individually via environment.
+
+STRINGTIE_METHOD="${STRINGTIE_METHOD:-M2}"
+
+case "$STRINGTIE_METHOD" in
+    M1)
+        _DEFAULT_INPUTS_SUBDIR="M1_HISAT2_RefGuided/stringtie_WD"
+        _DEFAULT_OUT_SUBDIR="M1_HISAT2_RefGuided/count_matrices_from_stringtie"
+        _DEFAULT_ABUNDANCE_SUFFIX="_ref_guided_gene_abundances.tsv"
+        _DEFAULT_GENENAME_COL=1    # Gene ID column (e.g., SMEL5_01g000100)
+        _METHOD_LABEL="M1 Ref-Guided"
+        ;;
+    M2)
+        _DEFAULT_INPUTS_SUBDIR="M2_HISAT2_DeNovo/stringtie_WD"
+        _DEFAULT_OUT_SUBDIR="M2_HISAT2_DeNovo/count_matrices_from_stringtie"
+        _DEFAULT_ABUNDANCE_SUFFIX="_gene_abundances_de_novo.tsv"
+        _DEFAULT_GENENAME_COL=3    # Reference column (transcript/contig ID from FASTA)
+        _METHOD_LABEL="M2 De Novo"
+        ;;
+    *)
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: Unknown STRINGTIE_METHOD='$STRINGTIE_METHOD' (expected M1 or M2)"
+        exit 1
+        ;;
+esac
+
+# ===============================================
+# CONFIGURATION (all overridable via environment)
 # ===============================================
 
-# Gene groups to process (override from environment or use defaults)
-# Reads from GENE_GROUPS_STR for parallel compatibility
+# Gene groups to process
 if [[ -n "${GENE_GROUPS_STR:-}" ]]; then
     IFS=' ' read -ra GENE_GROUPS <<< "$GENE_GROUPS_STR"
 elif [[ -z "${GENE_GROUPS:-}" ]]; then
@@ -39,14 +72,16 @@ MASTER_SUFFIX="_from_${MASTER_REFERENCE}"
 
 # Directories
 BASE_DIR="${BASE_DIR:-$PWD}"
-INPUTS_DIR="${INPUTS_DIR:-${BASE_DIR}/2_ALIGNMENT_RESULTs/M2_HISAT2_DeNovo/stringtie_WD}"
-
-# M2 de novo abundance filename suffix — hardcoded, not configurable
-# For M1 ref-guided, use m1_ref_guided_matrix_builder.sh
-ABUNDANCE_SUFFIX="_gene_abundances_de_novo.tsv"
-
-OUT_DIR="${OUT_DIR:-${BASE_DIR}/3_POST_PROC/M2_HISAT2_DeNovo/count_matrices_from_stringtie}"
+INPUTS_DIR="${INPUTS_DIR:-${BASE_DIR}/2_ALIGNMENT_RESULTs/${_DEFAULT_INPUTS_SUBDIR}}"
+OUT_DIR="${OUT_DIR:-${BASE_DIR}/3_POST_PROC/${_DEFAULT_OUT_SUBDIR}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Abundance filename suffix
+ABUNDANCE_SUFFIX="${ABUNDANCE_SUFFIX:-$_DEFAULT_ABUNDANCE_SUFFIX}"
+
+# Gene name column index (1-based) in StringTie abundance file
+# Columns: 1=Gene_ID, 2=Gene_Name, 3=Reference, 4=Strand, 5=Start, 6=End, 7=Coverage, 8=FPKM, 9=TPM
+GENENAME_COL="${GENENAME_COL:-$_DEFAULT_GENENAME_COL}"
 
 # Utilities directory (contains matrix_builder.py)
 UTILITIES_DIR="${UTILITIES_DIR:-$SCRIPT_DIR/../../utilities}"
@@ -54,22 +89,27 @@ UTILITIES_DIR="${UTILITIES_DIR:-$SCRIPT_DIR/../../utilities}"
 # Create output directory and logging
 mkdir -p "$OUT_DIR/logs"
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting StringTie Matrix Builder"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting StringTie Matrix Builder ($_METHOD_LABEL)"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Working directory: $BASE_DIR"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Input directory: $INPUTS_DIR"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Output directory: $OUT_DIR"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Master reference: $MASTER_REFERENCE"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Abundance suffix: $ABUNDANCE_SUFFIX"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gene name column: $GENENAME_COL"
+
+# Fixed column indices for count types
+COVERAGE_COL=7
+FPKM_COL=8
+TPM_COL=9
 
 # ===============================================
-# LOAD SAMPLE IDS FROM CSV (DRY principle)
+# LOAD SAMPLE IDS FROM CSV
 # ===============================================
-# Load from SRR_csv directory instead of hardcoding
 # SRR_CSV_DIR is exported by run_all_post_processing.sh
 # Fallback to inputs/SRR_csv relative to the project root
 
 SRR_CSV_DIR="${SRR_CSV_DIR:-$SCRIPT_DIR/../../../inputs/SRR_csv}"
 
-# Parse CSV and build arrays (reuse function from pipeline_utils.sh if available)
 load_samples_from_csv() {
     local csv_dir="$1"
     local -n sample_ids_ref=$2
@@ -118,15 +158,11 @@ fi
 # Filter to only configured samples (from SRR_COMBINED_LIST_STR environment variable)
 # IMPORTANT: Use the order from SRR_COMBINED_LIST_STR to preserve CSV file order
 if [[ -n "${SRR_COMBINED_LIST_STR:-}" ]]; then
-    # Parse SRR_COMBINED_LIST_STR (space-separated "SRR_ID:Organ" pairs)
     declare -a CONFIGURED_SRRS=()
     for entry in $SRR_COMBINED_LIST_STR; do
-        srr_id="${entry%%:*}"  # Extract SRR ID before colon
+        srr_id="${entry%%:*}"
         CONFIGURED_SRRS+=("$srr_id")
     done
-    
-    # Use CONFIGURED_SRRS order (preserves CSV file order)
-    # Only include samples that exist in SAMPLE_IDS (have data files)
     # Build O(1) lookup set from SAMPLE_IDS
     declare -A _sample_set=()
     for srr in "${SAMPLE_IDS[@]}"; do _sample_set["$srr"]=1; done
@@ -148,15 +184,6 @@ fi
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Using ${#SAMPLE_IDS[@]} samples"
 
-# StringTie -A abundance file column indices (1-based)
-# Columns: 1=Gene_ID, 2=Gene_Name, 3=Reference, 4=Strand, 5=Start, 6=End, 7=Coverage, 8=FPKM, 9=TPM
-# For M2 de novo (transcript FASTA alignment), column 3 (Reference) contains the
-# transcript ID from the FASTA header, which we use to match against gene group CSVs.
-GENENAME_COL=3      # Reference column (transcript/contig ID from FASTA)
-COVERAGE_COL=7      # Coverage values (per-base depth, NOT raw fragment counts)
-FPKM_COL=8          # FPKM values
-TPM_COL=9           # TPM values
-
 # ===============================================
 # FUNCTIONS
 # ===============================================
@@ -174,6 +201,7 @@ get_output_folder_name() {
 
 # Function: merge_group_counts
 # Purpose: Process abundance files for a gene group and create count matrices
+# Calls matrix_builder.py ONCE per count_type; reuses body for both SRR and Organ headers
 merge_group_counts() {
     local gene_group="$1"
     local ref_csv="$2"
@@ -181,7 +209,7 @@ merge_group_counts() {
     group_name=$(get_output_folder_name "$gene_group")
 
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Processing gene group: $gene_group -> Output: $group_name"
-    
+
     mkdir -p "$OUT_DIR/$group_name"
 
     local tmpdir
@@ -210,7 +238,7 @@ merge_group_counts() {
 
     if [[ $files_found -eq 0 ]]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: No abundance files found for gene group '$gene_group'"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Hint: MASTER_REFERENCE='$MASTER_REFERENCE' must match the fasta_tag used during M2 alignment"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Hint: MASTER_REFERENCE='$MASTER_REFERENCE' must match the fasta_tag used during alignment"
         rm -rf "$tmpdir"
         return 1
     fi
@@ -232,7 +260,7 @@ merge_group_counts() {
         local COUNT_COL="${!COUNT_COL_VAR}"
 
         # Extract count data from each sample file (O(1) lookup via srr_to_file map)
-        local sample_files=()
+        local -a sample_files=()
 
         for srr in "${processed_srrs[@]}"; do
             tail -n +2 "${srr_to_file[$srr]}" | cut -f"$GENENAME_COL","$COUNT_COL" > "$tmpdir/${srr}.txt"
@@ -244,6 +272,8 @@ merge_group_counts() {
             continue
         fi
 
+        # NOTE: Filename uses "geneName" (camelCase) while the TSV header column is "GeneName" (PascalCase).
+        # build_input_path() in 0_shared_config.R maps gene_type=="Shortened_Name" -> "geneName" to match this convention.
         local output_geneName_SRR_tsv="$OUT_DIR/$group_name/${group_name}_${count_type}_counts_geneName_SRR${MASTER_SUFFIX}.tsv"
         local output_geneName_Organ_tsv="$OUT_DIR/$group_name/${group_name}_${count_type}_counts_geneName_Organ${MASTER_SUFFIX}.tsv"
 
@@ -278,7 +308,7 @@ merge_group_counts() {
         rm -f "${sample_files[@]}"
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Completed $count_type matrix generation"
     done
-    
+
     rm -rf "$tmpdir"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Completed processing for $group_name"
 }
@@ -287,7 +317,7 @@ merge_group_counts() {
 # FULL TRANSCRIPTOME MATRIX
 # ===============================================
 # Build a full-transcriptome matrix (all genes from abundance files) so that
-# WGCNA and genome-wide analyses can consume M2 data.
+# WGCNA and genome-wide analyses can consume StringTie data.
 # Uses MASTER_REFERENCE as the gene group name to match build_input_path() conventions.
 
 build_full_transcriptome_matrix() {
@@ -299,8 +329,12 @@ build_full_transcriptome_matrix() {
     # Collect the UNION of gene IDs from ALL sample abundance files.
     # In de novo mode, StringTie omits zero-coverage transcripts, so any single
     # file may be missing genes that are expressed in other samples.
+    # In ref-guided mode all samples share the same gene set, but taking the
+    # union keeps this robust if any file is truncated or filtered.
     local tmp_csv
     tmp_csv=$(mktemp --suffix=.csv)
+    # NOTE: Do NOT use 'trap ... RETURN' here — merge_group_counts() is called
+    # below, and nested RETURN traps clobber each other in bash. Use explicit rm.
     echo "Gene_ID" > "$tmp_csv"
 
     local files_found=0
@@ -343,8 +377,6 @@ build_full_transcriptome_matrix() {
 # ===============================================
 
 # Centralized gene groups CSV directory
-# Use GENE_GROUPS_DIR from environment (set by run_all_post_processing.sh)
-# Fallback to inputs/gene_groups_csv relative to the project root
 GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-$SCRIPT_DIR/../../../inputs/gene_groups_csv}}"
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gene groups CSV directory: $GENE_GROUPS_CSV_DIR"
@@ -356,21 +388,21 @@ build_full_transcriptome_matrix
 for gene_group in "${GENE_GROUPS[@]}"; do
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ========================================"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Processing gene group: $gene_group"
-    
+
     REF_CSV="${GENE_GROUPS_CSV_DIR}/${gene_group}.csv"
-    
+
     # Search subdirectories if not found at top level
     if [[ ! -f "$REF_CSV" ]]; then
         REF_CSV=$(find "$GENE_GROUPS_CSV_DIR" -maxdepth 3 -name "${gene_group}.csv" -type f -print -quit 2>/dev/null)
     fi
 
-    if [[ -z "$REF_CSV" || ! -f "$REF_CSV" ]]; then 
+    if [[ -z "$REF_CSV" || ! -f "$REF_CSV" ]]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: Reference CSV not found: ${GENE_GROUPS_CSV_DIR}/${gene_group}.csv, skipping $gene_group"
         continue
     fi
-    
+
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Found reference CSV with $(tail -n +2 "$REF_CSV" | grep -c . || true) genes"
-    
+
     if merge_group_counts "$gene_group" "$REF_CSV"; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Successfully processed $gene_group"
     else
@@ -379,5 +411,5 @@ for gene_group in "${GENE_GROUPS[@]}"; do
 done
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] ========================================"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Matrix generation completed"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] $_METHOD_LABEL matrix generation completed"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Output directory: $OUT_DIR"
