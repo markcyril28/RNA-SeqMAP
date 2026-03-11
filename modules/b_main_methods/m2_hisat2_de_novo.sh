@@ -60,6 +60,73 @@ hisat2_de_novo_pipeline() {
 		log_file_size "$HISAT2_DE_NOVO_INDEX_DIR" "HISAT2 de novo index output"
 	fi
 
+	# STRANDNESS AUTO-DETECTION
+	# M2 de novo aligns to a transcriptome FASTA where all reference seqs are on
+	# the + strand.  By aligning the first sample and checking read1 strand bias
+	# we can infer the library prep protocol:
+	#   RF (dUTP / TruSeq):  read1 maps predominantly reverse
+	#   FR (ligation):       read1 maps predominantly forward
+	#   Unstranded:          ~50/50 split
+	# The result is cached in the index dir so resume runs skip re-detection.
+	local hisat2_strand_opts="" stringtie_strand_opt=""
+	local _strand_cache="$HISAT2_DE_NOVO_INDEX_DIR/detected_strandness.txt"
+
+	if [[ -f "$_strand_cache" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
+		source "$_strand_cache"
+		log_info "[STRANDNESS] Cached: ${_detected_strand:-unstranded} | HISAT2: ${hisat2_strand_opts:-none} | StringTie: ${stringtie_strand_opt:-none}"
+	else
+		# Find first sample with trimmed FASTQs
+		local _det_srr="" _det_t1="" _det_t2=""
+		for _det_srr in "${rnaseq_list[@]}"; do
+			find_trimmed_fastq "$_det_srr"
+			if [[ -n "$trimmed1" ]]; then
+				_det_t1="$trimmed1"; _det_t2="${trimmed2:-}"
+				break
+			fi
+		done
+
+		if [[ -n "$_det_t1" ]]; then
+			# Align first sample using the standard output path so the main loop
+			# sees the BAM already exists and skips re-alignment.
+			local _det_dir="$HISAT2_DE_NOVO_ROOT/$_det_srr"
+			local _det_bam="$_det_dir/${_det_srr}_${fasta_tag}_trimmed_mapped_sorted.bam"
+
+			if [[ ! -f "$_det_bam" || "${OVERWRITE_MODE:-skip}" == "overwrite" ]]; then
+				mkdir -p "$_det_dir"
+				local _det_sam="$_det_dir/${_det_srr}_${fasta_tag}_trimmed_mapped.sam"
+				log_step "Aligning $_det_srr for strandness auto-detection"
+				if [[ -n "$_det_t2" && -f "$_det_t2" ]]; then
+					hisat2 -p "$THREADS" -x "$index_prefix" \
+						-1 "$_det_t1" -2 "$_det_t2" -S "$_det_sam" 2>&1 \
+						| sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
+				else
+					hisat2 -p "$THREADS" -x "$index_prefix" \
+						-U "$_det_t1" -S "$_det_sam" 2>&1 \
+						| sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
+				fi
+				if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
+					log_warn "[STRANDNESS] Detection alignment failed — running unstranded"
+					rm -f "$_det_sam"
+				else
+					samtools sort -@ "$THREADS" -o "$_det_bam" "$_det_sam" 2>/dev/null
+					samtools index -@ "$THREADS" "$_det_bam" 2>/dev/null
+					rm -f "$_det_sam"
+				fi
+			fi
+
+			if [[ -f "$_det_bam" ]]; then
+				_m2_infer_strand_from_bam "$_det_bam"
+			fi
+		else
+			log_warn "[STRANDNESS] No trimmed FASTQs found — running unstranded"
+		fi
+
+		# Cache for resume runs
+		printf '_detected_strand="%s"\nhisat2_strand_opts="%s"\nstringtie_strand_opt="%s"\n' \
+			"${_detected_strand:-unstranded}" "$hisat2_strand_opts" "$stringtie_strand_opt" \
+			> "$_strand_cache"
+	fi
+
 	# ALIGNMENT AND STRINGTIE ASSEMBLY
 	local parallel_jobs="${PARALLEL_JOBS:-${JOBS:-2}}"
 	local threads_per_job=$((THREADS / parallel_jobs))
@@ -69,7 +136,7 @@ hisat2_de_novo_pipeline() {
 		log_step "[PARALLEL] HISAT2 De Novo: ${#rnaseq_list[@]} samples, $parallel_jobs jobs x $threads_per_job threads"
 		_prepare_parallel_env
 
-		export fasta_tag index_prefix threads_per_job
+		export fasta_tag index_prefix threads_per_job hisat2_strand_opts stringtie_strand_opt
 		local abs_hisat2_dn_root="$HISAT2_DE_NOVO_ROOT"
 		[[ "$abs_hisat2_dn_root" != /* ]] && abs_hisat2_dn_root="$(pwd)/$abs_hisat2_dn_root"
 		local abs_stringtie_dn_root="$STRINGTIE_HISAT2_DE_NOVO_ROOT"
@@ -92,11 +159,11 @@ hisat2_de_novo_pipeline() {
 				_parallel_log HISAT2_DN "$SRR" INFO "Aligning with $threads_per_job threads"
 				local align_exit=0
 				if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
-					hisat2 -p "$threads_per_job" -x "$index_prefix" \
+					hisat2 -p "$threads_per_job" $hisat2_strand_opts -x "$index_prefix" \
 						-1 "$trimmed1" -2 "$trimmed2" -S "$sam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
 					align_exit=${PIPESTATUS[0]}
 				else
-					hisat2 -p "$threads_per_job" -x "$index_prefix" \
+					hisat2 -p "$threads_per_job" $hisat2_strand_opts -x "$index_prefix" \
 						-U "$trimmed1" -S "$sam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
 					align_exit=${PIPESTATUS[0]}
 				fi
@@ -119,7 +186,7 @@ hisat2_de_novo_pipeline() {
 				_parallel_log HISAT2_DN "$SRR" INFO "De novo assembly exists - skipping"
 			else
 				_parallel_log HISAT2_DN "$SRR" INFO "Assembling transcripts (de novo)"
-				stringtie -p "$threads_per_job" "$bam" -o "$out_gtf" \
+				stringtie -p "$threads_per_job" $stringtie_strand_opt "$bam" -o "$out_gtf" \
 					-A "$out_abund" 2>&1 || \
 					{ _parallel_log HISAT2_DN "$SRR" ERROR "StringTie failed"; rm -f "$out_gtf" "$out_abund"; return 1; }
 			fi
@@ -136,6 +203,7 @@ hisat2_de_novo_pipeline() {
 			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
 			--env abs_trim_dir_root --env abs_error_warn_file --env keep_bam_global \
 			--env fasta_tag --env index_prefix --env threads_per_job \
+			--env hisat2_strand_opts --env stringtie_strand_opt \
 			--env abs_hisat2_dn_root --env abs_stringtie_dn_root \
 			--env OVERWRITE_MODE \
 			-j "$parallel_jobs" \
