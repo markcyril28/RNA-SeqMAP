@@ -56,88 +56,90 @@ done
 #===============================================================================
 
 # Preprocessing & data acquisition tools  (GEA pipeline)
+# IMPORTANT: Versions are pinned to tested versions for reproducibility.
+# Update only after validation on a test dataset.
 PREPROCESSING_TOOLS=(
-    "aria2"
-    "parallel-fastq-dump"
-    "sra-tools>=3.0"
-    "entrez-direct"
-    "kingfisher"
-    "trim-galore"
-    "trimmomatic"
-    "cutadapt>=4.1"
-    "fastqc"
-    "multiqc"
-    "parallel"
-    "wget"       # ENA FTP fallback downloader (download_srrs_wget)
-    "curl"       # ENA portal API queries (download_srrs_wget)
-    "dos2unix"   # Line-ending normalization for cross-platform config files
+    "aria2=1.37.0"
+    "parallel-fastq-dump=0.6.7"
+    "sra-tools=3.2.1"
+    "entrez-direct=24.0"
+    "kingfisher=0.4.1"
+    "trim-galore=0.6.11"
+    "trimmomatic=0.40"
+    "cutadapt=5.2"
+    "fastqc=0.12.1"
+    "multiqc=1.33"
+    "parallel=20260122"
+    "wget=1.25.0"      # ENA FTP fallback downloader (download_srrs_wget)
+    "curl=8.18.0"      # ENA portal API queries (download_srrs_wget)
+    "dos2unix"         # Line-ending normalization (version not pinned — not yet installed)
 )
 
 # Core alignment / quantification tools
 ALIGNMENT_TOOLS=(
-    "hisat2"
-    "stringtie"
-    "samtools"
-    "salmon"
-    "bowtie2"
-    "rsem"
-    "star"
-    "trinity"
-    "gffread"              # Transcript FASTA generation from genome+GTF (required to build inputs/fasta/ reference files for M3/M4/M5)
-    "rseqc"                # infer_experiment.py for strandness auto-detection (M1/M2)
-    "ucsc-gtftogenepred"   # GTF -> genePred conversion for BED12 (strandness detection)
-    "ucsc-genepredtobed"   # genePred -> BED12 conversion for infer_experiment.py
+    "hisat2=2.2.2"
+    "stringtie=3.0.3"
+    "samtools=1.22.1"
+    "salmon=1.10.3"
+    "bowtie2=2.5.5"
+    "rsem=1.3.3"
+    "star=2.7.11b"
+    "trinity=2.15.2"
+    "gffread=0.12.7"              # Transcript FASTA generation from genome+GTF
+    "rseqc"                        # infer_experiment.py for strandness auto-detection (version not pinned — not yet installed)
+    "ucsc-gtftogenepred"           # GTF -> genePred conversion for BED12 (version not pinned — not yet installed)
+    "ucsc-genepredtobed"           # genePred -> BED12 conversion for infer_experiment.py (version not pinned — not yet installed)
 )
 
 # R base and essentials
 R_BASE=(
-    "r-base=4.3"
-    "r-essentials"
-    "r-biocmanager"
+    "r-base=4.3.3"
+    "r-essentials=4.3"
+    "r-biocmanager=1.30.26"
 )
 
-# Bioconductor packages
+# Bioconductor packages (pinned to Bioconductor 3.18 / R 4.3)
 BIOCONDUCTOR=(
-    "bioconductor-deseq2"
-    "bioconductor-complexheatmap"
-    "bioconductor-tximport"
-    "bioconductor-tximeta"
-    "bioconductor-annotationdbi"
-    "bioconductor-ballgown"
-    "bioconductor-clusterprofiler"
-    "bioconductor-enrichplot"
-    "bioconductor-dose"
-    "bioconductor-fgsea"
+    "bioconductor-deseq2=1.42.0"
+    "bioconductor-complexheatmap=2.18.0"
+    "bioconductor-tximport=1.30.0"
+    "bioconductor-tximeta=1.20.1"
+    "bioconductor-annotationdbi=1.64.1"
+    "bioconductor-ballgown=2.34.0"
+    "bioconductor-clusterprofiler=4.10.0"
+    "bioconductor-enrichplot=1.22.0"
+    "bioconductor-dose=3.28.1"
+    "bioconductor-fgsea=1.28.0"
 )
 
 # CRAN / WGCNA packages
 CRAN_PACKAGES=(
-    "r-wgcna"
-    "r-dynamictreecut"
-    "r-fastcluster"
-    "r-tidyverse"
-    "r-dplyr"
-    "r-tibble"
-    "r-readr"
-    "r-ggplot2"
-    "r-ggrepel"
-    "r-rcolorbrewer"
-    "r-circlize"
-    "r-pheatmap"
-    "r-rtsne"
-    "r-umap"
-    "r-factoextra"
-    "r-igraph"
-    "r-reshape2"
-    "r-getopt"
-    "r-visnetwork"
-    "r-networkd3"
-    "r-htmlwidgets"
-    "r-heatmaply"
-    "r-corrplot"
-    "r-dendextend"
-    "r-gridextra"
-    "r-scales"
+    "r-wgcna=1.73"
+    "r-dynamictreecut=1.63_1"
+    "r-fastcluster=1.3.0"
+    "r-tidyverse=2.0.0"
+    "r-dplyr=1.1.4"
+    "r-tibble=3.3.0"
+    "r-readr=2.1.5"
+    "r-ggplot2=3.5.2"
+    "r-ggrepel=0.9.6"
+    "r-rcolorbrewer=1.1_3"
+    "r-circlize=0.4.16"
+    "r-pheatmap=1.0.13"
+    "r-rtsne=0.17"
+    "r-umap=0.2.10.0"
+    "r-factoextra=1.0.7"
+    "r-igraph=2.1.4"
+    "r-reshape2=1.4.4"
+    "r-getopt=1.20.4"
+    "r-visnetwork=2.1.4"
+    "r-networkd3=0.4.1"
+    "r-htmlwidgets=1.6.4"
+    "r-heatmaply=1.6.0"
+    "r-corrplot=0.95"
+    "r-dendextend=1.19.1"
+    "r-gridextra=2.3"
+    "r-scales=1.4.0"
 )
 
 # Combined package list
