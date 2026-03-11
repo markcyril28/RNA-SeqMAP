@@ -11,14 +11,13 @@
 # 6. Software catalog (logs/software_catalogs/*.csv) - Software versions used
 # ==============================================================================
 # ERROR CAPTURE:
-# - Monitors for: error, exception, fatal, failed, command not found, 
-#   no such file, cannot find, not installed, permission denied, traceback
+# - Monitors for: error, exception, fatal, failed, command not found,
+#   no such file, cannot find, not installed, permission denied, traceback,
+#   segmentation fault, killed, out of memory, no space left, broken pipe
 # - Captures from: stderr, stdout, time output, and exit codes
 # - Use run_with_error_capture() for simple commands
 # - Use run_with_space_time_log() for resource-intensive commands
 # ==============================================================================
-
-#set -euo pipefail
 
 # Guard against double-sourcing
 [[ "${LOGGING_UTILS_SOURCED:-}" == "true" ]] && return 0
@@ -125,13 +124,16 @@ setup_logging() {
 	[[ ! -f "$SOFTWARE_FILE" ]] && echo "Software/Tool,Version" > "$SOFTWARE_FILE"
 	[[ ! -f "$GPU_LOG_FILE" ]] && echo "=== GPU Log Started: $(timestamp) ===" > "$GPU_LOG_FILE"
 	
+	# Rotate old logs to prevent unbounded growth
+	rotate_old_logs "$(dirname "$LOG_DIR")"
+
 	# Set up output redirection (strip ANSI escape codes from log files)
 	if [[ "$log_choice" == "2" ]]; then
 		exec > >(strip_ansi_stream >> "$LOG_FILE") 2>&1
 	else
 		exec > >(tee >(strip_ansi_stream >> "$LOG_FILE")) 2>&1
 	fi
-	
+
 	export LOGGING_INITIALIZED="true"
 	log_info "Logging to: $LOG_FILE"
 	log_info "Time metrics to: $TIME_FILE"
@@ -239,15 +241,20 @@ log_configuration() {
 	log_step "END CONFIGURATION"
 }
 
+# Unified error/warning regex patterns (single source of truth, exported for GNU Parallel)
+_ERROR_PATTERN='error|exception|fatal|failed|command not found|no such file|cannot find|not installed|permission denied|traceback|segmentation fault|segfault|killed|out of memory|cannot allocate memory|no space left on device|disk full|broken pipe|filenotfound|access denied'
+_WARN_PATTERN='warning|warn'
+export _ERROR_PATTERN _WARN_PATTERN
+
 capture_stderr_errors() {
 	# Monitor stderr/stdout stream and capture errors to error log
 	# Usage: command 2>&1 | capture_stderr_errors
 	while IFS= read -r line; do
 		echo "$line"
-		if echo "$line" | grep -qiE 'error|exception|fatal|failed|command not found|no such file|cannot find|not installed|permission denied|traceback'; then
+		if echo "$line" | grep -qiE "$_ERROR_PATTERN"; then
 			printf '[%s] [ERROR] %s\n' "$(timestamp)" "$line" >> "$ERROR_WARN_FILE"
 		fi
-		if echo "$line" | grep -qiE 'warning|warn'; then
+		if echo "$line" | grep -qiE "$_WARN_PATTERN"; then
 			printf '[%s] [WARN] %s\n' "$(timestamp)" "$line" >> "$ERROR_WARN_FILE"
 		fi
 	done
@@ -258,13 +265,14 @@ run_with_error_capture() {
 	# Usage: run_with_error_capture COMMAND...
 	local cmd_string="$*"
 	local exit_code=0
-	
-	"$@" 2>&1 | capture_stderr_errors || exit_code=$?
-	
+
+	"$@" 2>&1 | capture_stderr_errors
+	exit_code=${PIPESTATUS[0]}
+
 	if [[ $exit_code -ne 0 ]]; then
 		log_error "Command failed (exit=$exit_code): $cmd_string"
 	fi
-	
+
 	return $exit_code
 }
 
@@ -327,11 +335,11 @@ run_with_space_time_log() {
 		cat "$TIME_TEMP" >> "$LOG_FILE" 2>&1
 	fi
 
-	# Capture errors/exceptions to error log
-	if [[ $exit_code -ne 0 ]] || grep -qiE 'exception|error|fatal|failed|traceback|command not found|no such file|cannot find|not installed' "$TIME_TEMP" 2>/dev/null; then
+	# Capture errors/exceptions to error log (uses unified pattern)
+	if [[ $exit_code -ne 0 ]] || grep -qiE "$_ERROR_PATTERN" "$TIME_TEMP" 2>/dev/null; then
 		{
 			printf '[%s] [ERROR] Command failed (exit=%d): %s\n' "$(timestamp)" "$exit_code" "$cmd_string"
-			grep -iE 'exception|error|fatal|failed|traceback|filenotfound|no such file|command not found|cannot find|not installed|permission denied|access denied' "$TIME_TEMP" 2>/dev/null || true
+			grep -iE "$_ERROR_PATTERN" "$TIME_TEMP" 2>/dev/null || true
 		} >> "$ERROR_WARN_FILE"
 	fi
 
@@ -349,9 +357,10 @@ run_with_space_time_log() {
 		output_size_mb=$(awk "BEGIN{printf \"%.2f\", $output_kb / 1024}")
 	fi
 	
-	# Append to CSV files
-	echo "${start_ts},\"${cmd_string}\",${elapsed_time:-0},${cpu_percent:-0},${max_rss:-0},${user_time:-0},${system_time:-0},${exit_code}" >> "$TIME_FILE"
-	echo "${start_ts},\"${cmd_string}\",${elapsed_time:-0},${cpu_percent:-0},${max_rss:-0},${user_time:-0},${system_time:-0},${input_size_mb},${output_size_mb},${exit_code}" >> "$SPACE_TIME_FILE"
+	# Append to CSV files (escape internal double quotes for valid CSV)
+	local csv_cmd="${cmd_string//\"/\"\"}"
+	echo "${start_ts},\"${csv_cmd}\",${elapsed_time:-0},${cpu_percent:-0},${max_rss:-0},${user_time:-0},${system_time:-0},${exit_code}" >> "$TIME_FILE"
+	echo "${start_ts},\"${csv_cmd}\",${elapsed_time:-0},${cpu_percent:-0},${max_rss:-0},${user_time:-0},${system_time:-0},${input_size_mb},${output_size_mb},${exit_code}" >> "$SPACE_TIME_FILE"
 	
 	rm -f "$TIME_TEMP"
 	return $exit_code
@@ -407,9 +416,9 @@ log_software_version() {
 }
 
 catalog_all_software() {
-	# Catalog versions of all bioinformatics tools
+	# Catalog versions of all bioinformatics tools and R packages
 	log_step "Cataloging software versions"
-	
+
 	local tools=(
 		"hisat2:hisat2 --version"
 		"stringtie:stringtie --version"
@@ -422,19 +431,67 @@ catalog_all_software() {
 		"trimmomatic:trimmomatic -version"
 		"fastqc:fastqc --version"
 		"multiqc:multiqc --version"
+		"gffread:gffread --version"
+		"cutadapt:cutadapt --version"
+		"sra-tools:prefetch --version"
+		"infer_experiment.py:infer_experiment.py --version"
+		"prepDE.py:prepDE.py --version"
+		"python:python3 --version"
+		"parallel:parallel --version"
+		"R:R --version"
 	)
-	
+
 	for tool_cmd in "${tools[@]}"; do
 		local tool="${tool_cmd%%:*}"
 		local cmd="${tool_cmd#*:}"
-		
+
 		if command -v "${cmd%% *}" >/dev/null 2>&1; then
-			# Extract just the version number from the last word of the first output line
-			# Handles: "hisat2-align-s version 2.2.1", "salmon 1.10.3", "FastQC v0.12.1", etc.
-			local version=$(eval "$cmd" 2>&1 | head -n1 | awk '{print $NF}' || echo "unknown")
+			local version
+			version=$(eval "$cmd" 2>&1 | head -n1 | awk '{print $NF}' || echo "unknown")
 			log_software_version "$tool" "$version"
+		else
+			echo "${tool},not_installed" >> "$SOFTWARE_FILE"
+			log_info "Software not found: $tool"
 		fi
 	done
+
+	# Catalog key R/Bioconductor packages used by analysis modules
+	if command -v Rscript >/dev/null 2>&1; then
+		log_info "Cataloging R package versions..."
+		local r_pkgs=(DESeq2 tximport tximeta WGCNA clusterProfiler ComplexHeatmap
+			ballgown AnnotationDbi enrichplot DOSE fgsea
+			pheatmap ggplot2 corrplot dendextend gridExtra scales)
+		for pkg in "${r_pkgs[@]}"; do
+			local ver
+			ver=$(Rscript -e "tryCatch(cat(as.character(packageVersion('$pkg'))), error=function(e) cat('not_installed'))" 2>/dev/null || echo "unknown")
+			echo "R/${pkg},${ver}" >> "$SOFTWARE_FILE"
+		done
+		log_info "R package versions cataloged"
+	else
+		echo "R,not_installed" >> "$SOFTWARE_FILE"
+		log_warn "Rscript not found — R package catalog skipped"
+	fi
+}
+
+# ==============================================================================
+# LOG ROTATION
+# ==============================================================================
+
+rotate_old_logs() {
+	# Remove logs older than MAX_LOG_AGE_DAYS (default 30) to prevent unbounded growth.
+	# Usage: rotate_old_logs [base_log_dir]
+	# Called automatically by setup_logging; can also be called manually.
+	local base_dir="${1:-$(dirname "$LOG_DIR")}"
+	local max_age="${MAX_LOG_AGE_DAYS:-30}"
+
+	[[ ! -d "$base_dir" ]] && return 0
+
+	local count
+	count=$(find "$base_dir" -type f \( -name '*.log' -o -name '*.csv' \) -mtime +"$max_age" 2>/dev/null | wc -l)
+	if [[ "$count" -gt 0 ]]; then
+		find "$base_dir" -type f \( -name '*.log' -o -name '*.csv' \) -mtime +"$max_age" -delete 2>/dev/null || true
+		log_info "Log rotation: removed $count files older than ${max_age} days from $base_dir"
+	fi
 }
 
 # ==============================================================================
@@ -507,18 +564,56 @@ log_gpu_utilization() {
 }
 
 run_with_gpu_log() {
-	# Run a command and log GPU usage before and after
+	# Run a command with continuous GPU VRAM monitoring (captures peak usage)
 	# Usage: run_with_gpu_log COMMAND...
 	local cmd_string="$*"
-	
+	local gpu_monitor_pid=""
+	local peak_file=""
+
 	log_gpu "Starting command: $cmd_string"
 	log_gpu_memory "Before: $cmd_string"
-	
+
+	# Start background GPU monitor (polls every 2s, writes peak to temp file)
+	if command -v nvidia-smi >/dev/null 2>&1; then
+		peak_file=$(mktemp "${GPU_LOG_DIR}/.gpu_peak_XXXXXX")
+		echo "0" > "$peak_file"
+		(
+			trap 'exit 0' TERM
+			local peak_used=0
+			while true; do
+				local used
+				used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
+				if [[ -n "$used" ]]; then
+					printf '[%s] [GPU-MONITOR] VRAM used: %s MB\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$used" >> "$GPU_LOG_FILE"
+					if (( used > peak_used )); then
+						peak_used=$used
+						echo "$peak_used" > "$peak_file"
+					fi
+				fi
+				sleep 2
+			done
+		) &
+		gpu_monitor_pid=$!
+	fi
+
 	local exit_code=0
-	"$@" 2>&1 | tee >(strip_ansi_stream >> "$GPU_LOG_FILE") || exit_code=$?
-	
+	"$@" 2>&1 | tee >(strip_ansi_stream >> "$GPU_LOG_FILE")
+	exit_code=${PIPESTATUS[0]}
+
+	# Stop GPU monitor and log peak
+	if [[ -n "$gpu_monitor_pid" ]]; then
+		kill "$gpu_monitor_pid" 2>/dev/null; wait "$gpu_monitor_pid" 2>/dev/null || true
+	fi
+	if [[ -n "$peak_file" && -f "$peak_file" ]]; then
+		local peak_vram
+		peak_vram=$(cat "$peak_file" 2>/dev/null)
+		[[ -n "$peak_vram" && "$peak_vram" -gt 0 ]] 2>/dev/null && \
+			log_gpu "Peak VRAM usage: ${peak_vram} MB"
+		rm -f "$peak_file"
+	fi
+
 	log_gpu_memory "After: $cmd_string"
 	log_gpu "Finished command (exit=$exit_code): $cmd_string"
-	
+
 	return $exit_code
 }
