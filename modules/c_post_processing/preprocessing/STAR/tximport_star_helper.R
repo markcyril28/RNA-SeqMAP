@@ -80,6 +80,9 @@ cat("Found", length(files), "quant.sf files\n")
 # gene_trans_map fallback writes: gene_id TAB transcript_id  (col1=GENE, col2=TX)
 raw_tx2gene <- read.delim(tx2gene_file, header = FALSE, stringsAsFactors = FALSE,
                           colClasses = "character")
+if (ncol(raw_tx2gene) < 2) {
+  stop("Invalid tx2gene file '", tx2gene_file, "': expected >= 2 columns, got ", ncol(raw_tx2gene))
+}
 if (grepl("gene_trans_map$", tx2gene_file)) {
   tx2gene <- raw_tx2gene[, c(2, 1), drop = FALSE]
 } else {
@@ -120,9 +123,17 @@ saveRDS(dds, file.path(output_dir, "deseq2_dataset_star.rds"))
 cat("Saved RDS objects to:", output_dir, "\n")
 
 # ---------------------------------------------------------------------------
-# Save TSV matrices following the pipeline naming convention:
+# Save TSV matrices (standalone naming convention):
 #   {master_ref}_{count_type}_{gene_type}_from_{master_ref}_{level}.tsv
 # GeneID is stored as a proper first column (not row names with col.names=NA)
+#
+# NOTE: This standalone helper saves to {output_dir}/gene_level/ with
+# master_ref as the file prefix.  The main pipeline's build_input_path()
+# expects {matrices_dir}/{master_ref}/{level}/{folder_name}/{folder_name}_...tsv
+# (where folder_name = gene_group_in_dataset).  To use these matrices with
+# downstream analysis modules, either:
+#   (a) run 3_Matrix_Creation_STAR.R via the main pipeline instead, or
+#   (b) manually move/rename files to match the expected directory structure.
 # ---------------------------------------------------------------------------
 save_matrix_tsv <- function(mat, count_type, gene_type, out_dir, mr, level) {
   fname <- paste0(mr, "_", count_type, "_", gene_type, "_from_", mr, "_", level, ".tsv")

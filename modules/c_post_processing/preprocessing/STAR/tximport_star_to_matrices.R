@@ -185,6 +185,10 @@ for (level_name in names(processing_levels)) {
     # Detect column order: tximport needs c(TXNAME, GENEID)
     raw <- read.delim(tx2gene_file, header = FALSE, stringsAsFactors = FALSE,
                       colClasses = "character")
+    if (ncol(raw) < 2) {
+      cat("ERROR: tx2gene file has", ncol(raw), "column(s), expected >= 2:", tx2gene_file, "\n")
+      next
+    }
     # star_alignment_pipeline writes: transcript_id TAB gene_id  (col1=TX, col2=GENE)
     # gene_trans_map fallback writes: gene_id TAB transcript_id  (col1=GENE, col2=TX)
     # Detect: if file is a gene_trans_map, swap columns
@@ -248,6 +252,14 @@ for (level_name in names(processing_levels)) {
 
   entity_type <- if (level_config$tx_out) "transcripts" else "genes"
   cat("Imported:", ncol(txi$counts), "samples,", nrow(txi$counts), entity_type, "\n\n")
+
+  # Save full tximport object for DESeq2 (preserves transcript-length offsets)
+  if (!level_config$tx_out) {
+    txi_rds_dir <- file.path(MATRICES_DIR, MASTER_REFERENCE, level_name)
+    dir.create(txi_rds_dir, recursive = TRUE, showWarnings = FALSE)
+    saveRDS(txi, file.path(txi_rds_dir, "tximport_gene_level.rds"))
+    cat("Saved tximport RDS for DESeq2: tximport_gene_level.rds\n\n")
+  }
 
   # -------------------------------------------------
   # STEP 4: SAMPLE METADATA
