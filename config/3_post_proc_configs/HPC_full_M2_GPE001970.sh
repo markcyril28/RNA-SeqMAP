@@ -61,8 +61,8 @@ GENE_GROUPS=(
 # ==============================================================================
 
 SRR_DATASETS=(
-    "PRJNA328564"             # Main Dataset — Eggplant tissue atlas (full)
-    #"PRJNA328564_selected"
+    #"PRJNA328564"             # Main Dataset — Eggplant tissue atlas (full)
+    "PRJNA328564_selected"
     #"PRJNA865018"            # SET_1: Good Dataset for SmelDMP GEA
     #"PRJNA941250"            # SET_2: Good Dataset for SmelDMP GEA
     #"PRJNA865018_and_PRJNA941250"
@@ -99,9 +99,9 @@ ANALYSES=(
 
     # ---- Statistics ----
     #"Differential_Expression"   # NOT supported for M2
-    "PCA_Dimensionality_Reduction"
-    "Sample_Correlation_Clustering"
-    "Tissue_Specificity"        # Applicable — transcript-level TPM from StringTie
+    #"PCA_Dimensionality_Reduction"
+    #"Sample_Correlation_Clustering"
+    #"Tissue_Specificity"        # Applicable — transcript-level TPM from StringTie
     #"Coexpression_using_WGCNA"
     #"Gene_Set_Enrichment"
 )

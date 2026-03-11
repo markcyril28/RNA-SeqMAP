@@ -59,7 +59,7 @@ GENE_GROUPS=(
     #"SmelGRF-GIF_with_1_18s_rRNA"
     #"SmelGRFs"
     #"SmelGIF"
-    #"Selected_GRF_GIF_Genes_vAll_GIF"
+    "Selected_GRF_GIF_Genes_vAll_GIF"
 )
 
 # ==============================================================================
@@ -105,9 +105,9 @@ ANALYSES=(
 
     # ---- Statistics ----
     #"Differential_Expression"   # Possible for M4 (tximport counts)
-    "PCA_Dimensionality_Reduction"
-    "Sample_Correlation_Clustering"
-    "Tissue_Specificity"        # Applicable — transcript-level quantification
+    #"PCA_Dimensionality_Reduction"
+    #"Sample_Correlation_Clustering"
+    #"Tissue_Specificity"        # Applicable — transcript-level quantification
     #"Coexpression_using_WGCNA"
     #"Gene_Set_Enrichment"
 )
