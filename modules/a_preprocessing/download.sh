@@ -162,5 +162,10 @@ download_srrs_parallel() {
 	}
 	export -f _download_worker
 	
-	printf "%s\n" "${SRR_LIST[@]}" | parallel --env PATH --env CONDA_PREFIX -j "${JOBS:-2}" _download_worker {}
+	printf "%s\n" "${SRR_LIST[@]}" | parallel \
+		--env PATH --env CONDA_PREFIX \
+		-j "${JOBS:-2}" \
+		--halt soon,fail=1 \
+		--joblog "$RAW_DIR_ROOT/parallel_download.log" \
+		_download_worker {}
 }

@@ -165,7 +165,12 @@ run_quality_control_parallel() {
 	export -f _qc_worker
 	
 	# Run FastQC in parallel for all samples
-	printf "%s\n" "${SRR_LIST[@]}" | parallel --env PATH --env CONDA_PREFIX -j "${JOBS:-2}" _qc_worker {}
+	printf "%s\n" "${SRR_LIST[@]}" | parallel \
+		--env PATH --env CONDA_PREFIX \
+		-j "${JOBS:-2}" \
+		--halt soon,fail=1 \
+		--joblog "$FASTQC_ROOT/parallel_fastqc.log" \
+		_qc_worker {}
 }
 
 # ==============================================================================
