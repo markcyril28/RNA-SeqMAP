@@ -14,64 +14,15 @@ suppressPackageStartupMessages({
 SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", ".")
 source(file.path(SCRIPT_DIR, "0_shared_config.R"))
 source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
+source(file.path(SCRIPT_DIR, "3_Matrix_Creation_utils.R"))
 
-# ===============================================
-# RSEM-SPECIFIC HELPER
-# ===============================================
-
+# Thin wrapper around shared save_count_matrices() for backward compatibility.
+# Converts the legacy level_suffix (e.g., "_gene_level") to a plain level name.
 save_count_matrix <- function(counts_matrix, output_dir, base_name, master_ref, level_suffix,
                               tpm_matrix = NULL) {
-  # Saves matrices with naming convention expected by build_input_path:
-  # {gene_group}_{count_type}_{gene_type}_from_{master_ref}_{processing_level}.tsv
-  # count_type: "tpm" or "expected_count"
-  # gene_type: "Gene_ID" or "Shortened_Name"
-  # processing_level: "gene_level" or "isoform_level"
-  
-  # Extract processing level name (remove leading underscore)
-  processing_level <- gsub("^_", "", level_suffix)
-  
-  # Helper to save a matrix with proper naming
-  save_matrix <- function(matrix_data, count_type, gene_type) {
-    output_file <- file.path(output_dir, 
-      paste0(base_name, "_", count_type, "_", gene_type, "_from_", master_ref, "_", processing_level, ".tsv"))
-    
-    # Convert to data frame, handling potential duplicate column names
-    matrix_df <- as.data.frame(matrix_data, check.names = FALSE)
-    # Add GeneID column manually to avoid tibble issues with duplicate names
-    matrix_df <- cbind(GeneID = rownames(matrix_data), matrix_df)
-    rownames(matrix_df) <- NULL
-    write.table(matrix_df, output_file, sep = "\t", quote = FALSE, row.names = FALSE)
-    cat("Saved:", basename(output_file), "\n")
-  }
-  
-  # Save expected_count matrices
-  # Always save Gene_ID (needed by DESeq2 and as source for Shortened_Name)
-  save_matrix(counts_matrix, "expected_count", "Gene_ID")
-
-  # With Shortened_Name (Organ labels for columns + gene name conversion) - only if configured
-  if ("Shortened_Name" %in% GENE_TYPES) {
-    counts_short <- convert_to_organ_labels(counts_matrix)
-    gene_group_for_map <- sub("_in_.*$", "", base_name)
-    counts_short <- tryCatch(
-      convert_to_shortened_names(counts_short, gene_group_for_map),
-      error = function(e) counts_short
-    )
-    save_matrix(counts_short, "expected_count", "Shortened_Name")
-  }
-
-  # Save TPM matrices (if provided)
-  if (!is.null(tpm_matrix)) {
-    save_matrix(tpm_matrix, "tpm", "Gene_ID")
-    if ("Shortened_Name" %in% GENE_TYPES) {
-      tpm_short <- convert_to_organ_labels(tpm_matrix)
-      gene_group_for_map <- sub("_in_.*$", "", base_name)
-      tpm_short <- tryCatch(
-        convert_to_shortened_names(tpm_short, gene_group_for_map),
-        error = function(e) tpm_short
-      )
-      save_matrix(tpm_short, "tpm", "Shortened_Name")
-    }
-  }
+  level <- gsub("^_", "", level_suffix)
+  save_count_matrices(counts_matrix, output_dir, base_name, master_ref, level,
+                      tpm = tpm_matrix, count_type_label = "expected_count")
 }
 
 # ===============================================
@@ -335,30 +286,8 @@ for (level_name in names(processing_levels)) {
         next
       }
   
-      # Match genes using prefix matching (gene_list may not have transcript suffix)
-      # e.g., gene_list has "SMEL4.1_01g005840" but matrix has "SMEL4.1_01g005840.1.01"
-      all_gene_ids <- rownames(raw_counts)
-      genes_in_data <- character(0)
-      for (gene in gene_list) {
-        # Try exact match first, then prefix match
-        if (gene %in% all_gene_ids) {
-          genes_in_data <- c(genes_in_data, gene)
-        } else {
-          # Prefix match: find IDs that start with the gene followed by a period or end
-          matches <- all_gene_ids[grepl(paste0("^", gsub("\\.", "\\\\.", gene), "(\\..*)?$"), all_gene_ids)]
-          if (length(matches) > 0) {
-            genes_in_data <- c(genes_in_data, matches)
-          } else {
-            # Reverse: strip suffix from gene_list ID to match gene-level row IDs
-            # e.g., gene "SMEL5_06g022750.1" -> "SMEL5_06g022750" matches gene-level data
-            gene_base <- sub("\\.[0-9]+$", "", gene)
-            if (gene_base != gene && gene_base %in% all_gene_ids) {
-              genes_in_data <- c(genes_in_data, gene_base)
-            }
-          }
-        }
-      }
-      genes_in_data <- unique(genes_in_data)
+      # Match genes using shared utility (handles exact, prefix, and reverse suffix matching)
+      genes_in_data <- match_gene_ids(gene_list, rownames(raw_counts))
   
       if (length(genes_in_data) == 0) {
         cat("    Skipping: No matching", entity_type, "found\n")

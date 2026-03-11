@@ -285,9 +285,65 @@ merge_group_counts() {
 }
 
 # ===============================================
+# FULL TRANSCRIPTOME MATRIX
+# ===============================================
+# Build a full-transcriptome matrix (all genes from abundance files) so that
+# WGCNA and genome-wide analyses can consume M2 data.
+# Uses MASTER_REFERENCE as the gene group name to match build_input_path() conventions.
+
+build_full_transcriptome_matrix() {
+    local group_name
+    group_name=$(get_output_folder_name "$MASTER_REFERENCE")
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ========================================"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Building full-transcriptome matrix: $group_name"
+
+    # Collect the UNION of gene IDs from ALL sample abundance files.
+    # In de novo mode, StringTie omits zero-coverage transcripts, so any single
+    # file may be missing genes that are expressed in other samples.
+    local tmp_csv
+    tmp_csv=$(mktemp --suffix=.csv)
+    echo "Gene_ID" > "$tmp_csv"
+
+    local files_found=0
+    for srr in "${SAMPLE_IDS[@]}"; do
+        local file_path="$INPUTS_DIR/$MASTER_REFERENCE/$srr/${srr}_${MASTER_REFERENCE}${ABUNDANCE_SUFFIX}"
+        if [[ -f "$file_path" ]]; then
+            tail -n +2 "$file_path" | cut -f"$GENENAME_COL" >> "$tmp_csv"
+            files_found=$((files_found + 1))
+        fi
+    done
+
+    if [[ "$files_found" -eq 0 ]]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: No abundance files found - skipping full-transcriptome matrix"
+        rm -f "$tmp_csv"
+        return 1
+    fi
+
+    # De-duplicate the collected gene IDs (header line is already first)
+    local tmp_dedup
+    tmp_dedup=$(mktemp --suffix=.csv)
+    head -1 "$tmp_csv" > "$tmp_dedup"
+    tail -n +2 "$tmp_csv" | sort -u >> "$tmp_dedup"
+    mv "$tmp_dedup" "$tmp_csv"
+
+    local gene_count
+    gene_count=$(tail -n +2 "$tmp_csv" | grep -c .)
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Full transcriptome: $gene_count genes (union from $files_found samples)"
+
+    # Reuse merge_group_counts with MASTER_REFERENCE as the gene group name
+    if merge_group_counts "$MASTER_REFERENCE" "$tmp_csv"; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Full-transcriptome matrix complete"
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Failed to build full-transcriptome matrix"
+    fi
+
+    rm -f "$tmp_csv"
+}
+
+# ===============================================
 # MAIN EXECUTION
 # ===============================================
- 
+
 # Centralized gene groups CSV directory
 # Use GENE_GROUPS_DIR from environment (set by run_all_post_processing.sh)
 # Fallback to inputs/gene_groups_csv relative to the project root
@@ -295,6 +351,9 @@ GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-$SCRIPT_DIR/../..
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gene groups CSV directory: $GENE_GROUPS_CSV_DIR"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting count matrix generation for ${#GENE_GROUPS[@]} gene groups"
+
+# Build full-transcriptome matrix first (enables WGCNA and genome-wide analyses)
+build_full_transcriptome_matrix
 
 for gene_group in "${GENE_GROUPS[@]}"; do
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ========================================"

@@ -19,68 +19,19 @@ suppressPackageStartupMessages({
 # CONFIGURATION
 # ===============================================
 
-# Source shared config for SAMPLE_LABELS (DRY principle)
+# Source shared config and utilities (DRY principle)
 SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", ".")
 source(file.path(SCRIPT_DIR, "0_shared_config.R"))
 source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
+source(file.path(SCRIPT_DIR, "3_Matrix_Creation_utils.R"))
 
-# ===============================================
-# SALMON-SPECIFIC HELPER
-# ===============================================
-
+# Wrapper to adapt the shared save_count_matrices() signature to the call sites
+# below, which pass a level_suffix like "_gene_level".
 save_count_matrix <- function(counts_matrix, output_dir, base_name, master_ref, level_suffix,
                               tpm_matrix = NULL) {
-  # Saves matrices with naming convention expected by build_input_path:
-  # {gene_group}_{count_type}_{gene_type}_from_{master_ref}_{processing_level}.tsv
-  # count_type: "tpm" or "NumReads"  
-  # gene_type: "Gene_ID" or "Shortened_Name"
-  # processing_level: "gene_level" or "isoform_level"
-  
-  # Extract processing level name (remove leading underscore)
-  processing_level <- gsub("^_", "", level_suffix)
-  
-  # Helper to save a matrix with proper naming
-  save_matrix <- function(matrix_data, count_type, gene_type) {
-    output_file <- file.path(output_dir, 
-      paste0(base_name, "_", count_type, "_", gene_type, "_from_", master_ref, "_", processing_level, ".tsv"))
-    
-    # Convert to data frame, handling potential duplicate column names
-    matrix_df <- as.data.frame(matrix_data, check.names = FALSE)
-    # Add GeneID column manually to avoid tibble issues with duplicate names
-    matrix_df <- cbind(GeneID = rownames(matrix_data), matrix_df)
-    rownames(matrix_df) <- NULL
-    write.table(matrix_df, output_file, sep = "\t", quote = FALSE, row.names = FALSE)
-    cat("Saved:", basename(output_file), "\n")
-  }
-  
-  # Save NumReads matrices (Salmon's equivalent of raw counts)
-  # Always save Gene_ID (needed by DESeq2 and as source for Shortened_Name)
-  save_matrix(counts_matrix, "NumReads", "Gene_ID")
-
-  # With Shortened_Name (Organ labels for columns + gene name conversion) - only if configured
-  if ("Shortened_Name" %in% GENE_TYPES) {
-    counts_short <- convert_to_organ_labels(counts_matrix)
-    gene_group_for_map <- sub("_in_.*$", "", base_name)
-    counts_short <- tryCatch(
-      convert_to_shortened_names(counts_short, gene_group_for_map),
-      error = function(e) counts_short
-    )
-    save_matrix(counts_short, "NumReads", "Shortened_Name")
-  }
-
-  # Save TPM matrices (if provided)
-  if (!is.null(tpm_matrix)) {
-    save_matrix(tpm_matrix, "tpm", "Gene_ID")
-    if ("Shortened_Name" %in% GENE_TYPES) {
-      tpm_short <- convert_to_organ_labels(tpm_matrix)
-      gene_group_for_map <- sub("_in_.*$", "", base_name)
-      tpm_short <- tryCatch(
-        convert_to_shortened_names(tpm_short, gene_group_for_map),
-        error = function(e) tpm_short
-      )
-      save_matrix(tpm_short, "tpm", "Shortened_Name")
-    }
-  }
+  level <- gsub("^_", "", level_suffix)
+  save_count_matrices(counts_matrix, output_dir, base_name, master_ref, level,
+                      tpm = tpm_matrix, count_type_label = "NumReads")
 }
 
 # Use absolute paths from env vars to avoid working-directory dependency.
@@ -164,25 +115,25 @@ if (length(processing_levels) == 0) {
 
 for (level_name in names(processing_levels)) {
   level_config <- processing_levels[[level_name]]
-  
+
   cat(paste(rep("=", 70), collapse = ""), "\n")
   cat("PROCESSING:", level_config$label, "\n")
   cat(paste(rep("=", 70), collapse = ""), "\n\n")
-  
+
   # ===============================================
   # STEP 1: LOCATE SALMON OUTPUT FILES
   # ===============================================
-  
+
   cat("Step 1: Locating Salmon", level_config$label, "output files...\n")
-  
+
   # If QUANT_DIR already includes the fasta_tag (from SALMON_QUANT_ROOT), use as-is.
   # Otherwise append MASTER_REFERENCE (which equals the fasta_tag in the normal run).
   salmon_quant_dir <- if (QUANT_DIR_INCLUDES_REF) QUANT_DIR else file.path(QUANT_DIR, MASTER_REFERENCE)
-  
+
   # Build paths to Salmon quant.sf files
   files <- file.path(salmon_quant_dir, SAMPLE_IDS, "quant.sf")
   names(files) <- SAMPLE_IDS
-  
+
   # Check which files exist
   files_exist <- file.exists(files)
   if (sum(files_exist) == 0) {
@@ -190,7 +141,7 @@ for (level_name in names(processing_levels)) {
     cat("Skipping this level...\n\n")
     next
   }
-  
+
   current_sample_ids <- SAMPLE_IDS
   if (sum(files_exist) < length(files)) {
     missing <- SAMPLE_IDS[!files_exist]
@@ -198,16 +149,16 @@ for (level_name in names(processing_levels)) {
     files <- files[files_exist]
     current_sample_ids <- SAMPLE_IDS[files_exist]
   }
-  
+
   cat("Found", length(files), "Salmon quantification files\n")
   cat("Samples:", paste(current_sample_ids, collapse = ", "), "\n\n")
-  
+
   # ===============================================
   # STEP 2: IMPORT WITH TXIMPORT
   # ===============================================
-  
+
   cat("Step 2: Importing Salmon data with tximport...\n")
-  
+
   # For Salmon, we need a tx2gene mapping if summarizing to genes
   # Use the gene_trans_map file corresponding to the MASTER_REFERENCE
   INPUT_FASTAS_DIR <- Sys.getenv("INPUT_FASTAS_DIR", unset = "")
@@ -244,7 +195,7 @@ for (level_name in names(processing_levels)) {
       cat("Skipping gene-level processing...\n\n")
       next
     }
-    
+
     # Read tx2gene mapping (columns: GENEID, TXNAME → reorder to TXNAME, GENEID for tximport)
     tx2gene <- read.table(tx2gene_file, header = FALSE, sep = "\t", stringsAsFactors = FALSE,
                          colClasses = c("character", "character"))
@@ -269,7 +220,7 @@ for (level_name in names(processing_levels)) {
     txi <- tximport(files, type = "salmon", txIn = TRUE, txOut = TRUE,
                    ignoreTxVersion = TRUE, ignoreAfterBar = FALSE)
   }
-  
+
   entity_type <- if (level_config$tx_out) "transcripts" else "genes"
   cat("Successfully imported data for", ncol(txi$counts), "samples\n")
   cat("Total", entity_type, ":", nrow(txi$counts), "\n\n")
@@ -277,9 +228,9 @@ for (level_name in names(processing_levels)) {
   # ===============================================
   # STEP 3: CREATE SAMPLE METADATA
   # ===============================================
-  
+
   cat("Step 3: Creating sample metadata...\n")
-  
+
   # Get conditions from SAMPLE_LABELS, fallback to sample ID if not found
   conditions <- SAMPLE_LABELS[current_sample_ids]
   missing_labels <- is.na(conditions)
@@ -288,40 +239,40 @@ for (level_name in names(processing_levels)) {
     cat("Using sample IDs as condition labels for these samples\n")
     conditions[missing_labels] <- current_sample_ids[missing_labels]
   }
-  
+
   sample_data <- data.frame(
     SampleID = current_sample_ids,
     Condition = conditions,
     row.names = current_sample_ids,
     stringsAsFactors = FALSE
   )
-  
+
   cat("Sample metadata:\n")
   print(sample_data)
   cat("\n")
-  
+
   # ===============================================
   # STEP 4: CHECK FOR REPLICATES
   # ===============================================
-  
+
   cat("Step 4: Checking for biological replicates...\n")
-  
+
   condition_counts <- table(sample_data$Condition)
   has_replicates <- any(condition_counts > 1)
-  
+
   cat("Samples per condition:\n")
   print(condition_counts)
   cat("\n")
-  
+
   if (!has_replicates) {
     cat("WARNING: No biological replicates detected!\n")
     cat("Using TPM normalization for visualization purposes\n\n")
   }
-  
+
   # ===============================================
   # STEP 5: NORMALIZATION
   # ===============================================
-  
+
   # Extract raw counts (Salmon NumReads) and TPM for output.
   # Raw counts are saved as-is for DESeq2 input (downstream scripts normalise
   # internally); TPM is saved for visualisation (heatmaps, PCA, etc.).
@@ -363,15 +314,15 @@ for (level_name in names(processing_levels)) {
                    MASTER_REFERENCE, level_config$output_suffix,
                    tpm_matrix = tpm_matrix)
   cat("\n")
-  
+
   # ===============================================
   # STEP 7: PROCESS GENE GROUPS
   # ===============================================
-  
+
   cat("Step 7: Processing gene groups...\n")
-  
+
   gene_group_files <- list.files(GENE_GROUPS_DIR, pattern = "\\.(csv|txt|tsv)$", recursive = TRUE, full.names = TRUE)
-  
+
   # Filter to only process gene groups specified in GENE_GROUPS_STR (from bash config)
   gene_groups_str <- Sys.getenv("GENE_GROUPS_STR", unset = "")
   if (nzchar(gene_groups_str)) {
@@ -379,17 +330,14 @@ for (level_name in names(processing_levels)) {
     gene_group_files <- gene_group_files[tools::file_path_sans_ext(basename(gene_group_files)) %in% enabled_groups]
     cat("Filtering to configured gene groups:", paste(enabled_groups, collapse = ", "), "\n")
   }
-  
+
   if (length(gene_group_files) == 0) {
     cat("No gene group files found in", GENE_GROUPS_DIR, "\n")
   } else {
     cat("Found", length(gene_group_files), "gene group files\n\n")
-    
+
     successful_groups <- 0
-    
-    # Get combined output folder name (GeneGroup_in_Dataset)
-    CURRENT_DATASET <- Sys.getenv("CURRENT_DATASET", unset = "")
-  
+
     for (gene_group_file in gene_group_files) {
       gene_group_name <- tools::file_path_sans_ext(basename(gene_group_file))
       # Generate combined output name with dataset suffix
@@ -399,7 +347,7 @@ for (level_name in names(processing_levels)) {
         gene_group_name
       }
       cat("  Processing:", gene_group_name, "-> Output:", output_folder_name, "\n")
-  
+
       # Read gene list from CSV (first column is Gene_ID)
       # Use tryCatch return value so the assignment is visible in this scope
       gene_list <- tryCatch({
@@ -418,73 +366,26 @@ for (level_name in names(processing_levels)) {
         cat("    Error reading file:", e$message, "\n")
         character(0)
       })
-  
+
       if (length(gene_list) == 0) {
         cat("    Skipping: No genes in list\n")
         next
       }
-  
-      # Match gene list to row names in data.
-      # Handle suffix mismatch: gene_list has "SMEL4.1_06g023900" but
-      # Salmon output has "SMEL4.1_06g023900.1" (gene-level) or
-      # "SMEL4.1_06g023900.1.01" (isoform-level).
-      #
-      # For isoform-level, a single gene ID maps to MULTIPLE transcripts; we use
-      # logical indexing into data_rownames (not setNames) to capture ALL of them.
-      data_rownames <- rownames(raw_counts)
 
-      # Strip version suffixes to get base IDs for every row
-      base_ids <- sub("\\.[0-9]+\\.[0-9]+$", "", data_rownames)  # Strip .X.XX
-      base_ids <- sub("\\.[0-9]+$", "", base_ids)                 # Strip remaining .X
+      # Match gene list to row names using shared helper (handles version suffixes)
+      genes_in_data <- match_gene_ids(gene_list, rownames(raw_counts))
 
-      # Match genes while preserving CSV order; collect ALL rows per gene
-      genes_in_data <- character(0)
-      for (gene in gene_list) {
-        if (gene %in% data_rownames) {
-          # Exact match (gene-level IDs or versioned IDs in list)
-          genes_in_data <- c(genes_in_data, gene)
-        } else {
-          # Base-ID match: may return multiple transcripts at isoform level
-          hits <- data_rownames[base_ids == gene]
-          if (length(hits) > 0) {
-            genes_in_data <- c(genes_in_data, hits)
-          } else {
-            # Reverse: strip suffix from gene_list ID to match gene-level row IDs
-            # e.g., gene "SMEL5_06g022750.1" -> "SMEL5_06g022750" matches gene-level data
-            gene_base <- sub("\\.[0-9]+$", "", gene)
-            if (gene_base != gene) {
-              hits2 <- data_rownames[base_ids == gene_base]
-              if (length(hits2) > 0) {
-                genes_in_data <- c(genes_in_data, hits2)
-              } else if (gene_base %in% data_rownames) {
-                genes_in_data <- c(genes_in_data, gene_base)
-              }
-            }
-          }
-        }
-      }
-      genes_in_data <- unique(genes_in_data)
-  
       if (length(genes_in_data) == 0) {
         cat("    Skipping: No matching", entity_type, "found\n")
         next
       }
-  
-      if (level_config$tx_out) {
-        # At isoform level genes_in_data holds transcripts, so the ratio
-        # transcripts/genes is expected to exceed 1:1 — report both counts clearly.
-        n_genes_matched <- sum(vapply(gene_list, function(g)
-          g %in% data_rownames || any(base_ids == g), logical(1)))
-        cat("    Found", length(genes_in_data), "transcripts for",
-            n_genes_matched, "/", length(gene_list), "genes\n")
-      } else {
-        cat("    Found", length(genes_in_data), "/", length(gene_list), entity_type, "\n")
-      }
-  
+
+      cat("    Found", length(genes_in_data), "/", length(gene_list), entity_type, "\n")
+
       # Create gene group subdirectory with dataset suffix (consistent naming)
       gene_group_dir <- file.path(level_output_dir, output_folder_name)
       dir.create(gene_group_dir, recursive = TRUE, showWarnings = FALSE)
-      
+
       # Save gene group subset using helper (saves NumReads, TPM, Gene_ID, Shortened_Name variants)
       subset_counts <- raw_counts[genes_in_data, , drop = FALSE]
       subset_tpm <- tpm_matrix[genes_in_data, , drop = FALSE]
@@ -494,14 +395,14 @@ for (level_name in names(processing_levels)) {
       cat("    Saved subset matrices\n")
       successful_groups <- successful_groups + 1
     }
-    
+
     cat("\n  Summary: Processed", successful_groups, "/", length(gene_group_files), "gene groups\n")
   }
-  
+
   # ===============================================
   # LEVEL SUMMARY
   # ===============================================
-  
+
   cat("\n", paste(rep("=", 70), collapse = ""), "\n")
   cat(level_config$label, "PROCESSING COMPLETE\n")
   cat(paste(rep("=", 70), collapse = ""), "\n\n")
