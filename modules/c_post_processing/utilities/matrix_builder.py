@@ -13,6 +13,7 @@ python matrix_builder.py gene_names.txt sample_files_list.txt
 """
 
 import sys
+import re
 
 def main(gene_names_file, sample_files_list):
     """
@@ -24,7 +25,7 @@ def main(gene_names_file, sample_files_list):
     """
     # Read gene names
     with open(gene_names_file) as f:
-        gene_names = [line.strip() for line in f]
+        gene_names = [line.strip() for line in f if line.strip()]
 
     # Read sample file paths
     with open(sample_files_list) as f:
@@ -44,20 +45,38 @@ def main(gene_names_file, sample_files_list):
                     continue
                 gene_full = parts[0]
                 count = parts[1]
-                # Extract base gene ID (remove .1.01 transcript suffix)
-                # Pattern: SMEL4.1_XXgYYYYYY.1.01 -> SMEL4.1_XXgYYYYYY
-                gene_base = gene_full.rsplit('.', 2)[0] if gene_full.count('.') >= 2 else gene_full
-                # Store with base gene ID (may overwrite if multiple transcripts, keep last)
-                gene_to_count[gene_base] = count
-                # Also keep original for exact matches
+                # Store original for exact matches
                 gene_to_count[gene_full] = count
+                # Extract base gene ID by iteratively stripping trailing ".digits"
+                # suffixes (max 2 rounds). This safely handles eggplant IDs where
+                # the gene ID itself contains a dot (e.g., SMEL4.1_XXgYYYYYY).
+                #
+                # Example chain for SMEL4.1_06g023900.1.01:
+                #   Round 1: strip .01  -> SMEL4.1_06g023900.1  (stored)
+                #   Round 2: strip .1   -> SMEL4.1_06g023900    (stored)
+                # The chain naturally stops when no trailing .digits remain
+                # (e.g., SMEL4.1_06g023900 ends with g023900, not .digits).
+                current = gene_full
+                for _ in range(2):
+                    stripped = re.sub(r'\.\d+$', '', current)
+                    if stripped == current:
+                        break  # No more trailing .digits to strip
+                    gene_to_count[stripped] = count
+                    current = stripped
         sample_dicts.append(gene_to_count)
 
     # Output matrix
     for gene in gene_names:
         row = [gene]
         for sample in sample_dicts:
-            count = sample.get(gene, "0")
+            count = sample.get(gene)
+            if count is None:
+                # Fallback: strip trailing numeric suffixes from the lookup gene ID
+                # e.g. SMEL4.1_XXgYYYYYY.1 -> SMEL4.1_XXgYYYYYY
+                gene_base = re.sub(r'\.\d+$', '', gene)
+                count = sample.get(gene_base)
+            if count is None:
+                count = "0"
             row.append(count)
         print("\t".join(row))
 

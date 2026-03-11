@@ -47,13 +47,16 @@ get_analysis_script() {
 }
 
 # Return the method-specific Matrix_Creation script (M3/M4/M5) or fallback.
+# M1/M2 (HISAT2+StringTie) do not use Matrix_Creation — preprocessing is handled
+# by stringtie_matrix_builder.sh (M2) or prepde_matrix_linker.sh (M1).
 # Usage: get_matrix_creation_script "method_name"
 get_matrix_creation_script() {
     case "$1" in
-        "M5_RSEM_Bowtie2") echo "3_Matrix_Creation_RSEM.R" ;;
-        "M4_Salmon_Saf")   echo "3_Matrix_Creation_Salmon.R" ;;
-        "M3_STAR_Align")   echo "3_Matrix_Creation_STAR.R" ;;
-        *)                 echo "3_Matrix_Creation.R" ;;  # fallback for unknown/legacy methods
+        "M5_RSEM_Bowtie2")       echo "3_Matrix_Creation_RSEM.R" ;;
+        "M4_Salmon_Saf")         echo "3_Matrix_Creation_Salmon.R" ;;
+        "M3_STAR_Align")         echo "3_Matrix_Creation_STAR.R" ;;
+        "M1_HISAT2_RefGuided"|"M2_HISAT2_DeNovo") echo "" ;;  # Not applicable — use preprocessing script instead
+        *)                       echo "3_Matrix_Creation.R" ;;  # fallback for unknown/legacy methods
     esac
 }
 
@@ -116,7 +119,7 @@ run_method_analysis() {
     fi
 
     # Export GENE_GROUPS_DIR as absolute path for R scripts
-    export GENE_GROUPS_DIR="$BASE_DIR/inputs/gene_groups"
+    export GENE_GROUPS_DIR="$BASE_DIR/inputs/gene_groups_csv"
     
     # Rebuild arrays from exported strings first — bash arrays are not exported to subshells,
     # so GNU Parallel workers arrive with GENE_GROUPS/ANALYSES empty.  This must happen
@@ -172,6 +175,10 @@ run_method_analysis() {
         local script
         if [[ "$analysis" == "Matrix_Creation" ]]; then
             script=$(get_matrix_creation_script "$method")
+            if [[ -z "$script" ]]; then
+                log_info "Matrix_Creation not applicable for $method — skipping"
+                continue
+            fi
         else
             script=$(get_analysis_script "$analysis")
         fi
