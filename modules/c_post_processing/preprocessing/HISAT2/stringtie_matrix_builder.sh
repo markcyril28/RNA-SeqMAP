@@ -333,7 +333,7 @@ build_full_transcriptome_matrix() {
     mv "$tmp_dedup" "$tmp_csv"
 
     local gene_count
-    gene_count=$(tail -n +2 "$tmp_csv" | grep -c .)
+    gene_count=$(tail -n +2 "$tmp_csv" | grep -c . || true)
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Full transcriptome: $gene_count genes (union from $files_found samples)"
 
     # Reuse merge_group_counts with MASTER_REFERENCE as the gene group name
@@ -375,7 +375,7 @@ for gene_group in "${GENE_GROUPS[@]}"; do
         continue
     fi
     
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Found reference CSV with $(tail -n +2 "$REF_CSV" | grep -c .) genes"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Found reference CSV with $(tail -n +2 "$REF_CSV" | grep -c . || true) genes"
     
     if merge_group_counts "$gene_group" "$REF_CSV"; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Successfully processed $gene_group"

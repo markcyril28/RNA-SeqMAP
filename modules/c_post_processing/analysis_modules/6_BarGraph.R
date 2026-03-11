@@ -77,9 +77,10 @@ generate_bar_graph <- function(data_matrix, output_path, title,
         summarise(
           Mean = mean(Expression, na.rm = TRUE),
           SD = sd(Expression, na.rm = TRUE),
+          SE = sd(Expression, na.rm = TRUE) / sqrt(n()),
           .groups = "drop"
         )
-      
+
       p <- ggplot(df_summary, aes(x = Sample, y = Mean, fill = Sample)) +
         geom_bar(stat = "identity") +
         scale_fill_manual(values = colors) +
@@ -91,9 +92,10 @@ generate_bar_graph <- function(data_matrix, output_path, title,
           legend.position = "none",
           plot.title = element_text(hjust = 0.5, face = "bold")
         )
-      
+
       if (SHOW_ERROR_BARS) {
-        p <- p + geom_errorbar(aes(ymin = Mean - SD, ymax = Mean + SD), 
+        err_col <- if (ERROR_BAR_TYPE == "SE") "SE" else "SD"
+        p <- p + geom_errorbar(aes(ymin = Mean - .data[[err_col]], ymax = Mean + .data[[err_col]]),
                                width = 0.2, alpha = 0.7)
       }
     }
