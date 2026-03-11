@@ -62,7 +62,7 @@ _trim_single_srr() {
 	
 	local tmp_r1="$trim_dir/${SRR}_1_headcrop.fq"
 	local tmp_r2="$trim_dir/${SRR}_2_headcrop.fq"
-	run_with_space_time_log trimmomatic PE -threads "$THREADS" \
+	run_with_space_time_log trimmomatic PE -threads "$THREADS_PER_JOB" \
 		"$tg_r1" "$tg_r2" "$tmp_r1" /dev/null "$tmp_r2" /dev/null \
 		HEADCROP:${HEADCROP_BASES}
 	mv "$tmp_r1" "$tg_r1"
@@ -171,10 +171,11 @@ download_and_trim_srrs() {
 			run_with_space_time_log prefetch "$SRR" --output-directory "$raw_dir"
 			run_with_space_time_log fasterq-dump --split-files --threads "$THREADS" \
 				"$raw_dir/$SRR/$SRR.sra" -O "$raw_dir"
-			[[ -f "$raw_dir/${SRR}_1.fastq" ]] && gzip "$raw_dir/${SRR}_1.fastq" "$raw_dir/${SRR}_2.fastq"
+			[[ -f "$raw_dir/${SRR}_1.fastq" ]] && gzip "$raw_dir/${SRR}_1.fastq"
+			[[ -f "$raw_dir/${SRR}_2.fastq" ]] && gzip "$raw_dir/${SRR}_2.fastq"
 			find_raw_fastq "$SRR"
 		fi
-		
+
 		[[ -z "$raw1" ]] && { log_warn "Raw FASTQ not found for $SRR"; continue; }
 		_trim_single_srr "$SRR"
 	done
@@ -210,9 +211,9 @@ download_and_trim_srrs_parallel() {
 	done
 	export SERIALIZED_TRIM_PROFILES="$serialized_profiles"
 	
-	export -f timestamp log log_info log_warn log_error run_with_space_time_log
+	export -f timestamp log log_info log_warn log_error run_with_space_time_log run_with_error_capture
 	export -f find_trimmed_fastq find_raw_fastq verify_trimming_and_cleanup
-	
+
 	_parallel_worker() {
 		local SRR="$1"
 		
@@ -233,16 +234,18 @@ download_and_trim_srrs_parallel() {
 		if [[ -z "$raw1" ]]; then
 			prefetch "$SRR" --output-directory "$raw_dir" || return 1
 			fasterq-dump --split-files --threads "${THREADS_PER_JOB:-4}" "$raw_dir/$SRR/$SRR.sra" -O "$raw_dir" || return 1
-			[[ -f "$raw_dir/${SRR}_1.fastq" ]] && gzip "$raw_dir/${SRR}_1.fastq" "$raw_dir/${SRR}_2.fastq"
+			[[ -f "$raw_dir/${SRR}_1.fastq" ]] && gzip "$raw_dir/${SRR}_1.fastq"
+			[[ -f "$raw_dir/${SRR}_2.fastq" ]] && gzip "$raw_dir/${SRR}_2.fastq"
 			find_raw_fastq "$SRR"
 		fi
-		
+
 		[[ -z "$raw1" ]] && { log_warn "No raw for $SRR"; return 1; }
 		
 		trim_galore --cores "${THREADS_PER_JOB:-2}" --paired "$raw1" "$raw2" --output_dir "$trim_dir"
 		local tg_r1="$trim_dir/${SRR}_1_val_1.fq"
 		local tg_r2="$trim_dir/${SRR}_2_val_2.fq"
-		[[ -f "${tg_r1}.gz" ]] && gunzip "${tg_r1}.gz" "${tg_r2}.gz"
+		[[ -f "${tg_r1}.gz" ]] && gunzip "${tg_r1}.gz"
+		[[ -f "${tg_r2}.gz" ]] && gunzip "${tg_r2}.gz"
 		
 		# Deserialize trim profiles and get HEADCROP for this SRR
 		local profile="$TRIM_PROFILE_DEFAULT"
@@ -257,7 +260,16 @@ download_and_trim_srrs_parallel() {
 			"${tg_r1}.tmp" /dev/null "${tg_r2}.tmp" /dev/null HEADCROP:${HEADCROP_BASES}
 		mv "${tg_r1}.tmp" "$tg_r1"
 		mv "${tg_r2}.tmp" "$tg_r2"
-		
+
+		# Apply TAILCROP if > 0
+		if [[ "${TAILCROP_BASES:-0}" -gt 0 ]]; then
+			log_info "Applying TAILCROP:${TAILCROP_BASES} for $SRR..."
+			cutadapt -u -${TAILCROP_BASES} -U -${TAILCROP_BASES} \
+				-o "${tg_r1}.tmp" -p "${tg_r2}.tmp" "$tg_r1" "$tg_r2"
+			mv "${tg_r1}.tmp" "$tg_r1"
+			mv "${tg_r2}.tmp" "$tg_r2"
+		fi
+
 		verify_trimming_and_cleanup "$SRR" "$tg_r1" "$tg_r2" "$raw1" "$raw2"
 	}
 	export -f _parallel_worker

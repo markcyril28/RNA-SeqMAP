@@ -41,7 +41,8 @@ download_srrs() {
 			"$raw_dir/$SRR/$SRR.sra" -O "$raw_dir"
 		
 		# Compress downloaded files
-		[[ -f "$raw_dir/${SRR}_1.fastq" ]] && gzip "$raw_dir/${SRR}_1.fastq" "$raw_dir/${SRR}_2.fastq"
+		[[ -f "$raw_dir/${SRR}_1.fastq" ]] && gzip "$raw_dir/${SRR}_1.fastq"
+		[[ -f "$raw_dir/${SRR}_2.fastq" ]] && gzip "$raw_dir/${SRR}_2.fastq"
 	done
 	log_info "All downloads completed."
 }
@@ -156,7 +157,8 @@ download_srrs_parallel() {
 		
 		prefetch "$SRR" --output-directory "$raw_dir" || return 1
 		fasterq-dump --split-files --threads "${THREADS_PER_JOB:-2}" "$raw_dir/$SRR/$SRR.sra" -O "$raw_dir" || return 1
-		[[ -f "$raw_dir/${SRR}_1.fastq" ]] && gzip "$raw_dir/${SRR}_1.fastq" "$raw_dir/${SRR}_2.fastq"
+		[[ -f "$raw_dir/${SRR}_1.fastq" ]] && gzip "$raw_dir/${SRR}_1.fastq"
+		[[ -f "$raw_dir/${SRR}_2.fastq" ]] && gzip "$raw_dir/${SRR}_2.fastq"
 	}
 	export -f _download_worker
 	
