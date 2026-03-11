@@ -57,21 +57,25 @@ spearman_per_sample <- matrix(NA, nrow = length(common_samples), ncol = length(m
 pearson_per_sample <- matrix(NA, nrow = length(common_samples), ncol = length(method_pairs),
                               dimnames = list(common_samples, pair_names))
 
+# Pre-compute log2(TPM+1) once per method (avoids redundant log2 per pair × sample)
+log2_matrices <- lapply(tpm_matrices, function(mat) log2(mat + 1))
+
 for (i in seq_along(method_pairs)) {
   m1 <- method_pairs[[i]][1]
   m2 <- method_pairs[[i]][2]
+  mat1 <- log2_matrices[[m1]]
+  mat2 <- log2_matrices[[m2]]
+
+  # Vectorized: identify genes with nonzero expression in at least one method
+  nonzero_mask <- (mat1 > 0) | (mat2 > 0)  # genes × samples logical matrix
+  nonzero_per_sample <- colSums(nonzero_mask)
 
   for (s in common_samples) {
-    x <- log2(tpm_matrices[[m1]][, s] + 1)
-    y <- log2(tpm_matrices[[m2]][, s] + 1)
-
-    # Remove genes where both are zero (uninformative)
-    nonzero <- (x > 0) | (y > 0)
-    if (sum(nonzero) < 10) next
-
-    spearman_per_sample[s, i] <- cor(x[nonzero], y[nonzero], method = "spearman",
+    if (nonzero_per_sample[s] < 10) next
+    nz <- nonzero_mask[, s]
+    spearman_per_sample[s, i] <- cor(mat1[nz, s], mat2[nz, s], method = "spearman",
                                       use = "pairwise.complete.obs")
-    pearson_per_sample[s, i] <- cor(x[nonzero], y[nonzero], method = "pearson",
+    pearson_per_sample[s, i] <- cor(mat1[nz, s], mat2[nz, s], method = "pearson",
                                      use = "pairwise.complete.obs")
   }
 }
@@ -199,15 +203,14 @@ cat("  Saved: per_sample_correlation_boxplot.png\n")
 
 cat("\n--- Identifying discordant genes ---\n")
 
-# Compute mean log2(TPM+1) per gene per method
-mean_expr_per_method <- sapply(tpm_matrices, function(mat) {
-  rowMeans(log2(mat + 1))
-})
+# Compute mean log2(TPM+1) per gene per method — reuse pre-computed log2 matrices
+mean_expr_per_method <- sapply(log2_matrices, rowMeans)
 colnames(mean_expr_per_method) <- sapply(methods, get_short_name)
 
-# CV across methods for each gene
+# CV across methods for each gene (vectorized SD using rowMeans/rowSums)
 gene_means <- rowMeans(mean_expr_per_method)
-gene_sds <- apply(mean_expr_per_method, 1, sd)
+n_m <- ncol(mean_expr_per_method)
+gene_sds <- sqrt(rowSums((mean_expr_per_method - gene_means)^2) / (n_m - 1))
 gene_cv <- ifelse(gene_means > 0, gene_sds / gene_means, 0)
 
 # Flag genes with high CV
@@ -308,8 +311,8 @@ for (i in seq_along(method_pairs)) {
   m1 <- method_pairs[[i]][1]
   m2 <- method_pairs[[i]][2]
 
-  x <- rowMeans(log2(tpm_matrices[[m1]] + 1))
-  y <- rowMeans(log2(tpm_matrices[[m2]] + 1))
+  x <- rowMeans(log2_matrices[[m1]])
+  y <- rowMeans(log2_matrices[[m2]])
 
   # Color by expression level
   cols <- ifelse(x + y > 0, adjustcolor("#7B1FA2", alpha.f = 0.15), "grey80")

@@ -38,7 +38,7 @@ cat("--- Loading gene groups ---\n")
 cat("  Gene groups dir:", GENE_GROUPS_DIR, "\n")
 
 all_ranking_results <- list()
-all_flagged_genes <- data.frame()
+all_flagged_list <- list()  # Collect flagged DFs in list; rbind once at end
 
 for (gene_group in CONCORDANCE_GENE_GROUPS) {
   cat("\n=== Gene group:", gene_group, "===\n")
@@ -93,10 +93,13 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
   # -----------------------------------------------
 
   n_genes <- length(matched_genes)
-  rank_range <- apply(rank_matrix, 1, function(r) max(r) - min(r))
-  rank_sd <- apply(rank_matrix, 1, sd)
-  rank_cv <- rank_sd / rowMeans(rank_matrix)
-  median_rank <- apply(rank_matrix, 1, median)
+  # Vectorized: avoid 3 apply() calls over rank_matrix rows
+  rank_row_means <- rowMeans(rank_matrix)
+  n_meth <- ncol(rank_matrix)
+  rank_range <- matrixStats::rowMaxs(rank_matrix) - matrixStats::rowMins(rank_matrix)
+  rank_sd <- sqrt(rowSums((rank_matrix - rank_row_means)^2) / (n_meth - 1))
+  rank_cv <- rank_sd / rank_row_means
+  median_rank <- matrixStats::rowMedians(rank_matrix)
 
   # Fractional rank change: max rank shift / total genes
   frac_rank_change <- rank_range / n_genes
@@ -145,11 +148,11 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
 
   all_ranking_results[[gene_group]] <- ranking_df
 
-  # Collect flagged genes across groups
+  # Collect flagged genes across groups (append to list; single rbind at end)
   if (sum(flagged) > 0) {
     flagged_rows <- ranking_df[ranking_df$Flagged, ]
     flagged_rows$Gene_Group <- gene_group
-    all_flagged_genes <- rbind(all_flagged_genes, flagged_rows)
+    all_flagged_list[[length(all_flagged_list) + 1]] <- flagged_rows
   }
 
   # -----------------------------------------------
@@ -162,10 +165,14 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
   display_rank_mat <- rank_matrix
   rownames(display_rank_mat) <- display_names
 
-  col_fun <- colorRamp2(
-    c(1, ceiling(n_genes / 2), n_genes),
-    c("#4A148C", "#CE93D8", "#F3E5F5")
-  )
+  if (n_genes == 2) {
+    col_fun <- colorRamp2(c(1, 2), c("#4A148C", "#F3E5F5"))
+  } else {
+    col_fun <- colorRamp2(
+      c(1, ceiling(n_genes / 2), n_genes),
+      c("#4A148C", "#CE93D8", "#F3E5F5")
+    )
+  }
 
   # Annotation: flag column
   flag_colors <- ifelse(flagged, "#EF8A62", "#CCCCCC")
@@ -262,6 +269,7 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
 # Save combined flagged genes
 # -----------------------------------------------
 
+all_flagged_genes <- if (length(all_flagged_list) > 0) do.call(rbind, all_flagged_list) else data.frame()
 if (nrow(all_flagged_genes) > 0) {
   write.csv(all_flagged_genes,
             file.path(TABLES_DIR, "ranking_instability_flagged.csv"),
