@@ -107,8 +107,8 @@ create_sample_metadata() {
 # TXIMPORT SCRIPT GENERATION
 # ==============================================================================
 
-# Get the helper scripts directory
-HELPERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/helpers" && pwd)"
+# Get the helper scripts directory (tximport helpers live in c_post_processing/preprocessing)
+HELPERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../c_post_processing/preprocessing" && pwd)"
 
 # Run tximport using external R helper script
 # Usage: run_tximport <method> <quant_dir> <metadata_file> [output_dir]

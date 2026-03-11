@@ -169,12 +169,15 @@ star_alignment_pipeline() {
 	# STAR_INDEX_ROOT already contains {fasta_tag} (set by set_fasta_output_dirs).
 	# STAR_ALIGN_ROOT does NOT contain {fasta_tag}; we embed it explicitly below to
 	# isolate BAM outputs and Salmon quant per reference, preventing multi-reference collisions.
+	#
+	# The STAR genome index depends only on the genome FASTA + GTF, NOT on tissue.
+	# Always use the shared base path so star_tissue_specific_pipeline() never
+	# rebuilds the same 30+ GB index for every tissue (analogous to salmon_idx).
+	star_index_dir="${abs_star_index_root}/5_star/index"
 	if [[ -n "$tissue_tag" ]]; then
-		star_index_dir="${abs_star_index_root}/5_star/index/${tissue_tag}"
 		star_genome_dir="${abs_star_align_root}/${fasta_tag}/5_star/alignments/${tissue_tag}"
 		log_info "[STAR] Tissue-specific alignment for: $tissue_tag (${#rnaseq_list[@]} samples)"
 	else
-		star_index_dir="${abs_star_index_root}/5_star/index"
 		star_genome_dir="${abs_star_align_root}/${fasta_tag}/5_star/alignments"
 		log_info "[STAR] Pooled alignment: ${#rnaseq_list[@]} samples"
 	fi
@@ -596,10 +599,13 @@ star_alignment_pipeline() {
 
 	# STEP 3: SALMON QUANTIFICATION
 	# Include fasta_tag in paths to prevent multi-reference collisions.
-	# tissue_tag further subdivides within a given reference run.
+	# tissue_tag further subdivides quant outputs within a given reference run.
 	local ref_suffix=""
 	[[ -n "${tissue_tag:-}" ]] && ref_suffix="${tissue_tag}"
-	local salmon_idx="${abs_star_align_root}/${fasta_tag}/6_salmon/index${ref_suffix:+/${ref_suffix}}"
+	# The Salmon index depends only on the transcriptome FASTA, not on tissue.
+	# Do NOT include ref_suffix here; otherwise star_tissue_specific_pipeline()
+	# rebuilds the same expensive index once per tissue.
+	local salmon_idx="${abs_star_align_root}/${fasta_tag}/6_salmon/index"
 	local quant_root="${abs_star_align_root}/${fasta_tag}/6_salmon/quant${ref_suffix:+/${ref_suffix}}"
 	# Clean up double slashes
 	salmon_idx="${salmon_idx//\/\//\/}"
@@ -614,6 +620,8 @@ star_alignment_pipeline() {
 		log_info "[SALMON INDEX] Indexing: $transcriptome_fasta"
 		run_with_space_time_log --input "$transcriptome_fasta" --output "$salmon_idx" \
 			salmon index -t "$transcriptome_fasta" -i "$salmon_idx" -k 31 --threads "$THREADS"
+		[[ ! -f "$salmon_idx/versionInfo.json" ]] && { log_error "[SALMON INDEX] Index build failed - versionInfo.json not found in $salmon_idx"; return 1; }
+		log_info "[SALMON INDEX] Index built successfully: $salmon_idx"
 	fi
 
 	# Quantify samples
@@ -692,27 +700,44 @@ star_alignment_pipeline() {
 					--validateMappings -l "${_sal_lib_se:-A}" -r "$trimmed1"
 			fi
 
-			[[ -f "$quant_dir/quant.sf" ]] && log_info "[SALMON] Successfully quantified: $SRR"
+			if [[ -f "$quant_dir/quant.sf" ]]; then
+				log_info "[SALMON] Successfully quantified: $SRR"
+			else
+				log_warn "[SALMON] quant.sf not produced for $SRR - check Salmon output above"
+			fi
 		done
 	fi
 
 	# STEP 4: PREPARE TXIMPORT FILES FOR DESEQ2
 	log_step "Preparing tximport input for DESeq2 (STAR + Salmon)"
 
-	local matrix_dir="$STAR_MATRIX_ROOT"
+	# Include tissue/ref suffix so tissue-specific runs get isolated matrix dirs.
+	# Without this, star_tissue_specific_pipeline() tissue runs overwrite each
+	# other's sample_info.tsv, tximport script, and count matrix TSVs.
+	local matrix_dir="${STAR_MATRIX_ROOT}${ref_suffix:+/${ref_suffix}}"
+	# master_ref drives output filenames in tximport_star_helper.R; include the
+	# tissue suffix so per-tissue TSV files have distinct, non-colliding names.
+	local master_ref="${fasta_tag}${ref_suffix:+_${ref_suffix}}"
 	mkdir -p "$matrix_dir"
 
 	local sample_metadata="$matrix_dir/sample_info.tsv"
-	local tx2gene_file="$matrix_dir/tx2gene_${fasta_tag}${ref_suffix:+_${ref_suffix}}.tsv"
+	# tx2gene is derived from the GTF (same for all tissues of this reference);
+	# keep it in the base STAR_MATRIX_ROOT so it is shared and not re-generated
+	# for every tissue.  Name it only by fasta_tag.
+	local tx2gene_file="${STAR_MATRIX_ROOT}/tx2gene_${fasta_tag}.tsv"
+	mkdir -p "$STAR_MATRIX_ROOT"
 
 	# Create tx2gene mapping from GTF (transcript_id -> gene_id attributes)
 	# This correctly handles multi-transcript genes; version-stripping FASTA headers is not reliable.
 	if [[ ! -f "$tx2gene_file" ]]; then
 		log_info "[TXIMPORT] Creating transcript-to-gene mapping from GTF: $STAR_GTF_FILE"
 		awk '$3=="transcript" {
-			match($0, /transcript_id "([^"]+)"/, t)
-			match($0, /gene_id "([^"]+)"/, g)
-			if (t[1] && g[1]) print t[1] "\t" g[1]
+			tid=""; gid=""
+			for (i=9; i<=NF; i++) {
+				if ($i == "transcript_id") { gsub(/[";]/, "", $(i+1)); tid=$(i+1) }
+				if ($i == "gene_id")       { gsub(/[";]/, "", $(i+1)); gid=$(i+1) }
+			}
+			if (tid != "" && gid != "") print tid "\t" gid
 		}' "$STAR_GTF_FILE" | sort -u > "$tx2gene_file"
 		local tx2gene_count
 		tx2gene_count=$(wc -l < "$tx2gene_file")
@@ -738,19 +763,19 @@ star_alignment_pipeline() {
 
 	# Generate tximport R script (always refresh so helper updates propagate)
 	local tximport_script="$matrix_dir/run_tximport_star_salmon.R"
-	generate_tximport_star_script "$quant_root" "$sample_metadata" "$tx2gene_file" "$matrix_dir" "$tximport_script"
+	generate_tximport_star_script "$quant_root" "$sample_metadata" "$tx2gene_file" "$matrix_dir" "$tximport_script" || return 1
 
 	# Run tximport if R is available
 	if command -v Rscript >/dev/null 2>&1; then
 		log_step "Running tximport to import Salmon quantifications"
 		# Note: stdout already goes through tee via exec redirect; do NOT pipe to tee -a "$LOG_FILE" (causes double-logging)
-		if Rscript "$tximport_script" "$quant_root" "$sample_metadata" "$tx2gene_file" "$matrix_dir" "$fasta_tag" 2>&1; then
+		if Rscript "$tximport_script" "$quant_root" "$sample_metadata" "$tx2gene_file" "$matrix_dir" "$master_ref" 2>&1; then
 			log_info "[TXIMPORT] Successfully imported counts for DESeq2"
-			local count_matrix="$matrix_dir/gene_level/${fasta_tag}_NumReads_Gene_ID_from_${fasta_tag}_gene_level.tsv"
+			local count_matrix="$matrix_dir/gene_level/${master_ref}_NumReads_Gene_ID_from_${master_ref}_gene_level.tsv"
 			[[ -f "$count_matrix" ]] && validate_count_matrix "$count_matrix" "gene" 2
 		else
-			log_warn "[TXIMPORT] tximport failed - check R dependencies"
-			log_warn "[TXIMPORT] Install missing packages: Rscript -e \"BiocManager::install('tximport')\""
+			log_warn "[TXIMPORT] tximport failed - see R error output above for details"
+			log_warn "[TXIMPORT] Common causes: transcript ID mismatch between quant.sf and tx2gene, or missing R packages (BiocManager::install('tximport'))"
 		fi
 	else
 		log_warn "[TXIMPORT] Rscript not found - run manually: Rscript $tximport_script"
@@ -774,7 +799,7 @@ run_tximport_star() {
 	local tx2gene_file="$3"
 	local output_dir="${4:-$(dirname "$metadata_file")}"
 	local master_ref="${5:-$(basename "$output_dir")}"
-	local helper_script="$SCRIPT_DIR/helpers/tximport_star_helper.R"
+	local helper_script="$SCRIPT_DIR/../c_post_processing/preprocessing/STAR/tximport_star_helper.R"
 
 	if [[ ! -f "$helper_script" ]]; then
 		log_error "tximport_star_helper.R not found: $helper_script"
@@ -792,7 +817,7 @@ generate_tximport_star_script() {
 	local tx2gene_file="$3"
 	local matrix_dir="$4"
 	local output_script="$5"
-	local helper_script="$SCRIPT_DIR/helpers/tximport_star_helper.R"
+	local helper_script="$SCRIPT_DIR/../c_post_processing/preprocessing/STAR/tximport_star_helper.R"
 
 	if [[ -f "$helper_script" ]]; then
 		cp "$helper_script" "$output_script"
