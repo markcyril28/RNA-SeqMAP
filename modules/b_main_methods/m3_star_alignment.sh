@@ -95,14 +95,19 @@ _star_check_alignment_rates() {
 		local logf="${align_dir}/${SRR}_Log.final.out"
 		[[ ! -f "$logf" ]] && continue
 
-		# Extract key metrics from STAR Log.final.out
+		# Extract all key metrics in single AWK pass (replaces 6 separate AWK invocations)
 		local uniq_pct multi_pct short_pct mismatch_pct other_pct input_reads
-		input_reads=$(awk -F'|' '/Number of input reads/{gsub(/[[:space:]]/, "", $2); print $2}' "$logf" 2>/dev/null)
-		uniq_pct=$(awk -F'|' '/Uniquely mapped reads %/{gsub(/[[:space:]%]/, "", $2); print $2}' "$logf" 2>/dev/null)
-		multi_pct=$(awk -F'|' '/% of reads mapped to multiple loci/{gsub(/[[:space:]%]/, "", $2); print $2}' "$logf" 2>/dev/null)
-		short_pct=$(awk -F'|' '/% of reads unmapped: too short/{gsub(/[[:space:]%]/, "", $2); print $2}' "$logf" 2>/dev/null)
-		mismatch_pct=$(awk -F'|' '/% of reads unmapped: too many mismatches/{gsub(/[[:space:]%]/, "", $2); print $2}' "$logf" 2>/dev/null)
-		other_pct=$(awk -F'|' '/% of reads unmapped: other/{gsub(/[[:space:]%]/, "", $2); print $2}' "$logf" 2>/dev/null)
+		local _metrics
+		_metrics=$(awk -F'|' '
+			/Number of input reads/           {gsub(/[[:space:]]/, "", $2); ir=$2}
+			/Uniquely mapped reads %/         {gsub(/[[:space:]%]/, "", $2); uq=$2}
+			/% of reads mapped to multiple/   {gsub(/[[:space:]%]/, "", $2); ml=$2}
+			/% of reads unmapped: too short/  {gsub(/[[:space:]%]/, "", $2); sh=$2}
+			/% of reads unmapped: too many/   {gsub(/[[:space:]%]/, "", $2); mm=$2}
+			/% of reads unmapped: other/      {gsub(/[[:space:]%]/, "", $2); ot=$2}
+			END {printf "%s %s %s %s %s %s", ir, uq, ml, sh, mm, ot}
+		' "$logf" 2>/dev/null)
+		read -r input_reads uniq_pct multi_pct short_pct mismatch_pct other_pct <<< "$_metrics"
 
 		[[ -z "$uniq_pct" ]] && continue
 
@@ -145,14 +150,14 @@ _star_check_alignment_rates() {
 	# Cohort-level outlier detection: flag samples >2 SD below mean unique mapping rate
 	local n=${#unique_rates[@]}
 	if [[ $n -ge 3 ]]; then
-		local sum=0 sum_sq=0
-		for rate in "${unique_rates[@]}"; do
-			sum=$(awk "BEGIN{printf \"%.4f\", $sum + $rate}")
-			sum_sq=$(awk "BEGIN{printf \"%.4f\", $sum_sq + ($rate * $rate)}")
-		done
-		local mean=$(awk "BEGIN{printf \"%.2f\", $sum / $n}")
-		local sd=$(awk "BEGIN{v=($sum_sq/$n) - ($sum/$n)^2; printf \"%.2f\", (v>0)?sqrt(v):0}")
-		local threshold=$(awk "BEGIN{printf \"%.2f\", $mean - 2 * $sd}")
+		# Single AWK pass for mean, sd, threshold (replaces 2N+3 AWK spawns)
+		local _stats
+		_stats=$(printf '%s\n' "${unique_rates[@]}" | awk '{s+=$1; ss+=$1*$1} END{
+			m=s/NR; v=ss/NR - m*m; sd=(v>0)?sqrt(v):0
+			printf "%.2f %.2f %.2f", m, sd, m-2*sd
+		}')
+		local mean sd threshold
+		read -r mean sd threshold <<< "$_stats"
 
 		log_info "[STAR QC] Cohort alignment stats: mean=${mean}%, SD=${sd}%, outlier threshold=${threshold}%"
 

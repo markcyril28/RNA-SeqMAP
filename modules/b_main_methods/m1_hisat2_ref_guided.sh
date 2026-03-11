@@ -85,14 +85,14 @@ _hisat2_check_alignment_rates() {
 	# Cohort-level outlier detection: flag samples >2 SD below mean overall rate
 	local n=${#overall_rates[@]}
 	if [[ $n -ge 3 ]]; then
-		local sum=0 sum_sq=0
-		for rate in "${overall_rates[@]}"; do
-			sum=$(awk "BEGIN{printf \"%.4f\", $sum + $rate}")
-			sum_sq=$(awk "BEGIN{printf \"%.4f\", $sum_sq + ($rate * $rate)}")
-		done
-		local mean=$(awk "BEGIN{printf \"%.2f\", $sum / $n}")
-		local sd=$(awk "BEGIN{v=($sum_sq/$n) - ($sum/$n)^2; printf \"%.2f\", (v>0)?sqrt(v):0}")
-		local threshold=$(awk "BEGIN{printf \"%.2f\", $mean - 2 * $sd}")
+		# Single AWK pass for sum, mean, sd, threshold (replaces 2N+3 AWK spawns)
+		local _stats
+		_stats=$(printf '%s\n' "${overall_rates[@]}" | awk '{s+=$1; ss+=$1*$1} END{
+			m=s/NR; v=ss/NR - m*m; sd=(v>0)?sqrt(v):0
+			printf "%.2f %.2f %.2f", m, sd, m-2*sd
+		}')
+		local mean sd threshold
+		read -r mean sd threshold <<< "$_stats"
 
 		log_info "[HISAT2 QC] Cohort alignment stats: mean=${mean}%, SD=${sd}%, outlier threshold=${threshold}%"
 
