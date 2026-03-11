@@ -56,16 +56,30 @@ save_count_matrix <- function(counts_matrix, output_dir, base_name, master_ref,
     cat("  Saved:", basename(output_file), "\n")
   }
 
-  # NumReads (raw counts) - with SRR IDs and with Organ labels
+  # NumReads (raw counts) - always save Gene_ID (needed by DESeq2 and as source for Shortened_Name)
   save_matrix(counts_matrix, "NumReads", "Gene_ID")
-  counts_organ <- convert_to_organ_labels(counts_matrix)
-  save_matrix(counts_organ, "NumReads", "Shortened_Name")
+  if ("Shortened_Name" %in% GENE_TYPES) {
+    counts_short <- convert_to_organ_labels(counts_matrix)
+    gene_group_for_map <- sub("_in_.*$", "", base_name)
+    counts_short <- tryCatch(
+      convert_to_shortened_names(counts_short, gene_group_for_map),
+      error = function(e) counts_short
+    )
+    save_matrix(counts_short, "NumReads", "Shortened_Name")
+  }
 
   # TPM (normalized abundance)
   if (!is.null(tpm_matrix)) {
     save_matrix(tpm_matrix, "tpm", "Gene_ID")
-    tpm_organ <- convert_to_organ_labels(tpm_matrix)
-    save_matrix(tpm_organ, "tpm", "Shortened_Name")
+    if ("Shortened_Name" %in% GENE_TYPES) {
+      tpm_short <- convert_to_organ_labels(tpm_matrix)
+      gene_group_for_map <- sub("_in_.*$", "", base_name)
+      tpm_short <- tryCatch(
+        convert_to_shortened_names(tpm_short, gene_group_for_map),
+        error = function(e) tpm_short
+      )
+      save_matrix(tpm_short, "tpm", "Shortened_Name")
+    }
   }
 }
 
@@ -185,12 +199,37 @@ for (level_name in names(processing_levels)) {
     # Detect column order: tximport needs c(TXNAME, GENEID)
     raw <- read.delim(tx2gene_file, header = FALSE, stringsAsFactors = FALSE,
                       colClasses = "character")
-    # star_alignment_pipeline writes: transcript_id TAB gene_id
-    tx2gene <- raw[, 1:2, drop = FALSE]
+    # star_alignment_pipeline writes: transcript_id TAB gene_id  (col1=TX, col2=GENE)
+    # gene_trans_map fallback writes: gene_id TAB transcript_id  (col1=GENE, col2=TX)
+    # Detect: if file is a gene_trans_map, swap columns
+    if (grepl("gene_trans_map$", tx2gene_file)) {
+      tx2gene <- raw[, c(2, 1), drop = FALSE]
+    } else {
+      tx2gene <- raw[, 1:2, drop = FALSE]
+    }
     colnames(tx2gene) <- c("TXNAME", "GENEID")
     tx2gene$TXNAME <- trimws(tx2gene$TXNAME)
     tx2gene$GENEID <- trimws(tx2gene$GENEID)
     cat("Loaded tx2gene:", nrow(tx2gene), "entries\n\n")
+
+    # Validate tx2gene transcript IDs match quant.sf transcript IDs
+    sample_qf <- read.delim(files[1], header = TRUE, nrows = 100,
+                             stringsAsFactors = FALSE)
+    qf_ids <- sub("\\.[0-9]+$", "", sample_qf$Name)  # strip version suffix
+    tx_ids <- sub("\\.[0-9]+$", "", tx2gene$TXNAME)
+    overlap <- length(intersect(qf_ids, tx_ids))
+    match_rate <- overlap / length(qf_ids)
+    if (match_rate < 0.5) {
+      cat("ERROR: tx2gene transcript IDs poorly match quant.sf IDs!\n")
+      cat("  Match rate:", round(match_rate * 100), "% (", overlap, "/", length(qf_ids), "sampled)\n")
+      cat("  tx2gene IDs (first 3):", paste(head(tx2gene$TXNAME, 3), collapse = ", "), "\n")
+      cat("  quant.sf IDs (first 3):", paste(head(sample_qf$Name, 3), collapse = ", "), "\n")
+      cat("  This usually means tx2gene was generated from the wrong GTF.\n")
+      cat("  Re-run STAR+Salmon alignment to regenerate tx2gene.\n")
+      cat("  Skipping gene-level import.\n\n")
+      next
+    }
+    cat("  tx2gene/quant.sf ID check: PASS (", round(match_rate * 100), "%, ", overlap, "/", length(qf_ids), " sampled IDs match)\n\n")
   }
 
   # -------------------------------------------------
@@ -275,7 +314,7 @@ for (level_name in names(processing_levels)) {
   cat("Step 7: Processing gene groups...\n")
 
   gene_group_files <- list.files(GENE_GROUPS_DIR, pattern = "\\.(csv|txt|tsv)$",
-                                  full.names = TRUE)
+                                  recursive = TRUE, full.names = TRUE)
 
   # Filter to only configured gene groups
   gene_groups_str <- Sys.getenv("GENE_GROUPS_STR", unset = "")
@@ -331,14 +370,31 @@ for (level_name in names(processing_levels)) {
       data_rownames <- rownames(raw_counts)
       base_ids <- sub("\\.[0-9]+\\.[0-9]+$", "", data_rownames)
       base_ids <- sub("\\.[0-9]+$", "", base_ids)
-      base_to_full <- setNames(data_rownames, base_ids)
 
+      # Match genes while preserving CSV order; collect ALL rows per gene
       genes_in_data <- character(0)
       for (gene in gene_list) {
         if (gene %in% data_rownames) {
+          # Exact match (gene-level IDs or versioned IDs in list)
           genes_in_data <- c(genes_in_data, gene)
-        } else if (gene %in% names(base_to_full)) {
-          genes_in_data <- c(genes_in_data, base_to_full[[gene]])
+        } else {
+          # Base-ID match: may return multiple transcripts at isoform level
+          hits <- data_rownames[base_ids == gene]
+          if (length(hits) > 0) {
+            genes_in_data <- c(genes_in_data, hits)
+          } else {
+            # Reverse: strip suffix from gene_list ID to match gene-level row IDs
+            # e.g., gene "SMEL5_06g022750.1" -> "SMEL5_06g022750" matches gene-level data
+            gene_base <- sub("\\.[0-9]+$", "", gene)
+            if (gene_base != gene) {
+              hits2 <- data_rownames[base_ids == gene_base]
+              if (length(hits2) > 0) {
+                genes_in_data <- c(genes_in_data, hits2)
+              } else if (gene_base %in% data_rownames) {
+                genes_in_data <- c(genes_in_data, gene_base)
+              }
+            }
+          }
         }
       }
       genes_in_data <- unique(genes_in_data)
