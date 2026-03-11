@@ -171,8 +171,8 @@ SRR_COMBINED_LIST=(
 # DIRECTORY STRUCTURE AND OUTPUT PATHS
 # ==============================================================================
 
-POST_PROC_ROOT="3_POST_PROC"
-export POST_PROC_ROOT
+POST_PROCESSING_ROOT="3_POST_PROC"
+export POST_PROCESSING_ROOT
 
 # Create required directories
 # NOTE: SALMON_INDEX_ROOT / SALMON_QUANT_ROOT / SALMON_SAF_MATRIX_ROOT and the RSEM equivalents

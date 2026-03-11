@@ -63,9 +63,7 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 # INPUT FILES AND DATA SOURCES
 # ==============================================================================
 
-ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="inputs/gtf/reference/GPE001970_transcripts.gtf"
-
-gtf_file="${ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE}"
+gtf_file="inputs/gtf/reference/GPE001970_transcripts.gtf"
 
 # FASTA Files for Analysis
 ALL_FASTA_FILES=(
@@ -105,8 +103,8 @@ SRR_COMBINED_LIST=(
 # DIRECTORY STRUCTURE AND OUTPUT PATHS
 # ==============================================================================
 
-POST_PROC_ROOT="3_POST_PROC"
-export POST_PROC_ROOT
+POST_PROCESSING_ROOT="3_POST_PROC"
+export POST_PROCESSING_ROOT
 
 # Preprocessing directories are created by the main script after sourcing this config.
 

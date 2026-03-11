@@ -63,10 +63,8 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 # INPUT FILES AND DATA SOURCES
 # ==============================================================================
 
-ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE="inputs/gtf/reference/GPE001970_transcripts.gtf"
-
 decoy="inputs/fasta/experimental/TEST.fasta"
-gtf_file="${ALL_Smel_Genes_Full_Name_reformatted_GTF_FILE}"
+gtf_file="inputs/gtf/reference/GPE001970_transcripts.gtf"
 
 # FASTA Files for Analysis (transcripts, required for M4 and M5)
 ALL_FASTA_FILES=(
@@ -106,17 +104,13 @@ SRR_COMBINED_LIST=(
 # DIRECTORY STRUCTURE AND OUTPUT PATHS
 # ==============================================================================
 
-POST_PROC_ROOT="3_POST_PROC"
-export POST_PROC_ROOT
+POST_PROCESSING_ROOT="3_POST_PROC"
+export POST_PROCESSING_ROOT
 
-# Create required directories
+# Create required directories (M4 + M5 only)
 mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT" \
-	"$HISAT2_REF_GUIDED_ROOT" "$HISAT2_REF_GUIDED_INDEX_DIR" "$STRINGTIE_HISAT2_REF_GUIDED_ROOT" \
-	"$HISAT2_DE_NOVO_ROOT" "$HISAT2_DE_NOVO_INDEX_DIR" "$STRINGTIE_HISAT2_DE_NOVO_ROOT" \
-	"$STAR_ALIGN_ROOT" "$STAR_INDEX_ROOT" \
 	"$SALMON_SAF_ROOT" \
-	"$BOWTIE2_RSEM_ROOT" \
-	"$HISAT2_REF_GUIDED_MATRIX_ROOT" "$HISAT2_DE_NOVO_MATRIX_ROOT" "$STAR_MATRIX_ROOT"
+	"$BOWTIE2_RSEM_ROOT"
 
 # ==============================================================================
 # CLEANUP OPTIONS AND TESTING ESSENTIALS

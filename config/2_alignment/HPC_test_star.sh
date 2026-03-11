@@ -9,6 +9,8 @@ THREADS=48                              # Threads for parallel operations
 JOBS=3									# Parallel jobs for GNU Parallel
 USE_GNU_PARALLEL="TRUE"                 # TRUE/FALSE for GNU Parallel
 keep_bam_global="n"                     # y=keep BAM files, n=delete after
+STAR_READ_LENGTH=89                      # Actual read length for PRJNA328564 (89 bp)
+export STAR_READ_LENGTH
 
 # Pipeline Stages (comment/uncomment to enable/disable)
 PIPELINE_STAGES=(
@@ -70,8 +72,8 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 # The pipeline loops through all uncommented pairs.
 # ------------------------------------------------------------------------------
 GENOME_REF_PAIRS=(
-	"inputs/gtf/reference/GPE001970.gtf|inputs/fasta/reference_genomes/GPE001970_genome.fa|"                              # GPE001970
-	#"inputs/gtf/reference/Eggplant_V4.1_function_IPR_final.gtf|inputs/fasta/reference_genomes/Eggplant_V4.1.fa|inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"  # Eggplant V4.1
+	"inputs/gtf/reference/GPE001970_genome.gtf|inputs/fasta/reference_genomes/GPE001970_genome.fa|"                              # GPE001970
+	#"inputs/gtf/reference/Eggplant_V4.1_function_IPR_final_stringtie.gtf|inputs/fasta/reference_genomes/Eggplant_V4.1.fa|inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"  # Eggplant V4.1
 )
 
 # ==============================================================================
@@ -169,10 +171,7 @@ OTHER_SRR_LIST=(
 
 	#PRJNA341784 # Flower buds lang (https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA341784&o=acc_s%3Aa)
 	#PRJNA477924 # Leaf and Root (https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA477924&o=acc_s%3Aa)
-	 # Leaves
-	 # Stems
-	 # Radicles
-	
+
 	# Add other SRR IDs here if needed
 )
 
@@ -188,8 +187,8 @@ SRR_COMBINED_LIST=(
 # DIRECTORY STRUCTURE AND OUTPUT PATHS
 # ==============================================================================
 
-POST_PROC_ROOT="3_POST_PROC"
-export POST_PROC_ROOT
+POST_PROCESSING_ROOT="3_POST_PROC"
+export POST_PROCESSING_ROOT
 
 # Create required directories
 mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT" \
