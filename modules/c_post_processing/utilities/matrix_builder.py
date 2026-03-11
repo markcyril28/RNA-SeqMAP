@@ -35,6 +35,12 @@ def main(gene_names_file, sample_files_list):
     # StringTie uses transcript IDs like SMEL4.1_01g000730.1.01
     # Gene groups CSV uses gene IDs like SMEL4.1_01g000730
     # Need to strip transcript suffix to match
+    #
+    # DUPLICATE HANDLING: In M2 de novo mode, StringTie can assign multiple
+    # "genes" (STRG.*) to the same reference transcript (e.g., different strand
+    # calls). For pre-normalized metrics (TPM/FPKM/coverage), we keep the MAX
+    # value across duplicates — this represents the dominant isoform's expression.
+    # Summing would be incorrect for already-normalized values.
     sample_dicts = []
     for sample_file in sample_files:
         gene_to_count = {}
@@ -45,8 +51,10 @@ def main(gene_names_file, sample_files_list):
                     continue
                 gene_full = parts[0]
                 count = parts[1]
-                # Store original for exact matches
-                gene_to_count[gene_full] = count
+
+                # Collect all gene ID variants (full + stripped suffixes)
+                # that this row should be indexed under.
+                id_variants = [gene_full]
                 # Extract base gene ID by iteratively stripping trailing ".digits"
                 # suffixes (max 2 rounds). This safely handles eggplant IDs where
                 # the gene ID itself contains a dot (e.g., SMEL4.1_XXgYYYYYY).
@@ -61,8 +69,25 @@ def main(gene_names_file, sample_files_list):
                     stripped = re.sub(r'\.\d+$', '', current)
                     if stripped == current:
                         break  # No more trailing .digits to strip
-                    gene_to_count[stripped] = count
+                    id_variants.append(stripped)
                     current = stripped
+
+                # For each variant, keep the MAX value across duplicate entries
+                try:
+                    count_float = float(count)
+                except (ValueError, TypeError):
+                    count_float = 0.0
+                for gid in id_variants:
+                    existing = gene_to_count.get(gid)
+                    if existing is None:
+                        gene_to_count[gid] = count
+                    else:
+                        try:
+                            existing_float = float(existing)
+                        except (ValueError, TypeError):
+                            existing_float = 0.0
+                        if count_float > existing_float:
+                            gene_to_count[gid] = count
         sample_dicts.append(gene_to_count)
 
     # Output matrix

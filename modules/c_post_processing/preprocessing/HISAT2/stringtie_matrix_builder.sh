@@ -80,21 +80,22 @@ load_samples_from_csv() {
         return 1
     fi
     
-    for csv_file in "$csv_dir"/*.csv; do
+    # Sort CSV files for deterministic processing order across filesystems
+    while IFS= read -r csv_file; do
         [[ ! -f "$csv_file" ]] && continue
         while IFS=',' read -r srr_id organ notes || [[ -n "$srr_id" ]]; do
             # Skip header and comments
             [[ "$srr_id" =~ ^#.*$ || "$srr_id" == "SRR_ID" || -z "$srr_id" ]] && continue
             srr_id=$(echo "$srr_id" | tr -d '[:space:]')
             organ=$(echo "$organ" | tr -d '[:space:]')
-            
+
             # Add if not already present
             if [[ ! " ${sample_ids_ref[*]} " =~ " ${srr_id} " ]]; then
                 sample_ids_ref+=("$srr_id")
                 srr_to_organ_ref["$srr_id"]="$organ"
             fi
         done < "$csv_file"
-    done
+    done < <(find "$csv_dir" -maxdepth 1 -name "*.csv" -type f | sort)
 }
 
 # Initialize arrays

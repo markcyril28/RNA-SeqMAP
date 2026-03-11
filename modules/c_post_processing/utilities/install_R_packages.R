@@ -27,7 +27,11 @@ required_cran <- c(
   "igraph",
   "networkD3",
   "htmlwidgets",
-  "visNetwork"
+  "visNetwork",
+  "corrplot",
+  "dendextend",
+  "gridExtra",
+  "reshape2"
 )
 
 required_bioc <- c(

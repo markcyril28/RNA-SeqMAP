@@ -111,6 +111,7 @@ run_method_analysis() {
     pushd "$method_dir" > /dev/null
     
     export CURRENT_METHOD="$method" MASTER_REFERENCE="$master_ref"
+    export METHOD_BASE_DIR="$method_dir"
 
     # Export method-specific quant directory so R preprocessing scripts use the exact path
     # rather than reconstructing it from MASTER_REFERENCE (which may differ from fasta_tag).
@@ -220,6 +221,8 @@ export_utils_for_parallel() {
     export -f log log_info log_warn log_error log_step timestamp
     # Export error capture (from logging_utils.sh)
     export -f run_with_error_capture capture_stderr_errors 2>/dev/null || true
+    # Export error/warning regex patterns used by capture_stderr_errors
+    export _ERROR_PATTERN _WARN_PATTERN 2>/dev/null || true
     # Export pipeline functions
     export -f run_method_analysis get_analysis_script get_matrix_creation_script get_preprocessing_script parse_srr_csv
 }
