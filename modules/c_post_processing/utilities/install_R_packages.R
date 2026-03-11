@@ -37,7 +37,7 @@ required_bioc <- c(
   "tximport",
   "tximeta",
   "AnnotationDbi",
-  "org.Mm.eg.db",
+  # org.Mm.eg.db removed — mouse annotation, not relevant for plant genomics
   "WGCNA",
   "fgsea",
   "clusterProfiler",
