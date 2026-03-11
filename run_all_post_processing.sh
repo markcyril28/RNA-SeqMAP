@@ -7,7 +7,7 @@ set -o pipefail   # -e/-u omitted intentionally (sourced functions use boolean r
 
 PIPELINE_CONFIGS=(
     # ── Full — Eggplant_V4.1 ──
-    "config/3_post_proc_configs/HPC_full_M1_Eggplant_V4.1.sh"      # M1 HISAT2 RefGuided   Eggplant_V4.1 genome
+    #"config/3_post_proc_configs/HPC_full_M1_Eggplant_V4.1.sh"      # M1 HISAT2 RefGuided   Eggplant_V4.1 genome
     #"config/3_post_proc_configs/HPC_full_M2_Eggplant_V4.1.sh"      # M2 HISAT2 DeNovo      Eggplant_V4.1 transcript
     #"config/3_post_proc_configs/HPC_full_M3_Eggplant_V4.1.sh"      # M3 STAR Align         Eggplant_V4.1 genome
     #"config/3_post_proc_configs/HPC_full_M4_Eggplant_V4.1.sh"      # M4 Salmon SAF         Eggplant_V4.1 transcript
@@ -15,10 +15,10 @@ PIPELINE_CONFIGS=(
 
     # ── Full — GPE001970 ──
     "config/3_post_proc_configs/HPC_full_M1_GPE001970.sh"           # M1 HISAT2 RefGuided   GPE001970 genome
-    #"config/3_post_proc_configs/HPC_full_M2_GPE001970.sh"           # M2 HISAT2 DeNovo      GPE001970 transcript
-    #"config/3_post_proc_configs/HPC_full_M3_GPE001970.sh"           # M3 STAR Align         GPE001970 genome
-    #"config/3_post_proc_configs/HPC_full_M4_GPE001970.sh"           # M4 Salmon SAF         GPE001970 transcript
-    #"config/3_post_proc_configs/HPC_full_M5_GPE001970.sh"           # M5 RSEM Bowtie2       GPE001970 transcript
+    "config/3_post_proc_configs/HPC_full_M2_GPE001970.sh"           # M2 HISAT2 DeNovo      GPE001970 transcript
+    "config/3_post_proc_configs/HPC_full_M3_GPE001970.sh"           # M3 STAR Align         GPE001970 genome
+    "config/3_post_proc_configs/HPC_full_M4_GPE001970.sh"           # M4 Salmon SAF         GPE001970 transcript
+    "config/3_post_proc_configs/HPC_full_M5_GPE001970.sh"           # M5 RSEM Bowtie2       GPE001970 transcript
 
     # ── Legacy (original unsplit full configs) ──
     #"config/3_post_proc_configs/HPC_full_ref_guided.sh"             # HPC full,  genome (M1+M3)
@@ -181,7 +181,11 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
             export SCRIPT_DIR LOG_FILE ERROR_WARN_FILE RUN_ID ANALYSIS_MODULES_DIR GENE_GROUPS_DIR
             export MASTER_REFERENCE THREADS ENABLE_GPU CURRENT_DATASET
             export GENE_GROUPS_STR="${GENE_GROUPS[*]}" ANALYSES_STR="${ANALYSES[*]}"
-            printf '%s\n' "${METHODS[@]}" | parallel -j "$JOBS" run_method_analysis {} "$MASTER_REFERENCE"
+            printf '%s\n' "${METHODS[@]}" | parallel \
+                -j "$JOBS" \
+                --halt soon,fail=1 \
+                --joblog "$LOG_DIR/parallel_post_proc_${dataset}.log" \
+                run_method_analysis {} "$MASTER_REFERENCE"
         else
             log_info "Sequential: $dataset"
             for method in "${METHODS[@]}"; do
