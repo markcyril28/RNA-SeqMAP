@@ -96,18 +96,16 @@ prepare_sample_metadata <- function(sample_ids) {
 # PCA FUNCTIONS
 # ===============================================
 
-run_pca_analysis <- function(data_matrix, metadata, output_dir, gene_group) {
+run_pca_analysis <- function(data_t, metadata, output_dir, gene_group) {
   cat("    Running PCA")
   if (GPU_AVAILABLE) cat(" (GPU accelerated)")
   cat("\n")
 
   # PCA needs at least 3 samples for meaningful 2D projection
-  if (ncol(data_matrix) < 3) {
-    cat("    Too few samples for PCA (need >= 3, have", ncol(data_matrix), ")\n")
+  if (nrow(data_t) < 3) {
+    cat("    Too few samples for PCA (need >= 3, have", nrow(data_t), ")\n")
     return(NULL)
   }
-
-  data_t <- t(data_matrix)
 
   # Vectorized column variance: avoid apply() loop
   cm <- colMeans(data_t, na.rm = TRUE)
@@ -160,13 +158,11 @@ run_pca_analysis <- function(data_matrix, metadata, output_dir, gene_group) {
 # t-SNE FUNCTIONS
 # ===============================================
 
-run_tsne_analysis <- function(data_matrix, metadata, output_dir, gene_group) {
+run_tsne_analysis <- function(data_t, metadata, output_dir, gene_group) {
   if (!GENERATE_DIM_FIGURES$tsne_scatter) return(NULL)
-  
+
   cat("    Running t-SNE (exact algorithm for accuracy)\n")
-  
-  data_t <- t(data_matrix)
-  
+
   # Dynamic perplexity: must be < (n - 1) / 3
   n_samples <- nrow(data_t)
   max_perplexity <- floor((n_samples - 1) / 3)
@@ -213,13 +209,11 @@ run_tsne_analysis <- function(data_matrix, metadata, output_dir, gene_group) {
 # UMAP FUNCTIONS
 # ===============================================
 
-run_umap_analysis <- function(data_matrix, metadata, output_dir, gene_group) {
+run_umap_analysis <- function(data_t, metadata, output_dir, gene_group) {
   if (!GENERATE_DIM_FIGURES$umap_scatter) return(NULL)
-  
+
   cat("    Running UMAP\n")
-  
-  data_t <- t(data_matrix)
-  
+
   # UMAP needs at least 4 samples; n_neighbors is clamped below via min()
   if (nrow(data_t) < 4) {
     cat("    Too few samples for UMAP (need >= 4, have", nrow(data_t), ")\n")
@@ -302,14 +296,17 @@ run_dimensionality_reduction <- function(config = NULL, matrices_dir = NULL) {
     }
     
     data_matrix <- apply_normalization(data_matrix, NORM_SCHEMES[1], COUNT_TYPES[1])
-    
+
     metadata <- prepare_sample_metadata(colnames(data_matrix))
-    
-    tryCatch(run_pca_analysis(data_matrix, metadata, output_dir, gene_group),
+
+    # Transpose once; all three methods expect samples-as-rows
+    data_t <- t(data_matrix)
+
+    tryCatch(run_pca_analysis(data_t, metadata, output_dir, gene_group),
              error = function(e) cat("  PCA failed:", e$message, "\n"))
-    tryCatch(run_tsne_analysis(data_matrix, metadata, output_dir, gene_group),
+    tryCatch(run_tsne_analysis(data_t, metadata, output_dir, gene_group),
              error = function(e) cat("  t-SNE failed:", e$message, "\n"))
-    tryCatch(run_umap_analysis(data_matrix, metadata, output_dir, gene_group),
+    tryCatch(run_umap_analysis(data_t, metadata, output_dir, gene_group),
              error = function(e) cat("  UMAP failed:", e$message, "\n"))
     
     successful <- successful + 1
