@@ -106,12 +106,16 @@ run_deseq2 <- function(dds, contrast_name, output_dir) {
   
   res <- tryCatch({
     if (SHRINKAGE_TYPE == "apeglm") {
-      coef_name <- resultsNames(dds)[2]
+      # Find the contrast coefficient — skip the intercept (first element)
+      coef_names <- resultsNames(dds)
+      contrast_coefs <- coef_names[grepl("^condition_", coef_names)]
+      coef_name <- if (length(contrast_coefs) > 0) contrast_coefs[1] else coef_names[2]
       lfcShrink(dds, coef = coef_name, type = "apeglm", quiet = TRUE)
     } else {
       results(dds, alpha = PADJ_THRESHOLD)
     }
   }, error = function(e) {
+    cat("    Note: apeglm shrinkage failed, using unshrunken results:", e$message, "\n")
     results(dds, alpha = PADJ_THRESHOLD)
   })
   
@@ -286,6 +290,15 @@ load_m1_gene_group_counts <- function(gene_group, matrices_dir, master_ref) {
 # ===============================================
 
 run_differential_expression <- function(config = NULL, matrices_dir = NULL) {
+  # M2 HISAT2 De Novo does not produce raw integer counts required by DESeq2.
+  # StringTie abundance outputs (TPM/FPKM/coverage) are pre-normalized metrics.
+  if (grepl("M2_HISAT2_DeNovo", CURRENT_METHOD)) {
+    cat("Differential expression is not supported for M2 HISAT2 De Novo.\n")
+    cat("M2 produces only TPM/FPKM/coverage (not raw integer counts).\n")
+    cat("Use M1 (prepDE.py counts), M3/M4 (Salmon NumReads), or M5 (RSEM expected_count).\n")
+    return(invisible(NULL))
+  }
+
   if (is.null(config)) config <- load_runtime_config()
   ensure_output_dir(DEA_OUT_DIR)
 

@@ -41,7 +41,7 @@ MERGE_CUT_HEIGHT <- 0.15           # STRINGENT: More conservative module merging
 NETWORK_TYPE <- "signed"           # "signed" preserves biological interpretation
 DEEP_SPLIT <- 2                    # STRINGENT: Moderate sensitivity (was 3, range 0-4)
 PAM_STAGE <- TRUE                  # PAM for more accurate module assignment
-# Note: MIN_GENES_WGCNA is defined in 0_shared_config.R (default: 20)
+# Note: MIN_GENES_WGCNA is defined in 0_shared_config.R (default: 10)
 
 # Coexpression parameters (STRINGENT - high-confidence connections only)
 N_HUB_GENES <- 5                   # STRINGENT: Top 5 hub genes per module (was 10)
@@ -566,15 +566,15 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
   # Get method base directory from environment for config file loading
   method_base_dir <- Sys.getenv("METHOD_BASE_DIR", unset = ".")
   if (is.null(config)) config <- load_runtime_config(method_base_dir)
-  
+
   # Set up matrices_dir based on method_base_dir if not provided
   if (is.null(matrices_dir)) {
     matrices_dir <- file.path(method_base_dir, get_matrices_dir(CURRENT_METHOD))
   }
   cat("  Matrices directory:", matrices_dir, "\n")
-  
+
   ensure_output_dir(WGCNA_OUT_DIR)
-  
+
   print_config_summary("WGCNA COEXPRESSION ANALYSIS", config)
   cat("Mode: Full transcriptome analysis with query genes highlighted\n")
   cat("Top variable genes used:", TOP_VAR_GENES, "\n")

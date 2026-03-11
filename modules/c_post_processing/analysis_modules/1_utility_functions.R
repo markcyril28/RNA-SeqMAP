@@ -280,6 +280,46 @@ truncate_labels <- function(labels, max_length = 25) {
 }
 
 # ===============================================
+# GENE ID MATCHING
+# ===============================================
+# Shared logic for matching a gene list to matrix row names, handling
+# version suffixes common in eggplant IDs (e.g., SMEL4.1_06g023900.1.01).
+# Used by: filter_by_gene_group(), tximport_salmon_to_matrices.R,
+#           tximport_star_to_matrices.R
+
+match_gene_ids <- function(gene_list, data_rownames) {
+  # Precompute base IDs by stripping version suffixes (.X.XX then .X)
+  base_ids <- sub("\\.[0-9]+\\.[0-9]+$", "", data_rownames)
+  base_ids <- sub("\\.[0-9]+$", "", base_ids)
+
+  matched <- character(0)
+  for (gene in gene_list) {
+    if (gene %in% data_rownames) {
+      # Exact match
+      matched <- c(matched, gene)
+    } else {
+      # Forward: gene_list ID is a base ID matching data rows with suffixes
+      hits <- data_rownames[base_ids == gene]
+      if (length(hits) > 0) {
+        matched <- c(matched, hits)
+      } else {
+        # Reverse: strip suffix from gene_list ID to match base-level row IDs
+        gene_base <- sub("\\.[0-9]+$", "", gene)
+        if (gene_base != gene) {
+          hits2 <- data_rownames[base_ids == gene_base]
+          if (length(hits2) > 0) {
+            matched <- c(matched, hits2)
+          } else if (gene_base %in% data_rownames) {
+            matched <- c(matched, gene_base)
+          }
+        }
+      }
+    }
+  }
+  unique(matched)
+}
+
+# ===============================================
 # NORMALIZATION FUNCTIONS
 # ===============================================
 

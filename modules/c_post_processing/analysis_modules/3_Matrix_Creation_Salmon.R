@@ -99,7 +99,10 @@ cat("Samples:         ", length(SAMPLE_IDS), "\n\n")
 if (length(SAMPLE_IDS) == 0) stop("No samples loaded. Check SRR_COMBINED_LIST_STR and SRR_csv files.")
 
 base_dir  <- Sys.getenv("BASE_DIR", "")
-quant_dir <- if (nzchar(base_dir)) {
+salmon_quant_root_env <- Sys.getenv("SALMON_QUANT_ROOT", "")
+quant_dir <- if (nzchar(salmon_quant_root_env)) {
+  salmon_quant_root_env  # already includes fasta_tag
+} else if (nzchar(base_dir)) {
   file.path(base_dir, "2_ALIGNMENT_RESULTs", "M4_Salmon_Saf", "Salmon_Quant", MASTER_REFERENCE)
 } else {
   "Salmon_Quant"  # fallback for standalone execution

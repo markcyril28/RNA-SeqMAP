@@ -67,6 +67,10 @@ save_count_matrices <- function(counts, output_dir, prefix, master_ref, level,
 # Supports prefix matching for isoform IDs (e.g., "SMEL4.1_01g005840" matches
 # "SMEL4.1_01g005840.1.01").
 filter_by_gene_group <- function(counts_matrix, gene_list_file) {
+  if (is.null(counts_matrix) || nrow(counts_matrix) == 0) {
+    cat("Empty counts matrix — skipping gene group filtering\n")
+    return(NULL)
+  }
   if (!file.exists(gene_list_file)) {
     cat("Gene list file not found:", gene_list_file, "\n")
     return(NULL)
@@ -92,29 +96,8 @@ filter_by_gene_group <- function(counts_matrix, gene_list_file) {
 
   gene_list <- gene_list[nzchar(gene_list)]
 
-  all_row_ids    <- rownames(counts_matrix)
-  matched_genes  <- character(0)
-  for (gene in gene_list) {
-    if (gene %in% all_row_ids) {
-      matched_genes <- c(matched_genes, gene)
-    } else {
-      # Forward prefix: gene_list ID is a prefix of a data row ID
-      # e.g., gene "SMEL4.1_06g023900.1" matches row "SMEL4.1_06g023900.1.01"
-      pattern <- paste0("^", gsub("\\.", "\\\\.", gene), "(\\..*)?$")
-      hits    <- all_row_ids[grepl(pattern, all_row_ids)]
-      if (length(hits) > 0) {
-        matched_genes <- c(matched_genes, hits)
-      } else {
-        # Reverse: strip version suffix from gene_list ID to match gene-level row IDs
-        # e.g., gene "SMEL5_06g022750.1" -> "SMEL5_06g022750" matches row "SMEL5_06g022750"
-        base_gene <- sub("\\.[0-9]+$", "", gene)
-        if (base_gene != gene && base_gene %in% all_row_ids) {
-          matched_genes <- c(matched_genes, base_gene)
-        }
-      }
-    }
-  }
-  matched_genes <- unique(matched_genes)
+  # Use shared gene ID matching from 1_utility_functions.R
+  matched_genes <- match_gene_ids(gene_list, rownames(counts_matrix))
 
   if (length(matched_genes) == 0) {
     cat("No genes matched from list\n")

@@ -555,7 +555,10 @@ build_input_path <- function(gene_group, processing_level, count_type, gene_type
   
   # StringTie (M1/M2) has different file naming and structure
   if (method_type == "stringtie") {
-    stringtie_gene_type <- if (gene_type == "Shortened_Name") "geneName" else "geneID"
+    # StringTie matrix builder only creates "geneName" files (raw Gene_IDs as row names);
+    # name conversion to Shortened_Name is applied at runtime by apply_labels().
+    # Always use "geneName" regardless of gene_type to match actual file names.
+    stringtie_gene_type <- "geneName"
     stringtie_label_type <- if (label_type == "Organ") "Organ" else "SRR"
     # File name uses folder_name (includes dataset suffix)
     file.path(matrices_dir, folder_name,
