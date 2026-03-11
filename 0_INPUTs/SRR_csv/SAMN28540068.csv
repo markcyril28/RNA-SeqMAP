@@ -1,6 +1,6 @@
 SRR_ID,Organ,Notes
 SRR20722387,Mature_fruits,
-SRR3884597,Flower,
+#SRR3884597,Flower,duplicate: already in PRJNA328564
 SRR20722297,Flower_buds,
 SRR20722385,Sepals,not included
 SRR20722296,Leaf_buds,
