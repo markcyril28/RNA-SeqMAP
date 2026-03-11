@@ -60,8 +60,9 @@ load_sample_metadata() {
 	
 	[[ ! -f "$metadata_file" ]] && { log_warn "Metadata file not found: $metadata_file"; return 1; }
 	
-	# Count valid sample lines (exclude comments, blanks, and header)
-	local line_count=$(grep -v '^#' "$metadata_file" | grep -v '^$' | grep -v '^SRR_ID' | wc -l)
+	# Count valid sample lines (exclude comments, blanks, and header) — single pass
+	local line_count
+	line_count=$(awk '!/^#/ && !/^$/ && !/^SRR_ID/' "$metadata_file" | wc -l)
 	[[ $line_count -lt 2 ]] && { log_error "Metadata file must contain at least 2 samples (found: $line_count)"; return 1; }
 	
 	while IFS=$'\t' read -r srr condition batch; do
