@@ -416,8 +416,26 @@ log_software_version() {
 }
 
 catalog_all_software() {
-	# Catalog versions of all bioinformatics tools and R packages
+	# Catalog versions of all bioinformatics tools, R packages, and provenance metadata
 	log_step "Cataloging software versions"
+
+	# Record pipeline git commit SHA for provenance
+	if command -v git >/dev/null 2>&1; then
+		local git_sha
+		git_sha=$(git -C "$(dirname "${BASH_SOURCE[0]}")/../.." rev-parse --short HEAD 2>/dev/null || echo "not_a_git_repo")
+		local git_branch
+		git_branch=$(git -C "$(dirname "${BASH_SOURCE[0]}")/../.." rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+		local git_dirty=""
+		if ! git -C "$(dirname "${BASH_SOURCE[0]}")/../.." diff --quiet HEAD 2>/dev/null; then
+			git_dirty="-dirty"
+		fi
+		echo "pipeline_git_commit,${git_sha}${git_dirty}" >> "$SOFTWARE_FILE"
+		echo "pipeline_git_branch,${git_branch}" >> "$SOFTWARE_FILE"
+		log_info "Pipeline git: ${git_branch}@${git_sha}${git_dirty}"
+	fi
+
+	# Record conda environment name
+	echo "conda_env,${CONDA_DEFAULT_ENV:-unknown}" >> "$SOFTWARE_FILE"
 
 	local tools=(
 		"hisat2:hisat2 --version"
@@ -467,6 +485,13 @@ catalog_all_software() {
 			echo "R/${pkg},${ver}" >> "$SOFTWARE_FILE"
 		done
 		log_info "R package versions cataloged"
+
+		# Save full R sessionInfo for complete reproducibility record
+		local session_info_file
+		session_info_file="$(dirname "$SOFTWARE_FILE")/R_sessionInfo_${RUN_ID}.txt"
+		Rscript -e "writeLines(capture.output(sessionInfo()), '$session_info_file')" 2>/dev/null \
+			&& log_info "R sessionInfo saved to: $session_info_file" \
+			|| log_warn "Failed to capture R sessionInfo"
 	else
 		echo "R,not_installed" >> "$SOFTWARE_FILE"
 		log_warn "Rscript not found — R package catalog skipped"
