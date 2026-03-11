@@ -8,7 +8,7 @@
 # abundance files (_gene_abundances_de_novo.tsv) for heatmap visualization.
 # Process:
 # 1. For each gene group, locate de novo abundance files for all samples
-# 2. Extract gene names from reference CSV files (centralized in gene_groups/)
+# 2. Extract gene names from reference CSV files (centralized in gene_groups_csv/)
 # 3. Build matrices (coverage, FPKM, TPM) with genes as rows, samples/organs as columns
 # 4. Output matrices to: 3_POST_PROC/M2_HISAT2_DeNovo/count_matrices_from_stringtie/
 #
@@ -29,7 +29,7 @@ elif [[ -z "${GENE_GROUPS:-}" ]]; then
     GENE_GROUPS=(
         "SmelDMPs"
         "SmelGRFs"
-        "SmelGIFs"
+        "SmelGIF"
     )
 fi
 
@@ -102,7 +102,7 @@ SAMPLE_IDS=()
 declare -A SRR_TO_ORGAN=()
 
 # Load from CSV files (DRY - single source of truth)
-load_samples_from_csv "$SRR_CSV_DIR" SAMPLE_IDS SRR_TO_ORGAN
+load_samples_from_csv "$SRR_CSV_DIR" SAMPLE_IDS SRR_TO_ORGAN || true
 
 if [[ ${#SAMPLE_IDS[@]} -eq 0 ]]; then
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: No samples loaded from CSV files"

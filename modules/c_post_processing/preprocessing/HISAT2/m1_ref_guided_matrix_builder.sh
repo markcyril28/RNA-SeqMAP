@@ -8,7 +8,7 @@
 # abundance files (_ref_guided_gene_abundances.tsv) for heatmap visualization.
 # Process:
 # 1. For each gene group, locate ref-guided abundance files for all samples
-# 2. Extract gene names from reference CSV files (centralized in gene_groups/)
+# 2. Extract gene names from reference CSV files (centralized in gene_groups_csv/)
 # 3. Build matrices (coverage, FPKM, TPM) with genes as rows, samples/organs as columns
 # 4. Output matrices to: 3_POST_PROC/M1_HISAT2_RefGuided/count_matrices_from_stringtie/
 #
@@ -31,7 +31,7 @@ elif [[ -z "${GENE_GROUPS:-}" ]]; then
     GENE_GROUPS=(
         "SmelDMPs"
         "SmelGRFs"
-        "SmelGIFs"
+        "SmelGIF"
     )
 fi
 
