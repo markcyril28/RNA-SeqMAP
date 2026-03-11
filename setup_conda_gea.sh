@@ -68,8 +68,9 @@ PREPROCESSING_TOOLS=(
     "fastqc"
     "multiqc"
     "parallel"
-    "wget"    # ENA FTP fallback downloader (download_srrs_wget)
-    "curl"    # ENA portal API queries (download_srrs_wget)
+    "wget"       # ENA FTP fallback downloader (download_srrs_wget)
+    "curl"       # ENA portal API queries (download_srrs_wget)
+    "dos2unix"   # Line-ending normalization for cross-platform config files
 )
 
 # Core alignment / quantification tools
@@ -82,7 +83,10 @@ ALIGNMENT_TOOLS=(
     "rsem"
     "star"
     "trinity"
-    "gffread"  # Transcript FASTA generation from genome+GTF (required to build inputs/fasta/ reference files for M3/M4/M5)
+    "gffread"              # Transcript FASTA generation from genome+GTF (required to build inputs/fasta/ reference files for M3/M4/M5)
+    "rseqc"                # infer_experiment.py for strandness auto-detection (M1/M2)
+    "ucsc-gtftogenepred"   # GTF -> genePred conversion for BED12 (strandness detection)
+    "ucsc-genepredtobed"   # genePred -> BED12 conversion for infer_experiment.py
 )
 
 # R base and essentials
@@ -130,6 +134,10 @@ CRAN_PACKAGES=(
     "r-networkd3"
     "r-htmlwidgets"
     "r-heatmaply"
+    "r-corrplot"
+    "r-dendextend"
+    "r-gridextra"
+    "r-scales"
 )
 
 # Combined package list
@@ -286,7 +294,7 @@ log_info "Activating environment..."
 conda activate "${ENV_NAME}"
 
 log_info "Verifying key executables..."
-VERIFY_CMDS=("R" "Rscript" "samtools" "salmon" "hisat2" "STAR" "fastqc" "trim_galore" "prefetch" "fasterq-dump" "trimmomatic" "stringtie" "bowtie2" "rsem-calculate-expression" "gffread")
+VERIFY_CMDS=("R" "Rscript" "samtools" "salmon" "hisat2" "STAR" "fastqc" "trim_galore" "prefetch" "fasterq-dump" "trimmomatic" "stringtie" "bowtie2" "rsem-calculate-expression" "gffread" "infer_experiment.py" "gtfToGenePred" "genePredToBed" "dos2unix")
 for cmd in "${VERIFY_CMDS[@]}"; do
     if check_command "$cmd"; then
         log_info "  ✓ $cmd"
@@ -298,7 +306,8 @@ done
 log_info "Checking R packages..."
 Rscript -e '
 pkgs <- c("DESeq2", "ComplexHeatmap", "WGCNA", "tximport",
-          "clusterProfiler", "ggplot2", "pheatmap", "igraph")
+          "clusterProfiler", "ggplot2", "pheatmap", "igraph",
+          "corrplot", "dendextend", "gridExtra", "scales")
 for (pkg in pkgs) {
     if (requireNamespace(pkg, quietly = TRUE)) {
         cat(paste0("  \u2713 ", pkg, "\n"))
@@ -334,7 +343,8 @@ pkgs_to_check <- c(
     # CRAN packages
     "WGCNA", "dynamicTreeCut", "fastcluster",
     "Rtsne", "umap", "factoextra", "ggrepel",
-    "pheatmap", "igraph", "reshape2"
+    "pheatmap", "igraph", "reshape2",
+    "corrplot", "dendextend", "gridExtra", "scales"
 )
 for (pkg in pkgs_to_check) {
     if (!requireNamespace(pkg, quietly = TRUE)) {
@@ -351,6 +361,10 @@ for (pkg in pkgs_to_check) {
 #===============================================================================
 # COMPLETION
 #===============================================================================
+
+log_info "Exporting environment lockfile..."
+conda env export -n "$ENV_NAME" --no-builds > "$SCRIPT_DIR/environment.yml"
+log_info "Lockfile saved to: $SCRIPT_DIR/environment.yml"
 
 log_info "========================================"
 log_info "Setup complete!"
