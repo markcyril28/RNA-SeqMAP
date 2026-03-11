@@ -468,7 +468,9 @@ _create_rsem_matrices() {
 	local gene_trans_map="${fasta}.gene_trans_map"
 	if [[ ! -s "$gene_trans_map" ]]; then
 		log_info "[RSEM MATRIX] Creating gene-transcript mapping file..."
-		create_gene_trans_map "$fasta" "$gene_trans_map"
+		if ! create_gene_trans_map "$fasta" "$gene_trans_map"; then
+			log_warn "[RSEM MATRIX] create_gene_trans_map returned non-zero — checking output file"
+		fi
 		if [[ ! -s "$gene_trans_map" ]]; then
 			log_warn "[RSEM MATRIX] gene_trans_map is empty or creation failed — skipping abundance_estimates_to_matrix.pl, using manual fallback"
 			_create_manual_rsem_matrix "$quant_root" "$matrix_dir" samples[@]
@@ -675,6 +677,9 @@ _create_rsem_summary() {
 
 	local summary_file="$deseq2_dir/rsem_summary.txt"
 
+	local LOW_ALIGN_THRESHOLD=50  # Flag samples below this alignment rate (%)
+	local outlier_samples=()
+
 	{
 		echo "==================================================================="
 		echo "RSEM Quantification Summary for $tag"
@@ -691,10 +696,41 @@ _create_rsem_summary() {
 				local total=$(awk 'NR>1' "$quant_root/$SRR/${SRR}.genes.results" | wc -l)
 				local expressed=$(awk 'NR>1 && $5>0' "$quant_root/$SRR/${SRR}.genes.results" | wc -l)
 				local counts=$(awk 'NR>1 {sum+=$5} END {print int(sum)}' "$quant_root/$SRR/${SRR}.genes.results")
-				echo "$SRR: $expressed/$total expressed genes, $counts expected counts"
+
+				# Extract Bowtie2 alignment rate from RSEM log
+				local align_rate="N/A"
+				local rsem_log="$quant_root/$SRR/${SRR}.rsem.log"
+				if [[ -f "$rsem_log" ]]; then
+					# Bowtie2 reports "XX.XX% overall alignment rate" in its summary
+					align_rate=$(grep -oP '[0-9]+\.[0-9]+(?=% overall alignment rate)' "$rsem_log" | tail -1)
+					if [[ -z "$align_rate" ]]; then
+						align_rate="N/A"
+					elif (( $(echo "$align_rate < $LOW_ALIGN_THRESHOLD" | bc -l) )); then
+						outlier_samples+=("$SRR ($align_rate%)")
+					fi
+				fi
+
+				echo "$SRR: $expressed/$total expressed genes, $counts expected counts, alignment rate: ${align_rate}%"
 			fi
 		done
+
+		if [[ ${#outlier_samples[@]} -gt 0 ]]; then
+			echo ""
+			echo "WARNING: Low alignment rate samples (<${LOW_ALIGN_THRESHOLD}%):"
+			for s in "${outlier_samples[@]}"; do
+				echo "  - $s"
+			done
+			echo "These samples may have contamination, wrong reference, or quality issues."
+		fi
 	} > "$summary_file"
+
+	# Also log outlier warnings to the main pipeline log
+	if [[ ${#outlier_samples[@]} -gt 0 ]]; then
+		log_warn "[RSEM SUMMARY] ${#outlier_samples[@]} sample(s) with low Bowtie2 alignment rate (<${LOW_ALIGN_THRESHOLD}%):"
+		for s in "${outlier_samples[@]}"; do
+			log_warn "  - $s"
+		done
+	fi
 
 	log_info "[RSEM SUMMARY] Summary saved to: $summary_file"
 }

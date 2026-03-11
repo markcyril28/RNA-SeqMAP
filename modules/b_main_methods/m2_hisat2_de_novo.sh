@@ -216,6 +216,7 @@ hisat2_de_novo_pipeline() {
 		[[ $par_exit -ne 0 ]] && log_warn "[PARALLEL] Some jobs failed - check $HISAT2_DE_NOVO_ROOT/parallel_hisat2_denovo.log" && return $par_exit
 	else
 		# Sequential fallback
+		local _seq_failures=0
 		for SRR in "${rnaseq_list[@]}"; do
 			local HISAT2_DIR="$HISAT2_DE_NOVO_ROOT/$SRR"
 			mkdir -p "$HISAT2_DIR"
@@ -240,13 +241,13 @@ hisat2_de_novo_pipeline() {
 						hisat2 -p "${THREADS}" $hisat2_strand_opts -x "$index_prefix" -U "$trimmed1" -S "$sam"
 				fi
 				align_exit=$?
-				[[ $align_exit -ne 0 ]] && { log_error "[HISAT2] Alignment failed for $SRR (exit=$align_exit)"; rm -f "$sam"; continue; }
+				[[ $align_exit -ne 0 ]] && { log_error "[HISAT2] Alignment failed for $SRR (exit=$align_exit)"; rm -f "$sam"; ((_seq_failures++)) || true; continue; }
 
 				log_info "[SAMTOOLS] Converting SAM to sorted BAM..."
 				run_with_space_time_log --input "$sam" --output "$bam" samtools sort -@ "${THREADS}" -o "$bam" "$sam" \
-					|| { log_error "[SAMTOOLS] sort failed for $SRR"; rm -f "$sam" "$bam"; continue; }
+					|| { log_error "[SAMTOOLS] sort failed for $SRR"; rm -f "$sam" "$bam"; ((_seq_failures++)) || true; continue; }
 				run_with_space_time_log samtools index -@ "${THREADS}" "$bam" \
-					|| { log_error "[SAMTOOLS] index failed for $SRR"; rm -f "$sam" "$bam"; continue; }
+					|| { log_error "[SAMTOOLS] index failed for $SRR"; rm -f "$sam" "$bam"; ((_seq_failures++)) || true; continue; }
 				rm -f "$sam"
 			fi
 
@@ -263,7 +264,7 @@ hisat2_de_novo_pipeline() {
 				run_with_space_time_log --input "$bam" --output "$out_dir" \
 					stringtie -p "$THREADS" $stringtie_strand_opt "$bam" -o "$out_gtf" \
 						-A "$out_abund" \
-					|| { log_error "[STRINGTIE] Assembly failed for $SRR"; rm -f "$out_gtf" "$out_abund"; continue; }
+					|| { log_error "[STRINGTIE] Assembly failed for $SRR"; rm -f "$out_gtf" "$out_abund"; ((_seq_failures++)) || true; continue; }
 			fi
 
 			# Cleanup BAM files if configured
@@ -273,8 +274,13 @@ hisat2_de_novo_pipeline() {
 
 			log_info "[STRINGTIE] Done processing $SRR (de novo)"
 		done
+
+		if [[ $_seq_failures -gt 0 ]]; then
+			log_warn "[SEQUENTIAL] $_seq_failures sample(s) failed during HISAT2 De Novo processing"
+			return 1
+		fi
 	fi
-	
+
 	log_step "HISAT2 de novo pipeline completed for $fasta_tag"
 }
 

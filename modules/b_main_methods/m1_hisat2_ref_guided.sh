@@ -18,6 +18,206 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/shared_utils_method.sh"
 
 # ==============================================================================
+# POST-ALIGNMENT QC
+# ==============================================================================
+# Parse HISAT2 alignment summary files to flag low mapping rates, high
+# multi-mapping (potential rRNA contamination), and cohort-level outliers.
+# Mirrors _star_check_alignment_rates() in m3_star_alignment.sh.
+# Usage: _hisat2_check_alignment_rates <align_dir> <fasta_tag> <srr1> [srr2 ...]
+
+_hisat2_check_alignment_rates() {
+	local align_dir="$1" ft="$2"; shift 2
+	local srr_list=("$@")
+	local warn_count=0
+
+	# Collect per-sample stats for cohort-level outlier detection
+	local -a sample_names=() overall_rates=() concordant_once=() concordant_multi=()
+
+	for SRR in "${srr_list[@]}"; do
+		local sumf="${align_dir}/${SRR}/${SRR}_${ft}_ref_guided_alignment_summary.txt"
+		[[ ! -f "$sumf" ]] && continue
+
+		# HISAT2 summary format (paired-end):
+		#   <N> reads; of these:
+		#     <N> (...) were paired; of these:
+		#       <N> (...) aligned concordantly 0 times
+		#       <N> (...) aligned concordantly exactly 1 time
+		#       <N> (...) aligned concordantly >1 times
+		#   <X>% overall alignment rate
+		local overall conc1 concm
+		overall=$(grep -oP '[0-9.]+(?=% overall alignment rate)' "$sumf" 2>/dev/null | head -1)
+		conc1=$(grep 'aligned concordantly exactly 1 time' "$sumf" 2>/dev/null \
+			| grep -oP '[0-9.]+(?=%)' | head -1)
+		concm=$(grep 'aligned concordantly >1 time' "$sumf" 2>/dev/null \
+			| grep -oP '[0-9.]+(?=%)' | head -1)
+
+		# Single-end fallback: "aligned exactly 1 time" / "aligned >1 times"
+		if [[ -z "$conc1" ]]; then
+			conc1=$(grep 'aligned exactly 1 time' "$sumf" 2>/dev/null \
+				| grep -oP '[0-9.]+(?=%)' | head -1)
+			concm=$(grep 'aligned >1 time' "$sumf" 2>/dev/null \
+				| grep -oP '[0-9.]+(?=%)' | head -1)
+		fi
+
+		[[ -z "$overall" ]] && continue
+
+		sample_names+=("$SRR")
+		overall_rates+=("$overall")
+		concordant_once+=("${conc1:-0}")
+		concordant_multi+=("${concm:-0}")
+
+		# Per-sample checks
+		if awk "BEGIN{exit !($overall < 50)}" 2>/dev/null; then
+			log_warn "[HISAT2 QC] $SRR: Overall alignment ${overall}% — VERY LOW (check sample quality, adapter contamination, or genome mismatch)"
+			((warn_count++)) || true
+		elif awk "BEGIN{exit !($overall < 70)}" 2>/dev/null; then
+			log_warn "[HISAT2 QC] $SRR: Overall alignment ${overall}% — below 70% threshold"
+			((warn_count++)) || true
+		fi
+
+		# High multi-mapping (>20%) may indicate rRNA contamination
+		if awk "BEGIN{exit !(${concm:-0} > 20)}" 2>/dev/null; then
+			log_warn "[HISAT2 QC] $SRR: Multi-mapped ${concm}% — may indicate rRNA contamination or repetitive element enrichment"
+			((warn_count++)) || true
+		fi
+	done
+
+	# Cohort-level outlier detection: flag samples >2 SD below mean overall rate
+	local n=${#overall_rates[@]}
+	if [[ $n -ge 3 ]]; then
+		local sum=0 sum_sq=0
+		for rate in "${overall_rates[@]}"; do
+			sum=$(awk "BEGIN{printf \"%.4f\", $sum + $rate}")
+			sum_sq=$(awk "BEGIN{printf \"%.4f\", $sum_sq + ($rate * $rate)}")
+		done
+		local mean=$(awk "BEGIN{printf \"%.2f\", $sum / $n}")
+		local sd=$(awk "BEGIN{v=($sum_sq/$n) - ($sum/$n)^2; printf \"%.2f\", (v>0)?sqrt(v):0}")
+		local threshold=$(awk "BEGIN{printf \"%.2f\", $mean - 2 * $sd}")
+
+		log_info "[HISAT2 QC] Cohort alignment stats: mean=${mean}%, SD=${sd}%, outlier threshold=${threshold}%"
+
+		for ((i=0; i<n; i++)); do
+			if awk "BEGIN{exit !(${overall_rates[$i]} < $threshold)}" 2>/dev/null; then
+				log_warn "[HISAT2 QC] OUTLIER: ${sample_names[$i]} (${overall_rates[$i]}%) is >2 SD below cohort mean (${mean}%)"
+				((warn_count++)) || true
+			fi
+		done
+	fi
+
+	# Summary table
+	if [[ ${#sample_names[@]} -gt 0 ]]; then
+		log_info "[HISAT2 QC] ┌───────────────────┬──────────┬──────────┬──────────┐"
+		log_info "[HISAT2 QC] │ Sample            │ Overall  │ Conc.1x  │ Conc.>1x │"
+		log_info "[HISAT2 QC] ├───────────────────┼──────────┼──────────┼──────────┤"
+		for ((i=0; i<${#sample_names[@]}; i++)); do
+			printf -v _row "[HISAT2 QC] │ %-17s │  %5s%%  │  %5s%%  │  %5s%%  │" \
+				"${sample_names[$i]}" "${overall_rates[$i]}" "${concordant_once[$i]}" "${concordant_multi[$i]}"
+			log_info "$_row"
+		done
+		log_info "[HISAT2 QC] └───────────────────┴──────────┴──────────┴──────────┘"
+	fi
+
+	if [[ $warn_count -gt 0 ]]; then
+		log_warn "[HISAT2 QC] $warn_count warning(s) detected — review samples before proceeding"
+	else
+		log_info "[HISAT2 QC] All samples passed alignment rate checks"
+	fi
+}
+
+# ==============================================================================
+# FASTA/GTF CHROMOSOME VALIDATION
+# ==============================================================================
+# Verify that the GTF chromosome names match the FASTA sequence names.
+# A mismatch means HISAT2 splice site guidance is silently ineffective.
+
+_m1_validate_fasta_gtf_chromosomes() {
+	local fasta="$1" gtf="$2"
+
+	# Extract first 20 unique chromosome names from each file
+	local fasta_chrs gtf_chrs
+	fasta_chrs=$(grep '^>' "$fasta" | head -20 | sed 's/^>//; s/[[:space:]].*//' | sort)
+	gtf_chrs=$(awk '$1 !~ /^#/ {print $1}' "$gtf" | sort -u | head -20)
+
+	if [[ -z "$fasta_chrs" || -z "$gtf_chrs" ]]; then
+		log_warn "[VALIDATE] Could not extract chromosome names from FASTA or GTF"
+		return 0
+	fi
+
+	# Count overlapping chromosome names
+	local overlap
+	overlap=$(comm -12 <(echo "$fasta_chrs") <(echo "$gtf_chrs") | wc -l)
+	local fasta_count gtf_count
+	fasta_count=$(echo "$fasta_chrs" | wc -l)
+	gtf_count=$(echo "$gtf_chrs" | wc -l)
+
+	if [[ "$overlap" -eq 0 ]]; then
+		log_warn "[VALIDATE] FASTA/GTF MISMATCH: No shared chromosome names between FASTA and GTF!"
+		log_warn "[VALIDATE]   FASTA chromosomes (first 5): $(echo "$fasta_chrs" | head -5 | tr '\n' ' ')"
+		log_warn "[VALIDATE]   GTF chromosomes (first 5):   $(echo "$gtf_chrs" | head -5 | tr '\n' ' ')"
+		log_warn "[VALIDATE]   Splice site guidance will be INEFFECTIVE — alignment quality degraded"
+	elif [[ "$overlap" -lt "$gtf_count" ]]; then
+		log_info "[VALIDATE] FASTA/GTF partial overlap: $overlap of $gtf_count GTF chromosomes found in FASTA"
+	else
+		log_info "[VALIDATE] FASTA/GTF chromosome names match ($overlap shared)"
+	fi
+}
+
+# ==============================================================================
+# BAM METRICS: SOFT-CLIPPING & INSERT SIZE
+# ==============================================================================
+# Collect lightweight BAM metrics using samtools stats. Must run BEFORE BAM deletion.
+# Saves a summary TSV per sample for post-hoc review.
+# Usage: _m1_collect_bam_metrics <bam> <output_dir> [method_tag] [srr_tag]
+
+_m1_collect_bam_metrics() {
+	local bam="$1" out_dir="$2"
+	local method="${3:-HISAT2_RG}" srr="${4:-SAMPLE}"
+	local metrics_file="$out_dir/${srr}_bam_metrics.txt"
+
+	if ! command -v samtools >/dev/null 2>&1 || [[ ! -f "$bam" ]]; then
+		return 0
+	fi
+
+	# samtools stats is fast — runs in seconds even on large BAMs
+	local stats
+	stats=$(samtools stats "$bam" 2>/dev/null | grep '^SN\t') || return 0
+
+	local total_bases bases_clipped insert_mean insert_sd
+	total_bases=$(echo "$stats" | awk -F'\t' '/^SN\tbases mapped \(cigar\)/{print $3}')
+	bases_clipped=$(echo "$stats" | awk -F'\t' '/^SN\tbases trimmed/{print $3}')
+	insert_mean=$(echo "$stats" | awk -F'\t' '/^SN\tinsert size average/{print $3}')
+	insert_sd=$(echo "$stats" | awk -F'\t' '/^SN\tinsert size standard deviation/{print $3}')
+
+	# Save metrics to file for post-hoc review
+	{
+		echo "sample=$srr"
+		echo "total_mapped_bases=$total_bases"
+		echo "bases_soft_clipped=$bases_clipped"
+		echo "insert_size_mean=$insert_mean"
+		echo "insert_size_sd=$insert_sd"
+	} > "$metrics_file"
+
+	# Flag excessive soft-clipping (>10% of mapped bases)
+	if [[ -n "$total_bases" && -n "$bases_clipped" && "$total_bases" -gt 0 ]]; then
+		local clip_pct
+		clip_pct=$(awk "BEGIN{printf \"%.1f\", 100*$bases_clipped/$total_bases}")
+		if awk "BEGIN{exit !($clip_pct > 10)}" 2>/dev/null; then
+			_parallel_log "$method" "$srr" WARN "Soft-clipped ${clip_pct}% of mapped bases — may indicate adapter contamination or index mismatch"
+		fi
+	fi
+
+	# Flag abnormal insert size (outside 100-800 bp for typical RNA-seq)
+	if [[ -n "$insert_mean" ]]; then
+		local mean_int=${insert_mean%.*}
+		if [[ "$mean_int" -gt 0 ]]; then
+			if [[ "$mean_int" -lt 100 || "$mean_int" -gt 800 ]]; then
+				_parallel_log "$method" "$srr" WARN "Unusual insert size: mean=${insert_mean}, SD=${insert_sd:-N/A} (expected 100-800 bp for RNA-seq)"
+			fi
+		fi
+	fi
+}
+
+# ==============================================================================
 # HISAT2 REFERENCE GUIDED PIPELINE
 # ==============================================================================
 
@@ -66,6 +266,9 @@ hisat2_ref_guided_pipeline() {
 	set_fasta_output_dirs "$fasta_tag"
 	index_prefix="$HISAT2_REF_GUIDED_INDEX_DIR/${fasta_tag}_ref_guided"
 
+	# Validate FASTA/GTF chromosome name consistency
+	_m1_validate_fasta_gtf_chromosomes "$fasta" "$gtf"
+
 	# BUILD HISAT2 REFERENCE-GUIDED INDEX
 	mkdir -p "$HISAT2_REF_GUIDED_INDEX_DIR"
 	if ls "${index_prefix}".*.ht2 >/dev/null 2>&1 && [[ "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
@@ -78,8 +281,14 @@ hisat2_ref_guided_pipeline() {
 		local build_opts=""
 
 		# Extract splice sites and exons (may be empty for single-exon transcriptomes)
-		hisat2_extract_splice_sites.py "$gtf" > "$splice_sites" 2>/dev/null || true
-		hisat2_extract_exons.py "$gtf" > "$exons" 2>/dev/null || true
+		if ! hisat2_extract_splice_sites.py "$gtf" > "$splice_sites" 2>&1; then
+			log_warn "[INDEX] hisat2_extract_splice_sites.py failed for $gtf — continuing without splice sites"
+			> "$splice_sites"
+		fi
+		if ! hisat2_extract_exons.py "$gtf" > "$exons" 2>&1; then
+			log_warn "[INDEX] hisat2_extract_exons.py failed for $gtf — continuing without exons"
+			> "$exons"
+		fi
 
 		# Validate annotation coordinates against FASTA sequence lengths.
 		# Transcriptome FASTAs contain short spliced sequences, but GTFs may carry
@@ -127,7 +336,7 @@ hisat2_ref_guided_pipeline() {
 	local threads_per_job=$((THREADS / parallel_jobs))
 	[[ $threads_per_job -lt 1 ]] && threads_per_job=1
 
-	if command -v parallel >/dev/null 2>&1 && [[ "$parallel_jobs" -gt 1 ]]; then
+	if command -v parallel >/dev/null 2>&1 && [[ "$parallel_jobs" -gt 1 ]] && [[ "${USE_GNU_PARALLEL:-TRUE}" != "FALSE" ]]; then
 		log_step "[PARALLEL] HISAT2 Ref-Guided Align+StringTie: ${#rnaseq_list[@]} samples, $parallel_jobs jobs x $threads_per_job threads"
 		_prepare_parallel_env
 
@@ -158,15 +367,18 @@ hisat2_ref_guided_pipeline() {
 			else
 				_parallel_log HISAT2_RG "$SRR" INFO "Aligning with $threads_per_job threads"
 				local align_exit=0
+				local summary_file="$HISAT2_DIR/${SRR}_${fasta_tag}_ref_guided_alignment_summary.txt"
 				if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
 					hisat2 -p "$threads_per_job" --dta $hisat2_strand_opts -x "$index_prefix" \
-						-1 "$trimmed1" -2 "$trimmed2" -S "$sam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
-					align_exit=${PIPESTATUS[0]}
+						-1 "$trimmed1" -2 "$trimmed2" -S "$sam" 2>"$summary_file"
+					align_exit=$?
 				else
 					hisat2 -p "$threads_per_job" --dta $hisat2_strand_opts -x "$index_prefix" \
-						-U "$trimmed1" -S "$sam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
-					align_exit=${PIPESTATUS[0]}
+						-U "$trimmed1" -S "$sam" 2>"$summary_file"
+					align_exit=$?
 				fi
+				# Display alignment summary (strip ANSI codes for clean log output)
+				[[ -s "$summary_file" ]] && sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g' "$summary_file"
 				[[ $align_exit -ne 0 ]] && { _parallel_log HISAT2_RG "$SRR" ERROR "HISAT2 failed (exit=$align_exit)"; rm -f "$sam"; return $align_exit; }
 
 				samtools sort -@ "$threads_per_job" -o "$bam" "$sam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
@@ -194,15 +406,18 @@ hisat2_ref_guided_pipeline() {
 					{ _parallel_log HISAT2_RG "$SRR" ERROR "StringTie failed"; return 1; }
 			fi
 
+			# Collect BAM metrics before potential deletion
+			[[ -f "$bam" ]] && _m1_collect_bam_metrics "$bam" "$HISAT2_DIR" "HISAT2_RG" "$SRR"
+
 			if [[ "$keep_bam_global" != "y" && -f "$bam" ]]; then
-				_parallel_log HISAT2_RG "$SRR" INFO "Removing BAM (keep_bam_global != y)"
+				_parallel_log HISAT2_RG "$SRR" WARN "Deleting BAM to save disk (set keep_bam_global=y to retain): $(basename "$bam")"
 				rm -f "$bam" "${bam}.bai"
 			fi
 
 			_parallel_log HISAT2_RG "$SRR" INFO "Completed successfully"
 			return 0
 		}
-		export -f _m1_align_parallel_worker _m1_infer_strandness
+		export -f _m1_align_parallel_worker _m1_infer_strandness _hisat2_check_alignment_rates _m1_collect_bam_metrics
 
 		printf '%s\n' "${rnaseq_list[@]}" | parallel \
 			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
@@ -238,14 +453,19 @@ hisat2_ref_guided_pipeline() {
 				log_info "[ALIGN] GTF exists, BAM already cleaned for $SRR - skipping alignment"
 			else
 				log_step "Aligning: $SRR -> $fasta_tag (HISAT2 Ref-Guided)"
+				local summary_file="$HISAT2_DIR/${SRR}_${fasta_tag}_ref_guided_alignment_summary.txt"
 
+				# Run hisat2 directly (not via run_with_space_time_log) to cleanly
+				# capture alignment summary from stderr into a separate file for QC.
 				if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
-					run_with_space_time_log --input "$TRIM_DIR_ROOT/$SRR" --output "$HISAT2_DIR" \
-						hisat2 -p "${THREADS}" --dta $hisat2_strand_opts -x "$index_prefix" -1 "$trimmed1" -2 "$trimmed2" -S "$sam"
+					hisat2 -p "${THREADS}" --dta $hisat2_strand_opts -x "$index_prefix" \
+						-1 "$trimmed1" -2 "$trimmed2" -S "$sam" 2>"$summary_file"
 				else
-					run_with_space_time_log --input "$TRIM_DIR_ROOT/$SRR" --output "$HISAT2_DIR" \
-						hisat2 -p "${THREADS}" --dta $hisat2_strand_opts -x "$index_prefix" -U "$trimmed1" -S "$sam"
+					hisat2 -p "${THREADS}" --dta $hisat2_strand_opts -x "$index_prefix" \
+						-U "$trimmed1" -S "$sam" 2>"$summary_file"
 				fi
+				# Display alignment summary
+				[[ -s "$summary_file" ]] && cat "$summary_file"
 
 				# Verify alignment produced a SAM file before proceeding
 				if [[ ! -s "$sam" ]]; then
@@ -288,11 +508,14 @@ hisat2_ref_guided_pipeline() {
 			fi
 
 			if [[ "$keep_bam_global" != "y" && -f "$bam" ]]; then
-				log_info "[BAM] Removing $SRR BAM (keep_bam_global != y)"
+				log_warn "[BAM] Deleting $SRR BAM to save disk (set keep_bam_global=y to retain)"
 				rm -f "$bam" "${bam}.bai"
 			fi
 		done
 	fi
+
+	# POST-ALIGNMENT QC: check alignment rates and flag outliers
+	_hisat2_check_alignment_rates "$HISAT2_REF_GUIDED_ROOT" "$fasta_tag" "${rnaseq_list[@]}"
 
 	# PREPARE COUNT MATRICES
 	log_step "Preparing count matrices for DESeq2"
