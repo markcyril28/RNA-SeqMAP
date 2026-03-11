@@ -65,7 +65,9 @@ GENERATE_DIM_FIGURES <- list(
 select_variable_genes <- function(data_matrix, n_top = N_TOP_VARIABLE_GENES) {
   if (n_top <= 0 || n_top >= nrow(data_matrix)) return(data_matrix)
   
-  gene_vars <- apply(data_matrix, 1, var, na.rm = TRUE)
+  # Vectorized variance: avoid apply() loop
+  rm <- rowMeans(data_matrix, na.rm = TRUE)
+  gene_vars <- rowSums((data_matrix - rm)^2, na.rm = TRUE) / (ncol(data_matrix) - 1)
   gene_vars[is.na(gene_vars)] <- 0
   
   top_genes <- names(sort(gene_vars, decreasing = TRUE))[1:min(n_top, length(gene_vars))]
@@ -107,7 +109,9 @@ run_pca_analysis <- function(data_matrix, metadata, output_dir, gene_group) {
 
   data_t <- t(data_matrix)
 
-  col_vars <- apply(data_t, 2, var, na.rm = TRUE)
+  # Vectorized column variance: avoid apply() loop
+  cm <- colMeans(data_t, na.rm = TRUE)
+  col_vars <- colSums(sweep(data_t, 2, cm)^2, na.rm = TRUE) / (nrow(data_t) - 1)
   data_t <- data_t[, col_vars > 0, drop = FALSE]
 
   if (ncol(data_t) < 3) {

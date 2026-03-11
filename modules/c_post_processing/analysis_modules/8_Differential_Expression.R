@@ -324,17 +324,22 @@ load_m1_gene_group_counts <- function(gene_group, matrices_dir, master_ref) {
       # Reverse suffix stripping: gene group has "SMEL5_*.1" but matrix has "SMEL5_*"
       if (length(matched) < length(gene_ids)) {
         unmatched <- gene_ids[!gene_ids %in% rn]
-        for (g in unmatched) {
-          g_base <- sub("\\.[0-9]+$", "", g)
-          if (g_base != g && g_base %in% rn) matched <- c(matched, g_base)
-        }
+        # Vectorized: strip suffix from all unmatched at once
+        g_bases <- sub("\\.[0-9]+$", "", unmatched)
+        changed <- g_bases != unmatched
+        base_hits <- g_bases[changed & g_bases %in% rn]
+        matched <- c(matched, base_hits)
         # Forward prefix matching: gene group has "SMEL4.1_*.1" and matrix has "SMEL4.1_*.1.01"
         if (length(matched) < length(gene_ids)) {
-          still_unmatched <- gene_ids[!gene_ids %in% rn & !sub("\\.[0-9]+$", "", gene_ids) %in% rn]
-          for (g in still_unmatched) {
-            pat <- paste0("^", gsub("\\.", "\\\\.", g), "(\\..*)?$")
-            hits <- rn[grepl(pat, rn)]
-            if (length(hits) > 0) matched <- c(matched, hits[1])
+          still_unmatched <- unmatched[!(unmatched %in% rn | g_bases %in% rn)]
+          if (length(still_unmatched) > 0) {
+            # Build base IDs for matrix row names once
+            rn_bases <- sub("\\.[0-9]+\\.[0-9]+$", "", rn)
+            rn_bases <- sub("\\.[0-9]+$", "", rn_bases)
+            for (g in still_unmatched) {
+              hits <- rn[rn_bases == g]
+              if (length(hits) > 0) matched <- c(matched, hits[1])
+            }
           }
         }
         matched <- unique(matched)

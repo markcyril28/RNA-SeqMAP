@@ -78,17 +78,18 @@ create_wgcna_gene_sets <- function(wgcna_dir) {
   
   if (length(module_files) == 0) return(NULL)
   
-  all_modules <- data.frame()
-  for (f in module_files) {
-    mod_data <- read.table(f, header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+  module_list <- vector("list", length(module_files))
+  for (i in seq_along(module_files)) {
+    mod_data <- read.table(module_files[i], header = TRUE, sep = "\t", stringsAsFactors = FALSE)
     if (all(c("Gene", "Module") %in% colnames(mod_data))) {
       mod_data$term_id <- paste0("WGCNA_", mod_data$Module)
-      all_modules <- rbind(all_modules, mod_data[, c("term_id", "Gene")])
+      module_list[[i]] <- mod_data[, c("term_id", "Gene")]
     }
   }
-  
-  if (nrow(all_modules) == 0) return(NULL)
-  
+  all_modules <- do.call(rbind, module_list)
+
+  if (is.null(all_modules) || nrow(all_modules) == 0) return(NULL)
+
   colnames(all_modules) <- c("term_id", "gene")
   term2name <- data.frame(
     term_id = unique(all_modules$term_id),
@@ -262,8 +263,14 @@ run_gene_set_enrichment <- function(config = NULL, matrices_dir = NULL) {
                                 matrices_dir, config$master_reference)
   universe <- NULL
   if (file.exists(full_file)) {
-    full_data <- read_count_matrix(full_file)
-    universe <- rownames(full_data)
+    # Read only the first column (gene IDs) to avoid loading the entire matrix into memory
+    header_line <- readLines(full_file, n = 1)
+    n_cols <- length(strsplit(header_line, "\t")[[1]])
+    col_classes <- c("character", rep("NULL", n_cols - 1))
+    full_df <- read.table(full_file, header = TRUE, sep = "\t", colClasses = col_classes,
+                          stringsAsFactors = FALSE, comment.char = "")
+    universe <- full_df[[1]]
+    rm(full_df)
     cat("Universe: ", length(universe), " measured genes (from full transcriptome matrix)\n")
   } else {
     cat("  Warning: Full transcriptome matrix not found at:", full_file, "\n")

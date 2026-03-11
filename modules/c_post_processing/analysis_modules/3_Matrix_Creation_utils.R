@@ -26,7 +26,7 @@ save_count_matrices <- function(counts, output_dir, prefix, master_ref, level,
     matrix_df <- as.data.frame(matrix_data, check.names = FALSE)
     matrix_df <- cbind(GeneID = rownames(matrix_data), matrix_df)
     rownames(matrix_df) <- NULL
-    write.table(matrix_df, output_file, sep = "\t", quote = FALSE, row.names = FALSE)
+    data.table::fwrite(matrix_df, output_file, sep = "\t", quote = FALSE)
     cat("Saved:", basename(output_file), "\n")
   }
 
