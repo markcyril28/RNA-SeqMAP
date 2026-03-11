@@ -85,6 +85,8 @@ export LOG_DIR TIME_DIR SPACE_DIR SPACE_TIME_DIR ERROR_WARN_DIR SOFTWARE_CATALOG
 setup_logging "FALSE"
 export LOG_FILE TIME_FILE SPACE_FILE SPACE_TIME_FILE ERROR_WARN_FILE SOFTWARE_FILE GPU_LOG_FILE
 
+catalog_all_software
+
 log_step "Starting Post-Processing Pipeline (${#PIPELINE_CONFIGS[@]} config(s) enabled)"
 
 #===============================================================================
