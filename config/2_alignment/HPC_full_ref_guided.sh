@@ -12,6 +12,11 @@ keep_bam_global="n"                     # y=keep BAM files, n=delete after
 STAR_READ_LENGTH=89                      # Actual read length for PRJNA328564 (89 bp)
 export STAR_READ_LENGTH
 
+# Strandness for HISAT2/StringTie (M1/M2)
+# Options: "FR" (ligation/forward), "RF" (dUTP/TruSeq/reverse), "" (unstranded/auto-detect)
+# Leave empty to enable auto-detection via infer_experiment.py on the first aligned sample.
+HISAT2_STRANDNESS=""
+
 # Pipeline Stages (comment/uncomment to enable/disable)
 PIPELINE_STAGES=(
 	#"MAMBA_INSTALLATION"
