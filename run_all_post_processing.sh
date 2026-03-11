@@ -5,6 +5,18 @@
 
 set -o pipefail   # -e/-u omitted intentionally (sourced functions use boolean returns)
 
+# ==============================================================================
+# SYSTEM RESOURCES
+# ==============================================================================
+
+THREADS=96
+ENABLE_GPU="FALSE"
+ENABLE_GNU_PARALLEL="TRUE"
+DESIRED_CPU_PER_JOB=2
+AVAILABLE_RAM_GB=64
+GPU_VRAM_GB=8
+
+
 PIPELINE_CONFIGS=(
     # ── Full — Eggplant_V4.1 ──
     #"config/3_post_proc_configs/HPC_full_M1_Eggplant_V4.1.sh"      # M1 HISAT2 RefGuided   Eggplant_V4.1 genome
@@ -88,6 +100,7 @@ export LOG_FILE TIME_FILE SPACE_FILE SPACE_TIME_FILE ERROR_WARN_FILE SOFTWARE_FI
 catalog_all_software
 
 log_step "Starting Post-Processing Pipeline (${#PIPELINE_CONFIGS[@]} config(s) enabled)"
+
 
 #===============================================================================
 # CONFIG LOOP
