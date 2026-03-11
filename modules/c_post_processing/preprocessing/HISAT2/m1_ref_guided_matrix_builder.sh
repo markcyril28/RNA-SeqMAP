@@ -226,32 +226,35 @@ merge_group_counts() {
         # NOTE: Filename uses "geneName" (camelCase) while the TSV header column is "GeneName" (PascalCase).
         # build_input_path() in 0_shared_config.R maps gene_type=="Shortened_Name" -> "geneName" to match this convention.
         local output_geneName_SRR_tsv="$OUT_DIR/$group_name/${group_name}_${count_type}_counts_geneName_SRR${MASTER_SUFFIX}.tsv"
+        local output_geneName_Organ_tsv="$OUT_DIR/$group_name/${group_name}_${count_type}_counts_geneName_Organ${MASTER_SUFFIX}.tsv"
 
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Creating SRR matrix: $(basename "$output_geneName_SRR_tsv")"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Creating SRR + Organ matrices: $(basename "$output_geneName_SRR_tsv")"
 
         printf "%s\n" "${sample_files[@]}" > "$tmpdir/sample_files_list.txt"
 
+        # Call matrix_builder.py ONCE; reuse body for both SRR and Organ header variants
+        local matrix_body="$tmpdir/matrix_body_${count_type}.txt"
+        python3 "$UTILITIES_DIR/matrix_builder.py" "$tmpdir/gene_names.txt" "$tmpdir/sample_files_list.txt" \
+            > "$matrix_body" \
+            || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: matrix_builder.py failed for $group_name"; rm -rf "$tmpdir"; return 1; }
+
+        # SRR header + body
         {
             printf "GeneName"
-            for srr in "${processed_srrs[@]}"; do
-                printf "\t%s" "$srr"
-            done
+            for srr in "${processed_srrs[@]}"; do printf "\t%s" "$srr"; done
             printf "\n"
-            python3 "$UTILITIES_DIR/matrix_builder.py" "$tmpdir/gene_names.txt" "$tmpdir/sample_files_list.txt"
-        } > "$output_geneName_SRR_tsv" || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: matrix_builder.py failed for SRR matrix: $group_name"; rm -rf "$tmpdir"; return 1; }
+            cat "$matrix_body"
+        } > "$output_geneName_SRR_tsv"
 
-        local output_geneName_Organ_tsv="$OUT_DIR/$group_name/${group_name}_${count_type}_counts_geneName_Organ${MASTER_SUFFIX}.tsv"
-
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Creating Organ matrix: $(basename "$output_geneName_Organ_tsv")"
-
+        # Organ header + body
         {
             printf "GeneName"
-            for srr in "${processed_srrs[@]}"; do
-                printf "\t%s" "${SRR_TO_ORGAN[$srr]:-Unknown}"
-            done
+            for srr in "${processed_srrs[@]}"; do printf "\t%s" "${SRR_TO_ORGAN[$srr]:-Unknown}"; done
             printf "\n"
-            python3 "$UTILITIES_DIR/matrix_builder.py" "$tmpdir/gene_names.txt" "$tmpdir/sample_files_list.txt"
-        } > "$output_geneName_Organ_tsv" || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: matrix_builder.py failed for Organ matrix: $group_name"; rm -rf "$tmpdir"; return 1; }
+            cat "$matrix_body"
+        } > "$output_geneName_Organ_tsv"
+
+        rm -f "$matrix_body"
 
         rm -f "${sample_files[@]}"
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Completed $count_type matrix generation"
