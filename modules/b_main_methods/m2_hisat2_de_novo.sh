@@ -148,6 +148,17 @@ hisat2_de_novo_pipeline() {
 			_init_parallel_worker "$SRR"
 			[[ -z "$trimmed1" ]] && { _parallel_log HISAT2_DN "$SRR" WARN "Trimmed FASTQ not found - skipping"; return 0; }
 
+			# Check StringTie output first — if final results exist, skip entirely
+			# (BAM may have been cleaned up by keep_bam_global="n")
+			local out_dir="$abs_stringtie_dn_root/$SRR"
+			local out_gtf="$out_dir/${SRR}_${fasta_tag}_trimmed_mapped_sorted_stringtie_assembled_de_novo.gtf"
+			local out_abund="$out_dir/${SRR}_${fasta_tag}_gene_abundances_de_novo.tsv"
+
+			if [[ -f "$out_gtf" && -f "$out_abund" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
+				_parallel_log HISAT2_DN "$SRR" INFO "StringTie output exists - skipping"
+				return 0
+			fi
+
 			local HISAT2_DIR="$abs_hisat2_dn_root/$SRR"
 			mkdir -p "$HISAT2_DIR"
 			local bam="$HISAT2_DIR/${SRR}_${fasta_tag}_trimmed_mapped_sorted.bam"
@@ -218,6 +229,17 @@ hisat2_de_novo_pipeline() {
 		# Sequential fallback
 		local _seq_failures=0
 		for SRR in "${rnaseq_list[@]}"; do
+			# Check StringTie output first — if final results exist, skip entirely
+			# (BAM may have been cleaned up by keep_bam_global="n")
+			local out_dir="$STRINGTIE_HISAT2_DE_NOVO_ROOT/$SRR"
+			local out_gtf="$out_dir/${SRR}_${fasta_tag}_trimmed_mapped_sorted_stringtie_assembled_de_novo.gtf"
+			local out_abund="$out_dir/${SRR}_${fasta_tag}_gene_abundances_de_novo.tsv"
+
+			if [[ -f "$out_gtf" && -f "$out_abund" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
+				log_info "[HISAT2 DN] StringTie output exists for $SRR - skipping"
+				continue
+			fi
+
 			local HISAT2_DIR="$HISAT2_DE_NOVO_ROOT/$SRR"
 			mkdir -p "$HISAT2_DIR"
 
