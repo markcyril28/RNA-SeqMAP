@@ -507,6 +507,9 @@ hisat2_ref_guided_pipeline() {
 						-B -C "$out_dir/${SRR}_${fasta_tag}_ref_guided_cov_refs.gtf"
 			fi
 
+			# Collect BAM metrics before potential deletion
+			[[ -f "$bam" ]] && _m1_collect_bam_metrics "$bam" "$HISAT2_DIR" "HISAT2_RG" "$SRR"
+
 			if [[ "$keep_bam_global" != "y" && -f "$bam" ]]; then
 				log_warn "[BAM] Deleting $SRR BAM to save disk (set keep_bam_global=y to retain)"
 				rm -f "$bam" "${bam}.bai"
