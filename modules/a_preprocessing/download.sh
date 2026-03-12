@@ -134,8 +134,8 @@ download_srrs_parallel() {
 	
 	log_info "Running parallel downloads with GNU Parallel (JOBS=${JOBS:-2})"
 	export PATH CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_EXE
-	export RAW_DIR_ROOT THREADS THREADS_PER_JOB
-	export -f log_info log_warn log_error find_trimmed_fastq find_raw_fastq
+	export RAW_DIR_ROOT TRIM_DIR_ROOT THREADS THREADS_PER_JOB
+	export -f timestamp log log_info log_warn log_error find_trimmed_fastq find_raw_fastq
 	
 	_download_worker() {
 		local SRR="$1"
