@@ -113,7 +113,6 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
     }
 
     # Sort by mean expression when sort_by_expression is TRUE
-    # Goal: Put high expression genes closer to the organ/sample labels
     if (sort_by_expression) {
       if (transpose) {
         # Organs_as_Rows: genes are columns, sort columns so high expression is LEFT (near row labels)
@@ -122,11 +121,11 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
         data_matrix <- data_matrix[, sort_order, drop = FALSE]
         col_cv <- col_cv[sort_order]
       } else {
-        # Genes_as_Rows: genes are rows, sort rows so high expression is TOP (near column labels)
-        row_means <- rowMeans(data_matrix, na.rm = TRUE)
-        sort_order <- order(row_means, decreasing = TRUE)
-        data_matrix <- data_matrix[sort_order, , drop = FALSE]
-        row_cv <- row_cv[sort_order]
+        # Genes_as_Rows: sort columns (samples) so high expression is RIGHT
+        col_means <- colMeans(data_matrix, na.rm = TRUE)
+        sort_order <- order(col_means, decreasing = FALSE)
+        data_matrix <- data_matrix[, sort_order, drop = FALSE]
+        col_cv <- col_cv[sort_order]
       }
     }
     
