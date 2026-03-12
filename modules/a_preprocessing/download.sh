@@ -166,15 +166,15 @@ download_srrs_parallel() {
 		
 		prefetch "$SRR" --output-directory "$raw_dir" || return 1
 		fasterq-dump --split-files --threads "${THREADS_PER_JOB:-2}" "$raw_dir/$SRR/$SRR.sra" -O "$raw_dir" || return 1
-		local _ccmd="gzip"
-		command -v pigz &>/dev/null && _ccmd="pigz -p ${THREADS_PER_JOB:-2}"
+		local _ccmd="${_SHARED_GZIP_C:-gzip}"
+		[[ "$_ccmd" == "pigz" ]] && _ccmd="pigz -p ${THREADS_PER_JOB:-2}"
 		[[ -f "$raw_dir/${SRR}_1.fastq" ]] && $_ccmd "$raw_dir/${SRR}_1.fastq"
 		[[ -f "$raw_dir/${SRR}_2.fastq" ]] && $_ccmd "$raw_dir/${SRR}_2.fastq"
 	}
 	export -f _download_worker
 	
 	printf "%s\n" "${SRR_LIST[@]}" | parallel \
-		--env PATH --env CONDA_PREFIX \
+		--env PATH --env CONDA_PREFIX --env _SHARED_GZIP_C \
 		-j "${JOBS:-2}" \
 		--halt soon,fail=1 \
 		--joblog "$RAW_DIR_ROOT/parallel_download.log" \
