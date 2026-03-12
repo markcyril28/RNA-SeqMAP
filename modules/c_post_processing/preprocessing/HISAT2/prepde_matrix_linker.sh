@@ -53,7 +53,7 @@ if [[ ! -f "$GENE_MATRIX" ]]; then
 fi
 
 # Validation: check content, structure, and data integrity
-local_rows=$(tail -n +2 "$GENE_MATRIX" | grep -c .)
+local_rows=$(tail -n +2 "$GENE_MATRIX" | grep -c . || true)
 if [[ "$local_rows" -lt 1 ]]; then
     echo "[$(ts)] ERROR: gene_count_matrix.csv appears empty (0 gene rows)" >&2
     exit 1
