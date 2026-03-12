@@ -34,8 +34,8 @@ METHOD_SHORT_NAMES <- c(
   M1_HISAT2_RefGuided = "M1:HISAT2-Ref",
   M2_HISAT2_DeNovo    = "M2:HISAT2-DeNovo",
   M3_STAR_Align       = "M3:STAR-Salmon",
-  M4_Salmon_Saf       = "M4:Salmon",
-  M5_RSEM_Bowtie2     = "M5:RSEM"
+  M4_Salmon_Saf       = "M4:Salmon-SAF",
+  M5_RSEM_Bowtie2     = "M5:Bowtie2-RSEM"
 )
 
 # Parse method-specific reference directory mapping

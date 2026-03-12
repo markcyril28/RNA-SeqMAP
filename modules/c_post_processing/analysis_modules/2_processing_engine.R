@@ -171,7 +171,13 @@ get_sorting_options <- function() {
   )
 }
 
-get_orientation_options <- function() {
+get_orientation_options <- function(gene_group = NULL) {
+  # SmelDMP gene groups: organs-as-rows layout only
+  if (!is.null(gene_group) && grepl("SmelDMP", gene_group, ignore.case = TRUE)) {
+    return(list(
+      list(transpose = TRUE, orient_name = "Organs_as_Rows")
+    ))
+  }
   list(
     list(transpose = FALSE, orient_name = "Genes_as_Rows"),
     list(transpose = TRUE, orient_name = "Organs_as_Rows")

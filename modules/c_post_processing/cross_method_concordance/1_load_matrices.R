@@ -290,6 +290,50 @@ load_m4_tpm <- function() {
 load_m5_tpm <- function() {
   method <- "M5_RSEM_Bowtie2"
   ref_dir <- get_method_ref_dir(method)
+
+  # Primary: load per-sample .genes.results from RSEM alignment output
+  rsem_quant_base <- file.path(ALIGNMENT_BASE, method, "RSEM_Quant_WD", ref_dir)
+
+  if (dir.exists(rsem_quant_base)) {
+    sample_dirs <- list.dirs(rsem_quant_base, recursive = FALSE, full.names = TRUE)
+    sample_dirs <- sample_dirs[grepl("^SRR", basename(sample_dirs))]
+
+    if (length(sample_dirs) > 0) {
+      tpm_list <- list()
+      for (sdir in sample_dirs) {
+        srr <- basename(sdir)
+        results_file <- file.path(sdir, paste0(srr, ".genes.results"))
+        if (!file.exists(results_file)) next
+
+        df <- read.table(results_file, header = TRUE, sep = "\t",
+                         stringsAsFactors = FALSE, comment.char = "")
+        # gene_id column contains gene IDs; TPM column has TPM values
+        # Strip transcript suffix for gene-level comparison
+        gene_ids <- sub("\\.[0-9]+$", "", df$gene_id)
+        # Aggregate by gene ID (in case of duplicates after suffix stripping)
+        agg <- tapply(df$TPM, gene_ids, sum, na.rm = TRUE)
+        tpm_list[[srr]] <- agg
+      }
+
+      if (length(tpm_list) > 0) {
+        all_genes <- unique(unlist(lapply(tpm_list, names)))
+        all_genes <- all_genes[nzchar(all_genes) & !is.na(all_genes)]
+
+        tpm_matrix <- matrix(0, nrow = length(all_genes), ncol = length(tpm_list),
+                              dimnames = list(all_genes, names(tpm_list)))
+        for (srr in names(tpm_list)) {
+          genes <- intersect(names(tpm_list[[srr]]), all_genes)
+          tpm_matrix[genes, srr] <- tpm_list[[srr]][genes]
+        }
+
+        cat("[M5] Loaded:", nrow(tpm_matrix), "genes x", ncol(tpm_matrix),
+            "samples (per-sample .genes.results)\n")
+        return(tpm_matrix)
+      }
+    }
+  }
+
+  # Fallback 1: pre-built genes.TPM.not_cross_norm
   tpm_file <- file.path(POST_PROC_BASE, method,
                         "count_matrices_from_RSEM_Quant", ref_dir,
                         "genes.TPM.not_cross_norm")
