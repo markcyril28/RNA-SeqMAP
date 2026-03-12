@@ -41,7 +41,7 @@ GENE_GROUPS=(
     #"SmelDMPs"
     #"SmelDMPs_with_2_18s_rRNA"
     #"SmelDMPs_with_SmelCyclo"
-    #"SmelGRF-GIF"              # Needs stringtie_matrix_builder.sh first
+    #"SmelGRF-GIF"
     #"SmelGRF-GIF_with_1_18s_rRNA"
     #"SmelGRFs"
     #"SmelGIF"
