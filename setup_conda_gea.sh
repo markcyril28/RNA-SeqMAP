@@ -33,7 +33,7 @@ PYTHON_VERSION="3.11"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHANNELS="-c conda-forge -c bioconda"
 
-UPDATE_MODE=true
+UPDATE_MODE=false
 ENV_RESTART_MODE=false
 DRY_RUN=false           # If true, only show what would be done without installing
 SKIP_UPDATE_CHECK=false # If true, skip slow update availability check
@@ -48,6 +48,7 @@ for arg in "$@"; do
         --restart)            ENV_RESTART_MODE=true ;;
         --dry-run)            DRY_RUN=true ;;
         --skip-update-check)  SKIP_UPDATE_CHECK=true ;;
+        *)  echo "WARNING: Unknown argument: $arg"; echo "Valid: --update, --restart, --dry-run, --skip-update-check"; exit 1 ;;
     esac
 done
 
