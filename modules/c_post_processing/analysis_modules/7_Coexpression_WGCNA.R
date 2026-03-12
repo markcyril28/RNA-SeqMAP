@@ -23,12 +23,13 @@ suppressPackageStartupMessages({
 # WGCNA's TOM computation uses thread-parallel floating-point accumulation;
 # different thread counts can produce slightly different module assignments.
 # Set WGCNA_THREADS=1 for exact reproducibility, or match thread count across runs.
-WGCNA_THREADS <- as.integer(Sys.getenv("WGCNA_THREADS", unset = as.character(THREADS)))
-allowWGCNAThreads(nThreads = WGCNA_THREADS)
-
 SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", ".")
 source(file.path(SCRIPT_DIR, "0_shared_config.R"))
 source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
+
+# Must be after sourcing 0_shared_config.R which defines THREADS
+WGCNA_THREADS <- as.integer(Sys.getenv("WGCNA_THREADS", unset = as.character(THREADS)))
+allowWGCNAThreads(nThreads = WGCNA_THREADS)
 
 # ===============================================
 # CONFIGURATION
@@ -774,12 +775,12 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     cat("  Computing gene-gene correlation matrix...\n")
     cor_matrix <- gpu_cor(t(data_filtered))
 
-    # ===== STEP 11b: Correlation network with query genes bold =====
+    # ===== STEP 12: Correlation network with query genes bold =====
     cat("  Creating correlation network...\n")
     create_correlation_network(t(data_matrix), query_genes_matched, output_dir, gene_group,
                                cor_matrix = cor_matrix)
 
-    # ===== STEP 12: Find genes co-expressed with query genes =====
+    # ===== STEP 13: Find genes co-expressed with query genes =====
     cat("  Finding genes co-expressed with query genes...\n")
     
     coexpr_list <- vector("list", length(query_genes_matched))
@@ -801,18 +802,18 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     }
     coexpr_results <- do.call(rbind, coexpr_list)
     
-    if (nrow(coexpr_results) > 0) {
+    if (!is.null(coexpr_results) && nrow(coexpr_results) > 0) {
       data.table::fwrite(coexpr_results,
                          file.path(output_dir, paste0(gene_group, "_coexpressed_genes.tsv")),
                          sep = "\t", quote = FALSE)
     }
     
-    # ===== STEP 13: Export RAW RESULTS for downstream analysis =====
+    # ===== STEP 14: Export RAW RESULTS for downstream analysis =====
     cat("  Exporting raw results...\n")
     raw_results_dir <- file.path(output_dir, "raw_results")
     if (!dir.exists(raw_results_dir)) dir.create(raw_results_dir, recursive = TRUE)
     
-    # 13a: Save full correlation matrix as TSV
+    # 14a: Save full correlation matrix as TSV
     cat("    Saving correlation matrix...\n")
     cor_df <- as.data.frame(cor_matrix)
     cor_df$Gene <- rownames(cor_matrix)
@@ -820,7 +821,7 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     data.table::fwrite(cor_df, file.path(raw_results_dir, paste0(gene_group, "_correlation_matrix.tsv")),
                        sep = "\t", quote = FALSE)
     
-    # 13b: Save module eigengenes
+    # 14b: Save module eigengenes
     cat("    Saving module eigengenes...\n")
     me_df <- as.data.frame(MEs)
     me_df$Sample <- rownames(MEs)
@@ -828,20 +829,20 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     data.table::fwrite(me_df, file.path(raw_results_dir, paste0(gene_group, "_module_eigengenes.tsv")),
                        sep = "\t", quote = FALSE)
     
-    # 13c: Save network as RDS for complete reproducibility
+    # 14c: Save network as RDS for complete reproducibility
     cat("    Saving network object (RDS)...\n")
     saveRDS(network, file.path(raw_results_dir, paste0(gene_group, "_network.rds")))
     
-    # 13d: Save gene info with kME as RDS
+    # 14d: Save gene info with kME as RDS
     saveRDS(gene_info, file.path(raw_results_dir, paste0(gene_group, "_gene_info.rds")))
     
-    # 13e: Save soft threshold plot (PNG saved by pick_soft_threshold())
+    # 14e: Save soft threshold plot (PNG saved by pick_soft_threshold())
     sft_file <- file.path(output_dir, paste0(gene_group, "_soft_threshold.png"))
     if (file.exists(sft_file)) {
       file.copy(sft_file, file.path(raw_results_dir, paste0(gene_group, "_soft_threshold.png")))
     }
     
-    # 13f: Create a summary file with all parameters used
+    # 14f: Create a summary file with all parameters used
     params_summary <- data.frame(
       Parameter = c("TOP_VAR_GENES", "MIN_MODULE_SIZE_DEFAULT", "MIN_MODULE_SIZE_SMALL",
                     "COR_THRESHOLD", "N_HUB_GENES", "N_COEXPRESSED_GENES", "N_NETWORK_GENES",
@@ -856,7 +857,7 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     data.table::fwrite(params_summary, file.path(raw_results_dir, paste0(gene_group, "_parameters.tsv")),
                        sep = "\t", quote = FALSE)
     
-    # 13g: Save data matrix used (expression values)
+    # 14g: Save data matrix used (expression values)
     cat("    Saving expression matrix...\n")
     expr_df <- as.data.frame(t(data_matrix))  # Genes as rows
     expr_df$Gene <- rownames(expr_df)
