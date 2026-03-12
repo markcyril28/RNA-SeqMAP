@@ -126,7 +126,7 @@ run_quality_control_parallel() {
 	# Export required variables and functions for parallel execution
 	export PATH CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_EXE
 	export RAW_DIR_ROOT TRIM_DIR_ROOT FASTQC_ROOT THREADS_PER_JOB
-	export -f log_info log_warn log_error log_step run_with_space_time_log rename_fastqc_outputs 2>/dev/null || true
+	export -f timestamp log log_info log_warn log_error log_step run_with_space_time_log rename_fastqc_outputs 2>/dev/null || true
 
 	_qc_worker() {
 		local SRR="$1"
