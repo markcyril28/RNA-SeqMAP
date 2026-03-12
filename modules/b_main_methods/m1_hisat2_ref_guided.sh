@@ -44,20 +44,17 @@ _hisat2_check_alignment_rates() {
 		#       <N> (...) aligned concordantly exactly 1 time
 		#       <N> (...) aligned concordantly >1 times
 		#   <X>% overall alignment rate
+		# Single awk pass extracts all 3 metrics (replaces 5-7 grep|grep pipelines)
 		local overall conc1 concm
-		overall=$(grep -oP '[0-9.]+(?=% overall alignment rate)' "$sumf" 2>/dev/null | head -1)
-		conc1=$(grep 'aligned concordantly exactly 1 time' "$sumf" 2>/dev/null \
-			| grep -oP '[0-9.]+(?=%)' | head -1)
-		concm=$(grep 'aligned concordantly >1 time' "$sumf" 2>/dev/null \
-			| grep -oP '[0-9.]+(?=%)' | head -1)
-
-		# Single-end fallback: "aligned exactly 1 time" / "aligned >1 times"
-		if [[ -z "$conc1" ]]; then
-			conc1=$(grep 'aligned exactly 1 time' "$sumf" 2>/dev/null \
-				| grep -oP '[0-9.]+(?=%)' | head -1)
-			concm=$(grep 'aligned >1 time' "$sumf" 2>/dev/null \
-				| grep -oP '[0-9.]+(?=%)' | head -1)
-		fi
+		# Uses POSIX-portable match()+substr() instead of gawk-only capture groups
+		eval "$(awk '
+			/overall alignment rate/ { gsub(/%.*/, ""); printf "overall=%s ", $NF }
+			/aligned concordantly exactly 1 time/ { if (match($0, /[0-9.]+%/)) { v=substr($0, RSTART, RLENGTH-1); printf "conc1=%s ", v; conc1_set=1 } }
+			/aligned concordantly >1 time/        { if (match($0, /[0-9.]+%/)) { v=substr($0, RSTART, RLENGTH-1); printf "concm=%s ", v; concm_set=1 } }
+			# Single-end fallback patterns (guard prevents overwrite by non-concordant mate lines in PE data)
+			/aligned exactly 1 time/ && !/concordantly/ { if (!conc1_set && match($0, /[0-9.]+%/)) { v=substr($0, RSTART, RLENGTH-1); printf "conc1=%s ", v; conc1_set=1 } }
+			/aligned >1 time/ && !/concordantly/        { if (!concm_set && match($0, /[0-9.]+%/)) { v=substr($0, RSTART, RLENGTH-1); printf "concm=%s ", v; concm_set=1 } }
+		' "$sumf" 2>/dev/null)"
 
 		[[ -z "$overall" ]] && continue
 
@@ -66,17 +63,19 @@ _hisat2_check_alignment_rates() {
 		concordant_once+=("${conc1:-0}")
 		concordant_multi+=("${concm:-0}")
 
-		# Per-sample checks
-		if awk "BEGIN{exit !($overall < 50)}" 2>/dev/null; then
+		# Per-sample checks (truncate to integer for fast bash arithmetic — no awk spawns)
+		local _ov_int=${overall%.*}
+		if (( _ov_int < 50 )); then
 			log_warn "[HISAT2 QC] $SRR: Overall alignment ${overall}% — VERY LOW (check sample quality, adapter contamination, or genome mismatch)"
 			((warn_count++)) || true
-		elif awk "BEGIN{exit !($overall < 70)}" 2>/dev/null; then
+		elif (( _ov_int < 70 )); then
 			log_warn "[HISAT2 QC] $SRR: Overall alignment ${overall}% — below 70% threshold"
 			((warn_count++)) || true
 		fi
 
 		# High multi-mapping (>20%) may indicate rRNA contamination
-		if awk "BEGIN{exit !(${concm:-0} > 20)}" 2>/dev/null; then
+		local _cm_int=${concm:-0}; _cm_int=${_cm_int%.*}
+		if (( _cm_int > 20 )); then
 			log_warn "[HISAT2 QC] $SRR: Multi-mapped ${concm}% — may indicate rRNA contamination or repetitive element enrichment"
 			((warn_count++)) || true
 		fi
@@ -85,22 +84,27 @@ _hisat2_check_alignment_rates() {
 	# Cohort-level outlier detection: flag samples >2 SD below mean overall rate
 	local n=${#overall_rates[@]}
 	if [[ $n -ge 3 ]]; then
-		# Single AWK pass for sum, mean, sd, threshold (replaces 2N+3 AWK spawns)
-		local _stats
-		_stats=$(printf '%s\n' "${overall_rates[@]}" | awk '{s+=$1; ss+=$1*$1} END{
-			m=s/NR; v=ss/NR - m*m; sd=(v>0)?sqrt(v):0
-			printf "%.2f %.2f %.2f", m, sd, m-2*sd
+		# Single AWK pass: compute stats AND find outliers (1 process instead of 2)
+		local _stats_and_outliers
+		_stats_and_outliers=$(printf '%s\n' "${overall_rates[@]}" | awk '{
+			vals[NR-1]=$1; s+=$1; ss+=$1*$1
+		} END {
+			m=s/NR; v=ss/NR - m*m; sd=(v>0)?sqrt(v):0; thr=m-2*sd
+			printf "%.2f %.2f %.2f", m, sd, thr
+			for (i=0; i<NR; i++) if (vals[i]+0 < thr+0) printf " %d", i
 		}')
-		local mean sd threshold
-		read -r mean sd threshold <<< "$_stats"
+		local mean sd threshold _outlier_tail
+		read -r mean sd threshold _outlier_tail <<< "$_stats_and_outliers"
 
 		log_info "[HISAT2 QC] Cohort alignment stats: mean=${mean}%, SD=${sd}%, outlier threshold=${threshold}%"
 
-		for ((i=0; i<n; i++)); do
-			if awk "BEGIN{exit !(${overall_rates[$i]} < $threshold)}" 2>/dev/null; then
-				log_warn "[HISAT2 QC] OUTLIER: ${sample_names[$i]} (${overall_rates[$i]}%) is >2 SD below cohort mean (${mean}%)"
-				((warn_count++)) || true
-			fi
+		# Extract outlier indices (everything after the 3 stats fields)
+		local _outlier_indices="${_stats_and_outliers#* * * }"
+		[[ "$_outlier_indices" == "$_stats_and_outliers" ]] && _outlier_indices=""
+		local _oi
+		for _oi in $_outlier_indices; do
+			log_warn "[HISAT2 QC] OUTLIER: ${sample_names[$_oi]} (${overall_rates[$_oi]}%) is >2 SD below cohort mean (${mean}%)"
+			((warn_count++)) || true
 		done
 	fi
 
@@ -133,27 +137,44 @@ _hisat2_check_alignment_rates() {
 _m1_validate_fasta_gtf_chromosomes() {
 	local fasta="$1" gtf="$2"
 
-	# Extract first 20 unique chromosome names from each file
-	local fasta_chrs gtf_chrs
-	fasta_chrs=$(grep '^>' "$fasta" | head -20 | sed 's/^>//; s/[[:space:]].*//' | sort)
-	gtf_chrs=$(awk '$1 !~ /^#/ {print $1}' "$gtf" | sort -u | head -20)
+	# Single AWK pass over both files: extract chromosome names, compute overlap
+	# Replaces grep|head|sed|sort + awk|sort -u|head + comm pipeline (7+ processes → 1)
+	local result
+	result=$(awk '
+		# Pass 1: FASTA chromosome names (first 20)
+		FILENAME == ARGV[1] && /^>/ && fasta_n < 20 {
+			chr = $0; sub(/^>/, "", chr); sub(/[[:space:]].*/, "", chr)
+			if (!(chr in fasta_seen)) { fasta_seen[chr]=1; fasta_n++ }
+		}
+		# Pass 2: GTF chromosome names (first 20 unique, skip comments)
+		FILENAME == ARGV[2] && !/^#/ && gtf_n < 20 {
+			if (!($1 in gtf_seen)) { gtf_seen[$1]=1; gtf_n++ }
+		}
+		END {
+			overlap = 0
+			for (c in gtf_seen) if (c in fasta_seen) overlap++
+			# Print: overlap fasta_count gtf_count fasta_first5 | gtf_first5
+			printf "%d %d %d ", overlap, fasta_n, gtf_n
+			n=0; for (c in fasta_seen) { if (n<5) printf "%s ", c; n++ }
+			printf "| "
+			n=0; for (c in gtf_seen) { if (n<5) printf "%s ", c; n++ }
+		}
+	' "$fasta" "$gtf" 2>/dev/null)
 
-	if [[ -z "$fasta_chrs" || -z "$gtf_chrs" ]]; then
+	if [[ -z "$result" ]]; then
 		log_warn "[VALIDATE] Could not extract chromosome names from FASTA or GTF"
 		return 0
 	fi
 
-	# Count overlapping chromosome names
-	local overlap
-	overlap=$(comm -12 <(echo "$fasta_chrs") <(echo "$gtf_chrs") | wc -l)
-	local fasta_count gtf_count
-	fasta_count=$(echo "$fasta_chrs" | wc -l)
-	gtf_count=$(echo "$gtf_chrs" | wc -l)
+	local overlap fasta_count gtf_count _fasta_chrs
+	read -r overlap fasta_count gtf_count _fasta_chrs <<< "${result%% |*}"
+	local gtf_first5="${result#* | }"
+	local fasta_first5="$_fasta_chrs"
 
 	if [[ "$overlap" -eq 0 ]]; then
 		log_warn "[VALIDATE] FASTA/GTF MISMATCH: No shared chromosome names between FASTA and GTF!"
-		log_warn "[VALIDATE]   FASTA chromosomes (first 5): $(echo "$fasta_chrs" | head -5 | tr '\n' ' ')"
-		log_warn "[VALIDATE]   GTF chromosomes (first 5):   $(echo "$gtf_chrs" | head -5 | tr '\n' ' ')"
+		log_warn "[VALIDATE]   FASTA chromosomes (first 5): $fasta_first5"
+		log_warn "[VALIDATE]   GTF chromosomes (first 5):   $gtf_first5"
 		log_warn "[VALIDATE]   Splice site guidance will be INEFFECTIVE — alignment quality degraded"
 	elif [[ "$overlap" -lt "$gtf_count" ]]; then
 		log_info "[VALIDATE] FASTA/GTF partial overlap: $overlap of $gtf_count GTF chromosomes found in FASTA"
@@ -163,7 +184,7 @@ _m1_validate_fasta_gtf_chromosomes() {
 }
 
 # ==============================================================================
-# BAM METRICS: SOFT-CLIPPING & INSERT SIZE
+# BAM METRICS: BASE TRIMMING & INSERT SIZE
 # ==============================================================================
 # Collect lightweight BAM metrics using samtools stats. Must run BEFORE BAM deletion.
 # Saves a summary TSV per sample for post-hoc review.
@@ -182,27 +203,31 @@ _m1_collect_bam_metrics() {
 	local stats
 	stats=$(samtools stats "$bam" 2>/dev/null | grep '^SN\t') || return 0
 
+	# Single awk pass extracts all 4 metrics (here-string avoids echo|pipe subshell)
 	local total_bases bases_clipped insert_mean insert_sd
-	total_bases=$(echo "$stats" | awk -F'\t' '/^SN\tbases mapped \(cigar\)/{print $3}')
-	bases_clipped=$(echo "$stats" | awk -F'\t' '/^SN\tbases trimmed/{print $3}')
-	insert_mean=$(echo "$stats" | awk -F'\t' '/^SN\tinsert size average/{print $3}')
-	insert_sd=$(echo "$stats" | awk -F'\t' '/^SN\tinsert size standard deviation/{print $3}')
+	eval "$(awk -F'\t' '
+		/^SN\tbases mapped \(cigar\)/               { printf "total_bases=%s ", $3 }
+		/^SN\tbases trimmed/                         { printf "bases_clipped=%s ", $3 }
+		/^SN\tinsert size average/                   { printf "insert_mean=%s ", $3 }
+		/^SN\tinsert size standard deviation/        { printf "insert_sd=%s ", $3 }
+	' <<< "$stats")"
 
 	# Save metrics to file for post-hoc review
 	{
 		echo "sample=$srr"
 		echo "total_mapped_bases=$total_bases"
-		echo "bases_soft_clipped=$bases_clipped"
+		echo "bases_trimmed=$bases_clipped"
 		echo "insert_size_mean=$insert_mean"
 		echo "insert_size_sd=$insert_sd"
 	} > "$metrics_file"
 
-	# Flag excessive soft-clipping (>10% of mapped bases)
+	# Flag excessive base trimming (>10% of mapped bases)
 	if [[ -n "$total_bases" && -n "$bases_clipped" && "$total_bases" -gt 0 ]]; then
 		local clip_pct
 		clip_pct=$(awk "BEGIN{printf \"%.1f\", 100*$bases_clipped/$total_bases}")
-		if awk "BEGIN{exit !($clip_pct > 10)}" 2>/dev/null; then
-			_parallel_log "$method" "$srr" WARN "Soft-clipped ${clip_pct}% of mapped bases — may indicate adapter contamination or index mismatch"
+		local _cp_int=${clip_pct%.*}
+		if (( _cp_int > 10 )); then
+			_parallel_log "$method" "$srr" WARN "Bases trimmed ${clip_pct}% of mapped bases — may indicate quality issues or adapter contamination"
 		fi
 	fi
 
@@ -281,11 +306,11 @@ hisat2_ref_guided_pipeline() {
 		local build_opts=""
 
 		# Extract splice sites and exons (may be empty for single-exon transcriptomes)
-		if ! hisat2_extract_splice_sites.py "$gtf" > "$splice_sites" 2>&1; then
+		if ! hisat2_extract_splice_sites.py "$gtf" > "$splice_sites" 2>/dev/null; then
 			log_warn "[INDEX] hisat2_extract_splice_sites.py failed for $gtf — continuing without splice sites"
 			> "$splice_sites"
 		fi
-		if ! hisat2_extract_exons.py "$gtf" > "$exons" 2>&1; then
+		if ! hisat2_extract_exons.py "$gtf" > "$exons" 2>/dev/null; then
 			log_warn "[INDEX] hisat2_extract_exons.py failed for $gtf — continuing without exons"
 			> "$exons"
 		fi
@@ -357,7 +382,6 @@ hisat2_ref_guided_pipeline() {
 			local HISAT2_DIR="$abs_hisat2_rg_root/$SRR"
 			mkdir -p "$HISAT2_DIR"
 			local bam="$HISAT2_DIR/${SRR}_${fasta_tag}_ref_guided_mapped_sorted.bam"
-			local sam="$HISAT2_DIR/${SRR}_${fasta_tag}_ref_guided_mapped.sam"
 			local out_gtf="$abs_stringtie_rg_root/$SRR/${SRR}_${fasta_tag}_ref_guided_stringtie_assembled.gtf"
 
 			if [[ -f "$bam" && -f "${bam}.bai" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
@@ -366,25 +390,31 @@ hisat2_ref_guided_pipeline() {
 				_parallel_log HISAT2_RG "$SRR" INFO "GTF exists, BAM already cleaned for $SRR - skipping alignment"
 			else
 				_parallel_log HISAT2_RG "$SRR" INFO "Aligning with $threads_per_job threads"
-				local align_exit=0
 				local summary_file="$HISAT2_DIR/${SRR}_${fasta_tag}_ref_guided_alignment_summary.txt"
+				# Pipe hisat2 directly into samtools sort — eliminates 10-50GB SAM intermediate per sample
+				# Scale sort threads with available resources (was hardcoded 4)
+				# Use --write-index when available to eliminate separate samtools index step
+				local sort_threads=$(( threads_per_job / 2 ))
+				(( sort_threads < 2 )) && sort_threads=2
+				local sort_mem _sort_wi_flag=""
+				sort_mem=$(_samtools_sort_mem "$sort_threads" "$parallel_jobs")
+				_samtools_has_write_index && _sort_wi_flag="--write-index"
 				if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
 					hisat2 -p "$threads_per_job" --dta $hisat2_strand_opts -x "$index_prefix" \
-						-1 "$trimmed1" -2 "$trimmed2" -S "$sam" 2>"$summary_file"
-					align_exit=$?
+						-1 "$trimmed1" -2 "$trimmed2" 2>"$summary_file" \
+						| samtools sort -@ "$sort_threads" -m "$sort_mem" $_sort_wi_flag -o "$bam"
 				else
 					hisat2 -p "$threads_per_job" --dta $hisat2_strand_opts -x "$index_prefix" \
-						-U "$trimmed1" -S "$sam" 2>"$summary_file"
-					align_exit=$?
+						-U "$trimmed1" 2>"$summary_file" \
+						| samtools sort -@ "$sort_threads" -m "$sort_mem" $_sort_wi_flag -o "$bam"
 				fi
+				local _ps=("${PIPESTATUS[@]}")
 				# Display alignment summary (strip ANSI codes for clean log output)
 				[[ -s "$summary_file" ]] && sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g' "$summary_file"
-				[[ $align_exit -ne 0 ]] && { _parallel_log HISAT2_RG "$SRR" ERROR "HISAT2 failed (exit=$align_exit)"; rm -f "$sam"; return $align_exit; }
-
-				samtools sort -@ "$threads_per_job" -o "$bam" "$sam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
-				[[ ${PIPESTATUS[0]} -ne 0 ]] && { rm -f "$sam"; _parallel_log HISAT2_RG "$SRR" ERROR "samtools sort failed"; return 1; }
-				samtools index -@ "$threads_per_job" "$bam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g' || true
-				rm -f "$sam"
+				[[ ${_ps[0]} -ne 0 ]] && { _parallel_log HISAT2_RG "$SRR" ERROR "HISAT2 failed (exit=${_ps[0]})"; rm -f "$bam"; return ${_ps[0]}; }
+				[[ ${_ps[1]} -ne 0 ]] && { _parallel_log HISAT2_RG "$SRR" ERROR "samtools sort failed"; rm -f "$bam"; return 1; }
+				# Only run separate index if --write-index was not used
+				[[ -z "$_sort_wi_flag" ]] && { samtools index -@ "$threads_per_job" "$bam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g' || true; }
 
 				# Infer strandness once (lock-file ensures only first worker runs it)
 				[[ -z "$hisat2_strand_opts" ]] && \
@@ -418,6 +448,9 @@ hisat2_ref_guided_pipeline() {
 			return 0
 		}
 		export -f _m1_align_parallel_worker _m1_infer_strandness _hisat2_check_alignment_rates _m1_collect_bam_metrics
+		# Pre-detect capabilities so parallel workers don't each test independently
+		_samtools_has_write_index || true
+		_get_available_ram_mb > /dev/null
 
 		printf '%s\n' "${rnaseq_list[@]}" | parallel \
 			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
@@ -425,7 +458,7 @@ hisat2_ref_guided_pipeline() {
 			--env fasta_tag --env index_prefix --env threads_per_job \
 			--env abs_hisat2_rg_root --env abs_stringtie_rg_root --env abs_gtf \
 			--env hisat2_strand_opts --env stringtie_strand_opt \
-			--env OVERWRITE_MODE \
+			--env OVERWRITE_MODE --env _SAMTOOLS_HAS_WRITE_INDEX --env _CACHED_AVAIL_MB \
 			-j "$parallel_jobs" \
 			--halt soon,fail=1 \
 			--joblog "$HISAT2_REF_GUIDED_ROOT/parallel_hisat2_refguided_align.log" \
@@ -444,7 +477,6 @@ hisat2_ref_guided_pipeline() {
 			[[ -z "$trimmed1" ]] && { log_warn "Trimmed FASTQ not found for $SRR - skipping"; continue; }
 
 			local bam="$HISAT2_DIR/${SRR}_${fasta_tag}_ref_guided_mapped_sorted.bam"
-			local sam="$HISAT2_DIR/${SRR}_${fasta_tag}_ref_guided_mapped.sam"
 			local out_gtf="$STRINGTIE_HISAT2_REF_GUIDED_ROOT/$SRR/${SRR}_${fasta_tag}_ref_guided_stringtie_assembled.gtf"
 
 			if [[ -f "$bam" && -f "${bam}.bai" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
@@ -455,35 +487,38 @@ hisat2_ref_guided_pipeline() {
 				log_step "Aligning: $SRR -> $fasta_tag (HISAT2 Ref-Guided)"
 				local summary_file="$HISAT2_DIR/${SRR}_${fasta_tag}_ref_guided_alignment_summary.txt"
 
-				# Run hisat2 directly (not via run_with_space_time_log) to cleanly
-				# capture alignment summary from stderr into a separate file for QC.
+				# Pipe hisat2 directly into samtools sort — eliminates 10-50GB SAM intermediate per sample
+				local sort_threads=$(( THREADS / 2 ))
+				(( sort_threads < 2 )) && sort_threads=2
+				local sort_mem _sort_wi_flag=""
+				sort_mem=$(_samtools_sort_mem "$sort_threads" 1)
+				_samtools_has_write_index && _sort_wi_flag="--write-index"
 				if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
 					hisat2 -p "${THREADS}" --dta $hisat2_strand_opts -x "$index_prefix" \
-						-1 "$trimmed1" -2 "$trimmed2" -S "$sam" 2>"$summary_file"
+						-1 "$trimmed1" -2 "$trimmed2" 2>"$summary_file" \
+						| samtools sort -@ "$sort_threads" -m "$sort_mem" $_sort_wi_flag -o "$bam"
 				else
 					hisat2 -p "${THREADS}" --dta $hisat2_strand_opts -x "$index_prefix" \
-						-U "$trimmed1" -S "$sam" 2>"$summary_file"
+						-U "$trimmed1" 2>"$summary_file" \
+						| samtools sort -@ "$sort_threads" -m "$sort_mem" $_sort_wi_flag -o "$bam"
 				fi
-				# Display alignment summary
-				[[ -s "$summary_file" ]] && cat "$summary_file"
+				local _ps=("${PIPESTATUS[@]}")
+				# Display alignment summary (strip ANSI codes for clean log output)
+				[[ -s "$summary_file" ]] && sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g' "$summary_file"
 
-				# Verify alignment produced a SAM file before proceeding
-				if [[ ! -s "$sam" ]]; then
-					log_error "[ALIGN] HISAT2 failed to produce SAM for $SRR — skipping sample"
-					rm -f "$sam"
+				if [[ ${_ps[0]} -ne 0 ]]; then
+					log_error "[ALIGN] HISAT2 failed for $SRR (exit=${_ps[0]}) — skipping sample"
+					rm -f "$bam"
+					continue
+				fi
+				if [[ ${_ps[1]} -ne 0 || ! -f "$bam" ]]; then
+					log_error "[ALIGN] samtools sort failed for $SRR — skipping sample"
+					rm -f "$bam"
 					continue
 				fi
 
-				log_info "[SAMTOOLS] Converting to sorted BAM..."
-				run_with_space_time_log --input "$sam" --output "$bam" samtools sort -@ "${THREADS}" -o "$bam" "$sam"
-				run_with_space_time_log samtools index -@ "${THREADS}" "$bam"
-				rm -f "$sam"
-
-				# Verify BAM was created before downstream steps
-				if [[ ! -f "$bam" ]]; then
-					log_error "[ALIGN] samtools sort/index failed for $SRR — skipping sample"
-					continue
-				fi
+				# Only run separate index if --write-index was not used
+				[[ -z "$_sort_wi_flag" ]] && run_with_space_time_log samtools index -@ "${THREADS}" "$bam"
 
 				# Infer strandness once on the first sample
 				if [[ -z "$strandness" && -z "${_m1_strand_inferred:-}" ]]; then
@@ -578,7 +613,10 @@ hisat2_ref_guided_pipeline() {
 	[[ ! -f "$sample_metadata" ]] && create_sample_metadata "$sample_metadata" "${rnaseq_list[@]}"
 
 	# Validate outputs
-	[[ -f "$gene_count_matrix" ]] && validate_count_matrix "$gene_count_matrix" "gene" 2
+	if [[ -f "$gene_count_matrix" ]]; then
+		validate_count_matrix "$gene_count_matrix" "gene" 2 || \
+			log_warn "Gene count matrix validation failed: $gene_count_matrix"
+	fi
 
 	log_step "HISAT2 reference-guided pipeline completed for $fasta_tag"
 	log_info "Gene count matrix: $gene_count_matrix"
@@ -606,8 +644,8 @@ _m1_infer_strandness() {
 		return 0
 	fi
 
-	# Build BED12 from GTF (cached in index dir)
-	if [[ ! -s "$bed12" ]]; then
+	# Build BED12 from GTF (cached in index dir, rebuilt if GTF is newer)
+	if [[ ! -s "$bed12" || "$gtf" -nt "$bed12" ]]; then
 		if command -v gtfToGenePred >/dev/null 2>&1 && command -v genePredToBed >/dev/null 2>&1; then
 			gtfToGenePred "$gtf" /dev/stdout 2>/dev/null | genePredToBed /dev/stdin "$bed12" 2>/dev/null
 		else
@@ -626,14 +664,17 @@ _m1_infer_strandness() {
 	# Parse: val_1 = FR (forward-stranded), val_2 = RF (reverse-stranded / dUTP)
 	# Paired-end: "1++,1--,2+-,2-+" (FR) / "1+-,1-+,2++,2--" (RF)
 	# Single-end:       "++,--"      (FR) /       "+-,-+"       (RF)
+	# Single AWK pass replaces 4-8 grep pipelines (saves 8-16 process spawns)
 	local val1 val2
-	val1=$(printf '%s' "$result" | grep -i '"1++,1--,2+-,2-+"' | grep -oP '[0-9]+\.[0-9]+' | tail -1)
-	val2=$(printf '%s' "$result" | grep -i '"1+-,1-+,2++,2--"' | grep -oP '[0-9]+\.[0-9]+' | tail -1)
-	# Fallback to single-end patterns if paired-end yielded nothing
-	if [[ -z "$val1" && -z "$val2" ]]; then
-		val1=$(printf '%s' "$result" | grep -i '"++,--"' | grep -oP '[0-9]+\.[0-9]+' | tail -1)
-		val2=$(printf '%s' "$result" | grep -i '"+-,-+"' | grep -oP '[0-9]+\.[0-9]+' | tail -1)
-	fi
+	read -r val1 val2 < <(printf '%s' "$result" | awk '
+		/1\+\+,1--,2\+-,2-\+/ || /"\+\+,--"/ {
+			match($0, /[0-9]+\.[0-9]+/); if (RSTART) v1 = substr($0, RSTART, RLENGTH)
+		}
+		/1\+-,1-\+,2\+\+,2--/ || /"\+-,-\+"/ {
+			match($0, /[0-9]+\.[0-9]+/); if (RSTART) v2 = substr($0, RSTART, RLENGTH)
+		}
+		END { print (v1 ? v1 : ""), (v2 ? v2 : "") }
+	')
 
 	local rec
 	if   [[ -n "$val1" ]] && awk "BEGIN{exit !($val1 > 0.6)}"; then

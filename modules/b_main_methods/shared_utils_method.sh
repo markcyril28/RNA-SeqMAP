@@ -19,32 +19,55 @@ source "$SCRIPT_DIR/../logging/logging_utils.sh"
 source "$SCRIPT_DIR/../a_preprocessing/shared_utils_preproc.sh"
 
 # ==============================================================================
+# SHARED COMPRESSION DETECTION
+# ==============================================================================
+# Detect pigz once at module load; methods use $_SHARED_GZIP_DC instead of
+# repeatedly spawning `command -v pigz` per sample.
+
+if command -v pigz &>/dev/null; then
+	_SHARED_HAS_PIGZ="true"
+	_SHARED_GZIP_DC="pigz -dc"
+	_SHARED_GZIP_C="pigz"
+else
+	_SHARED_HAS_PIGZ="false"
+	_SHARED_GZIP_DC="gzip -dc"
+	_SHARED_GZIP_C="gzip"
+fi
+export _SHARED_HAS_PIGZ _SHARED_GZIP_DC _SHARED_GZIP_C
+
+# ==============================================================================
 # VALIDATION FUNCTIONS
 # ==============================================================================
 
 # Validate count matrix quality
+# Single-pass AWK replaces 4 separate file reads (head, tail|wc, tail|cut|sort|wc)
 validate_count_matrix() {
 	local matrix="$1"
 	local matrix_type="${2:-gene}"
 	local min_samples="${3:-2}"
-	
+
 	[[ ! -f "$matrix" ]] && { log_error "Matrix not found: $matrix"; return 1; }
-	
+
+	# Handle empty files gracefully
+	[[ ! -s "$matrix" ]] && { log_error "Matrix file is empty: $matrix"; return 1; }
+
 	log_step "Validating $matrix_type matrix: $(basename "$matrix")"
-	
+
 	local delim=$'\t'
 	[[ "$matrix" == *.csv ]] && delim=","
-	
-	local header=$(head -n1 "$matrix")
-	local num_samples=$(echo "$header" | awk -F"$delim" '{print NF-1}')
-	
+
+	# Single AWK pass: count samples from header, count total rows, count unique IDs
+	local num_samples total_rows unique_ids
+	read -r num_samples total_rows unique_ids < <(awk -F"$delim" '
+		NR == 1 { samples = NF - 1 }
+		NR > 1  { total++; ids[$1]++ }
+		END     { print samples+0, total+0, length(ids) }
+	' "$matrix")
+
 	[[ $num_samples -lt $min_samples ]] && { log_error "Insufficient samples: $num_samples (need ≥$min_samples)"; return 1; }
-	
-	local total_rows=$(tail -n +2 "$matrix" | wc -l)
-	local unique_ids=$(tail -n +2 "$matrix" | cut -d"${delim:0:1}" -f1 | sort -u | wc -l)
-	
+
 	[[ $total_rows -ne $unique_ids ]] && { log_error "Duplicate ${matrix_type} IDs detected!"; return 1; }
-	
+
 	log_info "[VALIDATION] Passed - Samples: $num_samples, ${matrix_type^}s: $unique_ids"
 	return 0
 }
@@ -62,7 +85,7 @@ load_sample_metadata() {
 	
 	# Count valid sample lines (exclude comments, blanks, and header) — single pass
 	local line_count
-	line_count=$(awk '!/^#/ && !/^$/ && !/^SRR_ID/' "$metadata_file" | wc -l)
+	line_count=$(awk '!/^#/ && !/^$/ && !/^SRR_ID/ {n++} END{print n+0}' "$metadata_file")
 	[[ $line_count -lt 2 ]] && { log_error "Metadata file must contain at least 2 samples (found: $line_count)"; return 1; }
 	
 	while IFS=$'\t' read -r srr condition batch; do
@@ -88,17 +111,20 @@ create_sample_metadata() {
 	local has_external=false
 	load_sample_metadata "$metadata_source" sample_metadata 2>/dev/null && has_external=true
 	
-	echo -e "sample${delim}condition${delim}batch" > "$metadata_file"
-	for SRR in "${sample_list[@]}"; do
-		if [[ "$has_external" == "true" ]]; then
-			local condition="${sample_metadata[${SRR}_condition]:-unknown}"
-			local batch="${sample_metadata[${SRR}_batch]:-1}"
-		else
-			local condition="treatment"
-			local batch="1"
-		fi
-		echo -e "$SRR${delim}$condition${delim}$batch" >> "$metadata_file"
-	done
+	# Build output in memory, write once (avoids N+1 file opens for N samples)
+	{
+		echo -e "sample${delim}condition${delim}batch"
+		for SRR in "${sample_list[@]}"; do
+			if [[ "$has_external" == "true" ]]; then
+				local condition="${sample_metadata[${SRR}_condition]:-unknown}"
+				local batch="${sample_metadata[${SRR}_batch]:-1}"
+			else
+				local condition="treatment"
+				local batch="1"
+			fi
+			echo -e "$SRR${delim}$condition${delim}$batch"
+		done
+	} > "$metadata_file"
 	
 	[[ "$has_external" == "false" ]] && \
 		log_warn "Sample conditions need manual specification in: $metadata_file"
@@ -175,29 +201,32 @@ create_gene_trans_map() {
 			trans = $1
 			gsub(/^>/, "", trans)
 			gene = trans
-			if (match(gene, /^(.+)_i[0-9]+$/, arr)) {
-				gene = arr[1]
-			}
+			# POSIX-portable: sub replaces _i<digits> suffix (no gawk capture groups)
+			sub(/_i[0-9]+$/, "", gene)
 			print gene "\t" trans
 		}' "$fasta" > "$output_file"
 	else
-		grep "^>" "$fasta" | sed 's/^>//' | awk '{
+		# Single awk pass reads FASTA directly (replaces grep|sed|awk chain — 2 fewer processes)
+		# Uses POSIX-portable match()+substr() instead of gawk-only capture groups
+		awk '/^>/ {
+			sub(/^>/, "")
 			trans=$1
-			if (match($0, /gene=([^ ]+)/, arr)) {
-				gene=arr[1]
-			} else if (match($0, /gene_id[=:]([^ ]+)/, arr)) {
-				gene=arr[1]
-			} else if (match(trans, /^([^|]+)\|/, arr)) {
-				gene=arr[1]
+			gene=""
+			if (match($0, /gene=[^ ]+/)) {
+				gene=substr($0, RSTART+5, RLENGTH-5)
+			} else if (match($0, /gene_id[=:][^ ]+/)) {
+				gene=substr($0, RSTART+8, RLENGTH-8)
+			} else if (match(trans, /^[^|]+\|/)) {
+				gene=substr(trans, 1, RLENGTH-1)
 			} else {
 				gene=trans
 			}
 			print gene "\t" trans
-		}' > "$output_file"
+		}' "$fasta" > "$output_file"
 	fi
 	
-	local unique_genes=$(cut -f1 "$output_file" | sort -u | wc -l)
-	local total_transcripts=$(wc -l < "$output_file")
+	local unique_genes total_transcripts
+	read -r unique_genes total_transcripts < <(awk -F'\t' '{ genes[$1]++; total++ } END { print length(genes), total }' "$output_file")
 	log_info "Created gene-transcript map: $unique_genes genes, $total_transcripts transcripts"
 }
 
@@ -223,8 +252,82 @@ normalize_expression_data() {
 }
 
 # ==============================================================================
-# CROSS-METHOD VALIDATION
+# MEMORY DETECTION (shared by _samtools_sort_mem and _star_sort_ram)
 # ==============================================================================
+
+# Get available system RAM in MB. Caches result in _CACHED_AVAIL_MB to avoid
+# repeated /proc/meminfo reads in tight loops.
+# Usage: _get_available_ram_mb
+_get_available_ram_mb() {
+	if [[ -n "${_CACHED_AVAIL_MB:-}" ]]; then
+		echo "$_CACHED_AVAIL_MB"
+		return
+	fi
+	local avail_mb
+	avail_mb=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null) \
+		|| avail_mb=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1/1048576}') \
+		|| avail_mb=8192  # fallback: 8GB
+	export _CACHED_AVAIL_MB="$avail_mb"
+	echo "$avail_mb"
+}
+export -f _get_available_ram_mb
+
+# ==============================================================================
+# SAMTOOLS SORT MEMORY CALCULATION
+# ==============================================================================
+
+# Calculate safe per-thread memory for samtools sort.
+# samtools sort -m VALUE is per-thread (not total), so total RAM = VALUE x (threads + 1).
+# Queries available system RAM and divides by active sorting threads,
+# reserving headroom for the aligner and other processes.
+# Usage: _samtools_sort_mem <num_threads> [parallel_jobs]
+_samtools_sort_mem() {
+	local sort_threads="${1:-4}"
+	local parallel_jobs="${2:-1}"
+	local total_slots=$(( (sort_threads + 1) * parallel_jobs ))
+	[[ $total_slots -lt 1 ]] && total_slots=1
+
+	local avail_mb
+	avail_mb=$(_get_available_ram_mb)
+
+	# Reserve 25% for aligner, OS, and other processes
+	local usable_mb=$(( avail_mb * 75 / 100 ))
+	local per_thread_mb=$(( usable_mb / total_slots ))
+
+	# Clamp between 256MB and configurable max per thread (default 4GB; override with
+	# SAMTOOLS_SORT_MEM_MAX_MB for high-memory systems, e.g. 8192 for 128GB+ servers)
+	local max_per_thread="${SAMTOOLS_SORT_MEM_MAX_MB:-4096}"
+	[[ $per_thread_mb -lt 256 ]] && per_thread_mb=256
+	[[ $per_thread_mb -gt $max_per_thread ]] && per_thread_mb=$max_per_thread
+	# Safety: re-check total allocation doesn't exceed usable memory (handles high thread counts)
+	local total_alloc=$(( per_thread_mb * total_slots ))
+	if [[ $total_alloc -gt $usable_mb ]]; then
+		per_thread_mb=$(( usable_mb / total_slots ))
+		[[ $per_thread_mb -lt 256 ]] && per_thread_mb=256
+	fi
+
+	echo "${per_thread_mb}M"
+}
+export -f _samtools_sort_mem
+
+# Check if samtools supports --write-index (requires samtools >= 1.10)
+# Caches result in _SAMTOOLS_HAS_WRITE_INDEX for repeated calls.
+_samtools_has_write_index() {
+	if [[ -z "${_SAMTOOLS_HAS_WRITE_INDEX:-}" ]]; then
+		# Check samtools version >= 1.10 (when --write-index was added)
+		local _st_ver
+		_st_ver=$(samtools --version 2>/dev/null | head -1 | grep -oP '[0-9]+\.[0-9]+' | head -1) || _st_ver="0.0"
+		local _st_major=${_st_ver%%.*} _st_minor=${_st_ver#*.}
+		_st_minor=${_st_minor%%.*}
+		if [[ "${_st_major:-0}" -gt 1 ]] || [[ "${_st_major:-0}" -eq 1 && "${_st_minor:-0}" -ge 10 ]]; then
+			export _SAMTOOLS_HAS_WRITE_INDEX="yes"
+		else
+			export _SAMTOOLS_HAS_WRITE_INDEX="no"
+		fi
+	fi
+	[[ "$_SAMTOOLS_HAS_WRITE_INDEX" == "yes" ]]
+}
+export -f _samtools_has_write_index
 
 # ==============================================================================
 # GNU PARALLEL HELPER FUNCTIONS
@@ -268,10 +371,11 @@ export -f _init_parallel_worker
 
 # Log helper for parallel workers
 # Usage: _parallel_log METHOD SRR LEVEL message
+# Uses bash built-in printf %(%T)T to avoid forking a date subshell on every call.
 _parallel_log() {
 	local method="$1" SRR="$2" level="$3"; shift 3
 	local ts
-	ts=$(date '+%Y-%m-%d %H:%M:%S')
+	printf -v ts '%(%Y-%m-%d %H:%M:%S)T' -1
 	printf '[%s] [%s] [%s-%s] %s\n' "$ts" "$level" "$method" "$SRR" "$*"
 	[[ "$level" != "INFO" && -n "${abs_error_warn_file:-}" ]] && \
 		printf '[%s] [%s] [%s-%s] %s\n' "$ts" "$level" "$method" "$SRR" "$*" >> "$abs_error_warn_file"

@@ -49,11 +49,14 @@ _rsem_detect_strandedness() {
 	local index_root="$3"
 	local cache_file="$index_root/.detected_strandedness"
 
-	# Return cached result if available
-	if [[ -f "$cache_file" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
+	# Return cached result if available (must be non-empty)
+	if [[ -s "$cache_file" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 		RSEM_STRANDEDNESS=$(cat "$cache_file")
-		log_info "[STRANDEDNESS] Using cached result: $RSEM_STRANDEDNESS (from $cache_file)"
-		return 0
+		if [[ -n "$RSEM_STRANDEDNESS" ]]; then
+			log_info "[STRANDEDNESS] Using cached result: $RSEM_STRANDEDNESS (from $cache_file)"
+			return 0
+		fi
+		log_warn "[STRANDEDNESS] Cache file exists but is empty, re-detecting"
 	fi
 
 	# Check that Salmon is available
@@ -74,12 +77,18 @@ _rsem_detect_strandedness() {
 	log_step "[STRANDEDNESS] Auto-detecting library strandedness using Salmon (sample: $first_srr)"
 
 	local tmp_dir
-	tmp_dir=$(mktemp -d "${index_root}/strandedness_detect_XXXXXX")
+	tmp_dir=$(mktemp -d "${index_root}/strandedness_detect_XXXXXX") || {
+		log_warn "[STRANDEDNESS] Failed to create temp directory — falling back to 'none'"
+		RSEM_STRANDEDNESS="none"
+		return 0
+	}
 	local salmon_idx="$tmp_dir/salmon_idx"
 	local salmon_quant="$tmp_dir/salmon_quant"
 
 	# Build a lightweight Salmon index (using the same transcriptome FASTA)
-	salmon index -t "$fasta" -i "$salmon_idx" --threads 4 -k 23 2>"$tmp_dir/salmon_index.log" || {
+	local _detect_threads=$(( ${THREADS:-8} / 4 ))
+	[[ $_detect_threads -lt 2 ]] && _detect_threads=2
+	salmon index -t "$fasta" -i "$salmon_idx" --threads "$_detect_threads" -k 23 2>"$tmp_dir/salmon_index.log" || {
 		log_warn "[STRANDEDNESS] Salmon index failed — falling back to 'none'"
 		rm -rf "$tmp_dir"
 		RSEM_STRANDEDNESS="none"
@@ -91,13 +100,13 @@ _rsem_detect_strandedness() {
 	if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
 		salmon quant -i "$salmon_idx" -l A \
 			-1 "$trimmed1" -2 "$trimmed2" \
-			-o "$salmon_quant" --threads 4 \
+			-o "$salmon_quant" --threads "$_detect_threads" \
 			--skipQuant 2>"$tmp_dir/salmon_quant.log"
 		salmon_exit=$?
 	else
 		salmon quant -i "$salmon_idx" -l A \
 			-r "$trimmed1" \
-			-o "$salmon_quant" --threads 4 \
+			-o "$salmon_quant" --threads "$_detect_threads" \
 			--skipQuant 2>"$tmp_dir/salmon_quant.log"
 		salmon_exit=$?
 	fi
@@ -118,14 +127,26 @@ _rsem_detect_strandedness() {
 		return 0
 	fi
 
-	# Extract the expected_format field (Salmon's inferred library type)
-	local inferred_type
-	inferred_type=$(python3 -c "
-import json, sys
+	# Single Python call: extract library type AND fragment stats (replaces 2 python3 spawns)
+	local inferred_type num_compat
+	eval "$(python3 -c "
+import json
 with open('$lib_format') as f:
-    data = json.load(f)
-print(data.get('expected_format', 'U'))
-" 2>/dev/null)
+    d = json.load(f)
+fmt = d.get('expected_format', 'U')
+print(f'inferred_type={fmt}')
+lines = []
+for k in ['compatible_fragment_ratio', 'num_compatible_fragments', 'num_assigned_fragments']:
+    if k in d: lines.append(f'  {k}: {d[k]}')
+for k in sorted(d.keys()):
+    if 'strand' in k.lower() or k.startswith('read'): lines.append(f'  {k}: {d[k]}')
+# Shell-safe: newlines encoded for eval
+if lines:
+    import shlex
+    print('num_compat=' + shlex.quote(chr(10).join(lines)))
+else:
+    print('num_compat=')
+" 2>/dev/null)"
 
 	# Map Salmon library type codes to RSEM strandedness
 	# Salmon paired-end: IU=unstranded, ISF=forward(sense), ISR=reverse(antisense)
@@ -135,24 +156,15 @@ print(data.get('expected_format', 'U'))
 		ISF|SF) RSEM_STRANDEDNESS="forward" ;;
 		ISR|SR) RSEM_STRANDEDNESS="reverse" ;;
 		*)
-			log_warn "[STRANDEDNESS] Unrecognized Salmon library type '$inferred_type' — falling back to 'none'"
+			log_warn "[STRANDEDNESS] Unrecognized Salmon library type '${inferred_type:-}' — falling back to 'none'"
 			RSEM_STRANDEDNESS="none"
 			;;
 	esac
 
-	# Also log the read counts per orientation for transparency
-	local num_compat
-	num_compat=$(python3 -c "
-import json
-with open('$lib_format') as f:
-    d = json.load(f)
-for k in ['compatible_fragment_ratio', 'num_compatible_fragments',
-           'num_assigned_fragments']:
-    if k in d: print(f'  {k}: {d[k]}')
-for k in sorted(d.keys()):
-    if 'strand' in k.lower() or k.startswith('read'): print(f'  {k}: {d[k]}')
-" 2>/dev/null)
-	[[ -n "$num_compat" ]] && log_info "[STRANDEDNESS] Salmon fragment stats:\n$num_compat"
+	if [[ -n "${num_compat:-}" ]]; then
+		log_info "[STRANDEDNESS] Salmon fragment stats:"
+		log_info "$num_compat"
+	fi
 
 	log_info "[STRANDEDNESS] Detected: $RSEM_STRANDEDNESS (Salmon inferred: $inferred_type)"
 
@@ -203,13 +215,13 @@ bowtie2_rsem_pipeline() {
 
 	# BUILD RSEM REFERENCE
 	# Check all required index files: .grp (RSEM) + .rev.2.bt2 (written last by Bowtie2 build)
-	if [[ -f "${rsem_idx}.grp" && -f "${rsem_idx}.rev.2.bt2" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
+	if [[ -f "${rsem_idx}.grp" && ( -f "${rsem_idx}.rev.2.bt2" || -f "${rsem_idx}.rev.2.bt2l" ) && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 		log_info "[RSEM INDEX] RSEM reference already exists. Skipping."
 	else
 		log_step "Building RSEM reference for $tag"
 		log_file_size "$fasta" "Input FASTA for RSEM index - $tag"
 		run_with_space_time_log --input "$fasta" --output "$RSEM_INDEX_ROOT" \
-			rsem-prepare-reference --bowtie2 "$fasta" "$rsem_idx"
+			rsem-prepare-reference --bowtie2 -p "$THREADS" "$fasta" "$rsem_idx"
 		log_file_size "$RSEM_INDEX_ROOT" "RSEM index output - $tag"
 	fi
 
@@ -256,7 +268,11 @@ _rsem_quantify_sequential() {
 			failed_samples=$((failed_samples + 1))
 		}
 	done
-	[[ $failed_samples -gt 0 ]] && log_warn "[RSEM QUANT] $failed_samples/${#samples[@]} sample(s) failed"
+	if [[ $failed_samples -gt 0 ]]; then
+		log_warn "[RSEM QUANT] $failed_samples/${#samples[@]} sample(s) failed"
+		return 1
+	fi
+	return 0
 }
 
 # ==============================================================================
@@ -273,7 +289,7 @@ _rsem_parallel_worker() {
 	_plog() {
 		local level="$1"; shift
 		local ts
-		ts=$(date '+%Y-%m-%d %H:%M:%S')
+		printf -v ts '%(%Y-%m-%d %H:%M:%S)T' -1
 		echo "[$ts] [$level] [RSEM-$SRR] $*"
 		[[ "$level" != "INFO" && -n "${abs_error_warn_file:-}" ]] && echo "[$ts] [$level] [RSEM-$SRR] $*" >> "$abs_error_warn_file"
 	}
@@ -324,8 +340,8 @@ _rsem_parallel_worker() {
 		return 1
 	fi
 
-	if [[ ! -f "${rsem_idx}.grp" || ! -f "${rsem_idx}.rev.2.bt2" ]]; then
-		_plog "ERROR" "RSEM index incomplete or not found: ${rsem_idx}.grp / .rev.2.bt2"
+	if [[ ! -f "${rsem_idx}.grp" || ( ! -f "${rsem_idx}.rev.2.bt2" && ! -f "${rsem_idx}.rev.2.bt2l" ) ]]; then
+		_plog "ERROR" "RSEM index incomplete or not found: ${rsem_idx}.grp / .rev.2.bt2[l]"
 		return 1
 	fi
 
@@ -442,7 +458,7 @@ _rsem_quantify_parallel() {
 
 	if [[ -f "$quant_root/parallel_rsem.log" ]]; then
 		local failed
-		failed=$(awk 'NR>1 && $7!=0' "$quant_root/parallel_rsem.log" | wc -l)
+		failed=$(awk 'NR>1 && $7!=0 {n++} END{print n+0}' "$quant_root/parallel_rsem.log")
 		[[ $failed -gt 0 ]] && log_warn "[RSEM QUANT] $failed sample(s) failed - check $quant_root/parallel_rsem.log"
 	fi
 
@@ -551,15 +567,18 @@ _create_manual_rsem_matrix() {
 
 	for SRR in "${srr_list[@]}"; do
 		if [[ -f "$quant_root/$SRR/${SRR}.genes.results" ]]; then
-			# Preserve fractional expected counts — tximport requires non-integer values
-			awk 'NR>1 {print $5}' "$quant_root/$SRR/${SRR}.genes.results" > "$matrix_dir/${SRR}_counts.tmp"
-			awk 'NR>1 {print $6}' "$quant_root/$SRR/${SRR}.genes.results" > "$matrix_dir/${SRR}_tpm.tmp"
-			awk 'NR>1 {print $7}' "$quant_root/$SRR/${SRR}.genes.results" > "$matrix_dir/${SRR}_fpkm.tmp"
+			# Single awk pass extracts counts, TPM, FPKM simultaneously (was 3 separate passes per sample)
+			awk 'NR>1 {print $5 > counts; print $6 > tpm; print $7 > fpkm}' \
+				counts="$matrix_dir/${SRR}_counts.tmp" \
+				tpm="$matrix_dir/${SRR}_tpm.tmp" \
+				fpkm="$matrix_dir/${SRR}_fpkm.tmp" \
+				"$quant_root/$SRR/${SRR}.genes.results"
 		else
 			log_warn "[RSEM MATRIX] Missing results for $SRR — filling with zeros in count matrix"
-			yes 0 | head -n "$num_genes" > "$matrix_dir/${SRR}_counts.tmp"
-			yes 0 | head -n "$num_genes" > "$matrix_dir/${SRR}_tpm.tmp"
-			yes 0 | head -n "$num_genes" > "$matrix_dir/${SRR}_fpkm.tmp"
+			# Single awk generates all three zero-fill files (replaces 3 yes|head pipelines = 6 processes)
+			awk -v n="$num_genes" -v c="$matrix_dir/${SRR}_counts.tmp" \
+				-v t="$matrix_dir/${SRR}_tpm.tmp" -v f="$matrix_dir/${SRR}_fpkm.tmp" \
+				'BEGIN{for(i=0;i<n;i++){print 0>c; print 0>t; print 0>f}}'
 		fi
 	done
 
@@ -571,23 +590,18 @@ _create_manual_rsem_matrix() {
 		fpkm_files+=("$matrix_dir/${SRR}_fpkm.tmp")
 	done
 
+	# Build headers with single printf (was N+1 echo calls per matrix, 3 matrices)
+	local header
+	header=$(printf '\t%s' "${srr_list[@]}")
+
 	# Create count matrix
-	echo -n "gene_id" > "$matrix_dir/genes.counts.matrix"
-	for SRR in "${srr_list[@]}"; do echo -ne "\t$SRR" >> "$matrix_dir/genes.counts.matrix"; done
-	echo "" >> "$matrix_dir/genes.counts.matrix"
-	paste "$temp_gene_ids" "${count_files[@]}" >> "$matrix_dir/genes.counts.matrix"
+	{ printf 'gene_id%s\n' "$header"; paste "$temp_gene_ids" "${count_files[@]}"; } > "$matrix_dir/genes.counts.matrix"
 
 	# Create TPM matrix
-	echo -n "gene_id" > "$matrix_dir/genes.TPM.not_cross_norm"
-	for SRR in "${srr_list[@]}"; do echo -ne "\t$SRR" >> "$matrix_dir/genes.TPM.not_cross_norm"; done
-	echo "" >> "$matrix_dir/genes.TPM.not_cross_norm"
-	paste "$temp_gene_ids" "${tpm_files[@]}" >> "$matrix_dir/genes.TPM.not_cross_norm"
+	{ printf 'gene_id%s\n' "$header"; paste "$temp_gene_ids" "${tpm_files[@]}"; } > "$matrix_dir/genes.TPM.not_cross_norm"
 
 	# Create FPKM matrix
-	echo -n "gene_id" > "$matrix_dir/genes.FPKM.not_cross_norm"
-	for SRR in "${srr_list[@]}"; do echo -ne "\t$SRR" >> "$matrix_dir/genes.FPKM.not_cross_norm"; done
-	echo "" >> "$matrix_dir/genes.FPKM.not_cross_norm"
-	paste "$temp_gene_ids" "${fpkm_files[@]}" >> "$matrix_dir/genes.FPKM.not_cross_norm"
+	{ printf 'gene_id%s\n' "$header"; paste "$temp_gene_ids" "${fpkm_files[@]}"; } > "$matrix_dir/genes.FPKM.not_cross_norm"
 
 	rm -f "$temp_gene_ids" "$matrix_dir"/*_counts.tmp "$matrix_dir"/*_tpm.tmp "$matrix_dir"/*_fpkm.tmp
 }
@@ -628,7 +642,7 @@ _prepare_rsem_deseq2_output() {
 	if [[ -f "$matrix_dir/genes.counts.matrix" ]]; then
 		if [[ ! -f "$gene_count_matrix" || "$matrix_dir/genes.counts.matrix" -nt "$gene_count_matrix" ]]; then
 			log_info "[RSEM MATRIX] Converting count matrix to CSV format..."
-			sed 's/\t/,/g' "$matrix_dir/genes.counts.matrix" | sed '1s/gene_id/Gene_ID/' > "$gene_count_matrix"
+			sed '1s/gene_id/Gene_ID/; s/\t/,/g' "$matrix_dir/genes.counts.matrix" > "$gene_count_matrix"
 		fi
 	fi
 
@@ -645,14 +659,14 @@ _prepare_rsem_deseq2_output() {
 	if [[ -f "$matrix_dir/genes.TPM.not_cross_norm" ]]; then
 		local tpm_matrix="$deseq2_dir/gene_tpm_matrix.csv"
 		if [[ ! -f "$tpm_matrix" || "$matrix_dir/genes.TPM.not_cross_norm" -nt "$tpm_matrix" ]]; then
-			sed 's/\t/,/g' "$matrix_dir/genes.TPM.not_cross_norm" | sed '1s/gene_id/Gene_ID/' > "$tpm_matrix"
+			sed '1s/gene_id/Gene_ID/; s/\t/,/g' "$matrix_dir/genes.TPM.not_cross_norm" > "$tpm_matrix"
 		fi
 	fi
 
 	if [[ -f "$matrix_dir/genes.FPKM.not_cross_norm" ]]; then
 		local fpkm_matrix="$deseq2_dir/gene_fpkm_matrix.csv"
 		if [[ ! -f "$fpkm_matrix" || "$matrix_dir/genes.FPKM.not_cross_norm" -nt "$fpkm_matrix" ]]; then
-			sed 's/\t/,/g' "$matrix_dir/genes.FPKM.not_cross_norm" | sed '1s/gene_id/Gene_ID/' > "$fpkm_matrix"
+			sed '1s/gene_id/Gene_ID/; s/\t/,/g' "$matrix_dir/genes.FPKM.not_cross_norm" > "$fpkm_matrix"
 		fi
 	fi
 
@@ -700,19 +714,20 @@ _create_rsem_summary() {
 
 		for SRR in "${srr_list[@]}"; do
 			if [[ -f "$quant_root/$SRR/${SRR}.genes.results" ]]; then
-				local total=$(awk 'NR>1' "$quant_root/$SRR/${SRR}.genes.results" | wc -l)
-				local expressed=$(awk 'NR>1 && $5>0' "$quant_root/$SRR/${SRR}.genes.results" | wc -l)
-				local counts=$(awk 'NR>1 {sum+=$5} END {print int(sum)}' "$quant_root/$SRR/${SRR}.genes.results")
+				# Single AWK pass: count total genes, expressed genes, and sum counts
+				local total expressed counts
+				eval "$(awk 'NR>1 { total++; if ($5>0) expr++; s+=$5 }
+					END { printf "total=%d expressed=%d counts=%d", total+0, expr+0, int(s) }
+				' "$quant_root/$SRR/${SRR}.genes.results")"
 
 				# Extract Bowtie2 alignment rate from RSEM log
 				local align_rate="N/A"
 				local rsem_log="$quant_root/$SRR/${SRR}.rsem.log"
 				if [[ -f "$rsem_log" ]]; then
-					# Bowtie2 reports "XX.XX% overall alignment rate" in its summary
-					align_rate=$(grep -oP '[0-9]+\.[0-9]+(?=% overall alignment rate)' "$rsem_log" | tail -1)
+					align_rate=$(awk '/% overall alignment rate/{match($0,/[0-9]+\.[0-9]+/);r=substr($0,RSTART,RLENGTH)} END{print r}' "$rsem_log")
 					if [[ -z "$align_rate" ]]; then
 						align_rate="N/A"
-					elif (( $(echo "$align_rate < $LOW_ALIGN_THRESHOLD" | bc -l) )); then
+					elif awk -v rate="$align_rate" -v thr="$LOW_ALIGN_THRESHOLD" 'BEGIN{exit !(rate+0 < thr+0)}'; then
 						outlier_samples+=("$SRR ($align_rate%)")
 					fi
 				fi
@@ -748,7 +763,7 @@ _create_rsem_summary() {
 
 # Check if GNU Parallel should be used for sample processing
 _rsem_should_use_parallel() {
-	[[ "${USE_GNU_PARALLEL:-TRUE}" != "TRUE" ]] && return 1
+	[[ "${USE_GNU_PARALLEL:-FALSE}" != "TRUE" ]] && return 1
 	command -v parallel >/dev/null 2>&1 || return 1
 	return 0
 }

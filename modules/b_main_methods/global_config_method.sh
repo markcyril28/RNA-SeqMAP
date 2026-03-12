@@ -32,7 +32,7 @@ keep_bam_global="${keep_bam_global:-n}"
 # ==============================================================================
 
 # Alignment sensitivity for rsem-calculate-expression --bowtie2-sensitivity-level
-# Valid options: sensitive (default), very-sensitive, fast, very-fast
+# Valid options: sensitive (default), very_sensitive, fast, very_fast
 BOWTIE2_MODE="${BOWTIE2_MODE:-sensitive}"
 
 # ==============================================================================
@@ -53,12 +53,14 @@ STAR_STRAND_SPECIFIC="${STAR_STRAND_SPECIFIC:-None}"
 # "overwrite" = re-run even if outputs exist; "skip" = skip existing (default).
 # Derived from OVERWRITE_EXISTING (set/exported by run_all_post_processing.sh).
 # Respects an existing OVERWRITE_MODE set by a_GEA_script_v12.sh or the environment.
-if [[ "${OVERWRITE_EXISTING:-FALSE}" == "TRUE" ]]; then
+_ow="${OVERWRITE_EXISTING:-FALSE}"
+if [[ "${_ow^^}" == "TRUE" ]]; then
 	OVERWRITE_MODE="overwrite"
 elif [[ -z "${OVERWRITE_MODE:-}" ]]; then
 	OVERWRITE_MODE="skip"
 fi
 export OVERWRITE_MODE
+unset _ow
 
 # ==============================================================================
 # POST PROCESSING ROOT
@@ -169,7 +171,7 @@ init_method_directories() {
 
 set_fasta_output_dirs() {
 	local fasta_tag="$1"
-	[[ -z "$fasta_tag" ]] && { echo "ERROR: set_fasta_output_dirs requires a fasta_tag argument" >&2; return 1; }
+	[[ -z "$fasta_tag" ]] && { log_error "set_fasta_output_dirs requires a fasta_tag argument"; return 1; }
 
 	# Method 1: HISAT2 Reference Guided
 	HISAT2_REF_GUIDED_ROOT="$ALIGNMENT_RESULTS_ROOT/M1_HISAT2_RefGuided/HISAT2_WD/$fasta_tag"

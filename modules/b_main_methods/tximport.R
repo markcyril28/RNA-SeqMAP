@@ -33,10 +33,17 @@ suppressPackageStartupMessages({
     library(DESeq2)
 })
 
-# Configuration
+# Configuration — placeholders are replaced by the calling bash script via sed
 METHOD <- "METHOD_PLACEHOLDER"  # Will be replaced: "rsem" or "salmon"
 QUANT_DIR <- "QUANT_DIR_PLACEHOLDER"
 METADATA_FILE <- "METADATA_FILE_PLACEHOLDER"
+
+# Guard against running with unreplaced placeholders
+if (grepl("PLACEHOLDER", METHOD) || grepl("PLACEHOLDER", QUANT_DIR) || grepl("PLACEHOLDER", METADATA_FILE)) {
+  stop("Placeholders not replaced. This script must be invoked via the pipeline ",
+       "(m4_salmon_saf.sh or m5_bowtie2_rsem.sh), which substitutes placeholders with sed.")
+}
+
 OUTPUT_DIR <- dirname(METADATA_FILE)
 
 cat("\n")
@@ -73,10 +80,16 @@ if (METHOD == "rsem") {
 
 cat("  Found", length(files), "quantification files\n\n")
 
+# Validate that metadata has 'sample' column
+if (!"sample" %in% colnames(metadata)) {
+    stop("Metadata file must contain a 'sample' column. Found columns: ",
+         paste(colnames(metadata), collapse = ", "))
+}
+
 # Verify all samples in metadata have quantification files
 missing <- setdiff(metadata$sample, names(files))
 if (length(missing) > 0) {
-    warning("Samples in metadata missing quantification files: ", 
+    warning("Samples in metadata missing quantification files: ",
            paste(missing, collapse=", "))
 }
 
@@ -85,10 +98,10 @@ cat("Importing quantifications with tximport...\n")
 if (METHOD == "rsem") {
     txi <- tximport(files, type = "rsem", txIn = FALSE, txOut = FALSE)
 } else if (METHOD == "salmon") {
-    # For Salmon, may need tx2gene mapping for gene-level summarization
-    # If using transcript-level index, provide tx2gene
-    # Otherwise, use txOut=FALSE for gene-level quantifications
-    txi <- tximport(files, type = "salmon", txIn = FALSE, txOut = FALSE)
+    # Salmon always quantifies at transcript level, so txIn must be TRUE.
+    # With txOut=FALSE, tximport summarizes to gene level using tx2gene.
+    # When no tx2gene is provided, output remains at transcript level.
+    txi <- tximport(files, type = "salmon", txIn = TRUE, txOut = TRUE)
 }
 
 cat("  Imported", nrow(txi$counts), "genes\n")
@@ -97,7 +110,13 @@ cat("  Across", ncol(txi$counts), "samples\n\n")
 # Create DESeq2 dataset
 cat("Creating DESeq2 dataset...\n")
 # Ensure metadata sample order matches count matrix columns
-metadata <- metadata[match(colnames(txi$counts), metadata$sample), ]
+match_idx <- match(colnames(txi$counts), metadata$sample)
+if (any(is.na(match_idx))) {
+    unmatched <- colnames(txi$counts)[is.na(match_idx)]
+    stop("Samples in count matrix not found in metadata: ",
+         paste(unmatched, collapse = ", "))
+}
+metadata <- metadata[match_idx, ]
 
 # Check if we have proper experimental design
 if (length(unique(metadata$condition)) < 2) {

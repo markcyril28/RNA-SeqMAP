@@ -69,7 +69,9 @@ salmon_saf_pipeline() {
 		# orphan directory on runs where the index already exists.
 		mkdir -p "$work"
 		log_step "Building decoy-aware Salmon index for $tag"
-		grep "^>" "$genome" | awk '{print substr($1,2)}' > "$work/decoys.txt"
+		# Single-pass: extract decoy names while copying genome, then prepend transcriptome
+		# (replaces grep|awk + cat which reads genome twice)
+		awk '/^>/{print substr($1,2)}' "$genome" > "$work/decoys.txt"
 		cat "$fasta" "$genome" > "$work/gentrome.fa"
 		log_file_size "$work/gentrome.fa" "Gentrome FASTA for Salmon - $tag"
 		log_file_size "$work/decoys.txt" "Decoy list for Salmon - $tag"
@@ -85,7 +87,8 @@ salmon_saf_pipeline() {
 			log_info "[CLEANUP] Removing temporary gentrome work directory"
 			rm -rf "$work"
 		else
-			log_warn "[INDEX] salmon index may have failed — keeping $work for inspection"
+			log_error "[INDEX] salmon index failed — keeping $work for inspection"
+			return 1
 		fi
 	fi
 
@@ -253,44 +256,41 @@ _create_manual_salmon_matrix() {
 	local temp_gene_ids="$matrix_dir/temp_gene_ids.txt"
 	local temp_counts="$matrix_dir/temp_counts.txt"
 
+	# Single loop: extract gene IDs from first valid sample AND counts from all samples
+	# (was 3 separate loops over srr_list)
 	local first_sample=""
+	local _paste_args=()
+	local num_genes=0
 	for SRR in "${srr_list[@]}"; do
 		if [[ -f "$quant_root/$SRR/quant.sf" ]]; then
-			first_sample="$SRR"
-			awk 'NR>1 {print $1}' "$quant_root/$SRR/quant.sf" > "$temp_gene_ids"
-			break
+			if [[ -z "$first_sample" ]]; then
+				first_sample="$SRR"
+				# Extract gene IDs and counts in a single awk pass
+				awk 'NR>1 {print $1 > ids; print int($5 + 0.5) > counts}' \
+					ids="$temp_gene_ids" counts="$matrix_dir/${SRR}_counts.tmp" \
+					"$quant_root/$SRR/quant.sf"
+				num_genes=$(awk 'END{print NR}' "$temp_gene_ids")
+			else
+				awk 'NR>1 {print int($5 + 0.5)}' "$quant_root/$SRR/quant.sf" > "$matrix_dir/${SRR}_counts.tmp"
+			fi
+			_paste_args+=("$matrix_dir/${SRR}_counts.tmp")
+		elif [[ -n "$first_sample" ]]; then
+			# Generate zero-fill without spawning yes+head (pure awk, single process)
+			awk -v n="$num_genes" 'BEGIN{for(i=0;i<n;i++)print 0}' > "$matrix_dir/${SRR}_counts.tmp"
+			_paste_args+=("$matrix_dir/${SRR}_counts.tmp")
 		fi
 	done
 
 	if [[ -n "$first_sample" ]]; then
-		for SRR in "${srr_list[@]}"; do
-			if [[ -f "$quant_root/$SRR/quant.sf" ]]; then
-				awk 'NR>1 {print int($5 + 0.5)}' "$quant_root/$SRR/quant.sf" > "$matrix_dir/${SRR}_counts.tmp"
-			else
-				# Separate declaration from assignment so wc errors are not masked by local
-				local num_genes
-				num_genes=$(wc -l < "$temp_gene_ids")
-				yes 0 | head -n "$num_genes" > "$matrix_dir/${SRR}_counts.tmp"
-			fi
-		done
-
-		local _paste_args=("$temp_gene_ids")
-		for _s in "${srr_list[@]}"; do
-			[[ -f "$matrix_dir/${_s}_counts.tmp" ]] && _paste_args+=("$matrix_dir/${_s}_counts.tmp")
-		done
-		paste "${_paste_args[@]}" > "$temp_counts"
+		paste "$temp_gene_ids" "${_paste_args[@]}" > "$temp_counts"
 
 		# NOTE: Column 1 of quant.sf is the transcript Name, so this fallback matrix
 		# is transcript-level despite the "genes" filename.  The authoritative gene-level
 		# matrices are produced by tximport_salmon_to_matrices.R (uses tximport aggregation).
 		# When abundance_estimates_to_matrix.pl is available it applies --gene_trans_map
 		# to produce true gene-level output; this manual path does not.
-		echo -n "transcript_id" > "$matrix_dir/genes.counts.matrix"
-		for SRR in "${srr_list[@]}"; do
-			echo -ne "\t$SRR" >> "$matrix_dir/genes.counts.matrix"
-		done
-		echo "" >> "$matrix_dir/genes.counts.matrix"
-		cat "$temp_counts" >> "$matrix_dir/genes.counts.matrix"
+		# Single printf header (was N+1 echo calls)
+		{ printf 'transcript_id%s\n' "$(printf '\t%s' "${srr_list[@]}")"; cat "$temp_counts"; } > "$matrix_dir/genes.counts.matrix"
 
 		rm -f "$temp_gene_ids" "$temp_counts" "$matrix_dir"/*_counts.tmp
 	fi
