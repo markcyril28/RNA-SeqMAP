@@ -428,7 +428,11 @@ load_sample_labels_from_csv <- function(srr_csv_dir = SRR_CSV_DIR) {
   csv_files <- list.files(srr_csv_dir, pattern = "\\.csv$", full.names = TRUE)
   for (csv_file in csv_files) {
     tryCatch({
-      df <- read.csv(csv_file, stringsAsFactors = FALSE, header = TRUE, comment.char = "#")
+      df <- if (requireNamespace("data.table", quietly = TRUE)) {
+        data.table::fread(csv_file, header = TRUE, data.table = FALSE)
+      } else {
+        read.csv(csv_file, stringsAsFactors = FALSE, header = TRUE, comment.char = "#")
+      }
       if ("SRR_ID" %in% colnames(df) && "Organ" %in% colnames(df)) {
         df <- df[!is.na(df$SRR_ID) & nzchar(trimws(df$SRR_ID)), ]
         new_labels <- setNames(df$Organ, df$SRR_ID)
