@@ -63,6 +63,11 @@ find_raw_fastq() {
 	elif [[ -f "$raw_dir/${SRR}_1.fastq.gz" && -f "$raw_dir/${SRR}_2.fastq.gz" ]]; then
 		raw1="$raw_dir/${SRR}_1.fastq.gz"
 		raw2="$raw_dir/${SRR}_2.fastq.gz"
+	# Single-end patterns
+	elif [[ -f "$raw_dir/${SRR}.fastq" ]]; then
+		raw1="$raw_dir/${SRR}.fastq"
+	elif [[ -f "$raw_dir/${SRR}.fastq.gz" ]]; then
+		raw1="$raw_dir/${SRR}.fastq.gz"
 	fi
 }
 
