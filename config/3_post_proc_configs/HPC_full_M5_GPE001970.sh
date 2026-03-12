@@ -78,13 +78,4 @@ ANALYSES=(
     # ---- Visualisation ----
     "Basic_Heatmap"
     "Heatmap_with_CV"
-    #"BarGraph"
-
-    # ---- Statistics ----
-    #"Differential_Expression"   # Possible for M5 (tximport counts)
-    #"PCA_Dimensionality_Reduction"
-    #"Sample_Correlation_Clustering"
-    #"Tissue_Specificity"        # Applicable — transcript-level quantification
-    #"Coexpression_using_WGCNA"
-    #"Gene_Set_Enrichment"
 )
