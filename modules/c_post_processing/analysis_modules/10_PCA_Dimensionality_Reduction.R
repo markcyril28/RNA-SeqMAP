@@ -124,10 +124,12 @@ run_pca_analysis <- function(data_t, metadata, output_dir, gene_group) {
   if (GENERATE_DIM_FIGURES$pca_scree) {
     png(file.path(output_dir, paste0(gene_group, "_PCA_scree.png")),
         width = 800, height = 600, res = 100)
+    on.exit(try(dev.off(), silent = TRUE), add = TRUE)
     print(fviz_eig(pca_result, addlabels = TRUE) +
       ggtitle(paste0(gene_group, " - Variance Explained")) +
       theme(plot.title = element_text(hjust = 0.5, face = "bold")))
     dev.off()
+    on.exit(NULL)
   }
   
   pca_df <- as.data.frame(pca_result$x)

@@ -15,6 +15,11 @@ python matrix_builder.py gene_names.txt sample_files_list.txt
 import sys
 import re
 
+# Pre-compile regex once at module level (avoids re-compilation per call)
+_TRAILING_DIGITS_RE = re.compile(r'\.\d+$')
+# Track already-warned unparseable values to avoid flooding stderr
+_warned_values = set()
+
 def main(gene_names_file, sample_files_list):
     """
     Build gene expression matrix from sample files.
@@ -66,44 +71,74 @@ def main(gene_names_file, sample_files_list):
                 # (e.g., SMEL4.1_06g023900 ends with g023900, not .digits).
                 current = gene_full
                 for _ in range(2):
-                    stripped = re.sub(r'\.\d+$', '', current)
+                    stripped = _TRAILING_DIGITS_RE.sub('', current)
                     if stripped == current:
                         break  # No more trailing .digits to strip
                     id_variants.append(stripped)
                     current = stripped
 
                 # For each variant, keep the MAX value across duplicate entries
+                # Parse float once and store (float, str) tuple to avoid re-parsing
                 try:
                     count_float = float(count)
                 except (ValueError, TypeError):
+                    if count not in _warned_values:
+                        _warned_values.add(count)
+                        print(f"  Warning: unparseable value '{count}' for gene '{gene_full}' in {sample_file} — defaulting to 0.0",
+                              file=sys.stderr)
                     count_float = 0.0
                 for gid in id_variants:
                     existing = gene_to_count.get(gid)
                     if existing is None:
-                        gene_to_count[gid] = count
-                    else:
-                        try:
-                            existing_float = float(existing)
-                        except (ValueError, TypeError):
-                            existing_float = 0.0
-                        if count_float > existing_float:
-                            gene_to_count[gid] = count
+                        gene_to_count[gid] = (count_float, count)
+                    elif count_float > existing[0]:
+                        gene_to_count[gid] = (count_float, count)
         sample_dicts.append(gene_to_count)
 
-    # Output matrix
+    # Build per-sample resolved values using direct lookup.
+    # Each sample_dict already has entries keyed by all variant forms (full ID,
+    # stripped-once, stripped-twice). We just need to check which gene_names
+    # exist as keys. This is O(genes) per sample instead of O(genes × variants).
+    #
+    # Also handle the reverse case: gene list IDs may have trailing suffixes
+    # not present in the abundance data (e.g., CSV has "SMEL5_06g022750.1"
+    # but abundance file has "SMEL5_06g022750"). Pre-compute stripped variants
+    # of gene_names for fallback lookups.
+    gene_name_variants = {}
     for gene in gene_names:
-        row = [gene]
-        for sample in sample_dicts:
-            count = sample.get(gene)
-            if count is None:
-                # Fallback: strip trailing numeric suffixes from the lookup gene ID
-                # e.g. SMEL4.1_XXgYYYYYY.1 -> SMEL4.1_XXgYYYYYY
-                gene_base = re.sub(r'\.\d+$', '', gene)
-                count = sample.get(gene_base)
-            if count is None:
-                count = "0"
-            row.append(count)
-        print("\t".join(row))
+        variants = [gene]
+        current = gene
+        for _ in range(2):
+            stripped = _TRAILING_DIGITS_RE.sub('', current)
+            if stripped == current:
+                break
+            variants.append(stripped)
+            current = stripped
+        gene_name_variants[gene] = variants
+
+    sample_gene_values = []
+    for sample in sample_dicts:
+        resolved = {}
+        for gene in gene_names:
+            entry = sample.get(gene)
+            if entry is None:
+                # Try stripped variants of the gene list ID
+                for variant in gene_name_variants[gene][1:]:
+                    entry = sample.get(variant)
+                    if entry is not None:
+                        break
+            if entry is not None:
+                resolved[gene] = entry[1]
+        sample_gene_values.append(resolved)
+
+    # Stream output line-by-line (avoids buffering entire matrix in memory)
+    write = sys.stdout.write
+    for gene in gene_names:
+        write(gene)
+        for resolved in sample_gene_values:
+            write('\t')
+            write(resolved.get(gene, '0'))
+        write('\n')
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:

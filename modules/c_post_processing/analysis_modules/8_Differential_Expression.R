@@ -278,10 +278,12 @@ create_de_heatmap <- function(dds, res_df, contrast_name, output_dir, n_top = 50
   
   png(file.path(output_dir, paste0(contrast_name, "_top_DE_heatmap.png")),
       width = 1000, height = 800, res = 100)
+  on.exit(try(dev.off(), silent = TRUE), add = TRUE)
   pheatmap(hm_data, scale = "row", cluster_rows = TRUE, cluster_cols = TRUE,
            show_rownames = nrow(hm_data) <= 30,
            main = paste0("Top DE Genes: ", contrast_name))
   dev.off()
+  on.exit(NULL)
 }
 
 # ===============================================
@@ -290,66 +292,58 @@ create_de_heatmap <- function(dds, res_df, contrast_name, output_dir, n_top = 50
 
 # For M1 HISAT2 RefGuided: load the whole-genome integer count matrix produced by prepDE.py
 # (staged by prepde_matrix_linker.sh), then filter down to the requested gene group.
-load_m1_gene_group_counts <- function(gene_group, matrices_dir, master_ref) {
-  # Full genome matrix staged by prepde_matrix_linker.sh
-  deseq2_csv <- file.path(matrices_dir, master_ref, "deseq2_input", "gene_count_matrix.csv")
-  if (!file.exists(deseq2_csv)) {
-    return(list(success = FALSE, reason = paste("M1 count matrix not found:", deseq2_csv)))
+load_m1_gene_group_counts <- function(gene_group, matrices_dir, master_ref, cached_gene_ids = NULL,
+                                      cached_full_matrix = NULL) {
+  # Use cached full matrix if available (avoids re-reading per gene group)
+  if (!is.null(cached_full_matrix)) {
+    full_matrix <- cached_full_matrix
+  } else {
+    # Full genome matrix staged by prepde_matrix_linker.sh
+    deseq2_csv <- file.path(matrices_dir, master_ref, "deseq2_input", "gene_count_matrix.csv")
+    if (!file.exists(deseq2_csv)) {
+      return(list(success = FALSE, reason = paste("M1 count matrix not found:", deseq2_csv)))
+    }
+
+    full_matrix <- tryCatch(
+      as.matrix(data.table::fread(deseq2_csv, header = TRUE, data.table = FALSE,
+                                  check.names = FALSE)),
+      error = function(e) NULL
+    )
+    if (!is.null(full_matrix) && ncol(full_matrix) > 0) {
+      rownames(full_matrix) <- full_matrix[, 1]
+      full_matrix <- full_matrix[, -1, drop = FALSE]
+      storage.mode(full_matrix) <- "numeric"
+    }
+    if (is.null(full_matrix) || nrow(full_matrix) == 0) {
+      return(list(success = FALSE, reason = "failed to read M1 count matrix"))
+    }
   }
 
-  full_matrix <- tryCatch(
-    as.matrix(read.csv(deseq2_csv, row.names = 1, check.names = FALSE)),
-    error = function(e) NULL
-  )
-  if (is.null(full_matrix) || nrow(full_matrix) == 0) {
-    return(list(success = FALSE, reason = "failed to read M1 count matrix"))
-  }
-
-  # Filter to gene group if a gene group CSV exists
-  gene_group_csv <- file.path(GENE_GROUPS_DIR, paste0(gene_group, ".csv"))
-  # Search subdirectories if not found at top level
-  if (!file.exists(gene_group_csv)) {
-    hits <- list.files(GENE_GROUPS_DIR, pattern = paste0("^", gene_group, "\\.csv$"),
-                       recursive = TRUE, full.names = TRUE)
-    if (length(hits) > 0) gene_group_csv <- hits[1]
-  }
-  if (file.exists(gene_group_csv)) {
-    gdf <- tryCatch(read.csv(gene_group_csv, stringsAsFactors = FALSE, header = TRUE),
-                   error = function(e) NULL)
-    if (!is.null(gdf) && nrow(gdf) > 0) {
-      gene_ids <- if ("Gene_ID" %in% colnames(gdf)) trimws(gdf$Gene_ID) else trimws(gdf[[1]])
-      gene_ids <- gene_ids[nzchar(gene_ids)]
-      rn <- rownames(full_matrix)
-      matched <- rn[rn %in% gene_ids]
-      # Reverse suffix stripping: gene group has "SMEL5_*.1" but matrix has "SMEL5_*"
-      if (length(matched) < length(gene_ids)) {
-        unmatched <- gene_ids[!gene_ids %in% rn]
-        # Vectorized: strip suffix from all unmatched at once
-        g_bases <- sub("\\.[0-9]+$", "", unmatched)
-        changed <- g_bases != unmatched
-        base_hits <- g_bases[changed & g_bases %in% rn]
-        matched <- c(matched, base_hits)
-        # Forward prefix matching: gene group has "SMEL4.1_*.1" and matrix has "SMEL4.1_*.1.01"
-        if (length(matched) < length(gene_ids)) {
-          still_unmatched <- unmatched[!(unmatched %in% rn | g_bases %in% rn)]
-          if (length(still_unmatched) > 0) {
-            # Build base IDs for matrix row names once
-            rn_bases <- sub("\\.[0-9]+\\.[0-9]+$", "", rn)
-            rn_bases <- sub("\\.[0-9]+$", "", rn_bases)
-            for (g in still_unmatched) {
-              hits <- rn[rn_bases == g]
-              if (length(hits) > 0) matched <- c(matched, hits[1])
-            }
-          }
-        }
-        matched <- unique(matched)
+  # Filter to gene group — use pre-cached gene IDs to avoid repeated list.files()
+  gene_ids <- cached_gene_ids
+  if (is.null(gene_ids)) {
+    gene_group_csv <- file.path(GENE_GROUPS_DIR, paste0(gene_group, ".csv"))
+    if (!file.exists(gene_group_csv)) {
+      hits <- list.files(GENE_GROUPS_DIR, pattern = paste0("^", gene_group, "\\.csv$"),
+                         recursive = TRUE, full.names = TRUE)
+      if (length(hits) > 0) gene_group_csv <- hits[1]
+    }
+    if (file.exists(gene_group_csv)) {
+      gdf <- tryCatch(data.table::fread(gene_group_csv, header = TRUE, data.table = FALSE),
+                     error = function(e) NULL)
+      if (!is.null(gdf) && nrow(gdf) > 0) {
+        gene_ids <- if ("Gene_ID" %in% colnames(gdf)) trimws(gdf$Gene_ID) else trimws(gdf[[1]])
       }
+    }
+  }
+  if (!is.null(gene_ids) && length(gene_ids) > 0) {
+      gene_ids <- gene_ids[nzchar(gene_ids)]
+      matched <- match_gene_ids(gene_ids, rownames(full_matrix))
       if (length(matched) == 0) {
         return(list(success = FALSE, reason = paste("no gene IDs matched in M1 matrix for", gene_group)))
       }
       full_matrix <- full_matrix[matched, , drop = FALSE]
       cat("  M1: filtered to", nrow(full_matrix), "genes for", gene_group, "\n")
-    }
   }
 
   if (nrow(full_matrix) < MIN_GENES_DEA) {
@@ -367,7 +361,7 @@ load_m1_gene_group_counts <- function(gene_group, matrices_dir, master_ref) {
 run_differential_expression <- function(config = NULL, matrices_dir = NULL) {
   # M2 HISAT2 De Novo does not produce raw integer counts required by DESeq2.
   # StringTie abundance outputs (TPM/FPKM/coverage) are pre-normalized metrics.
-  if (grepl("M2_HISAT2_DeNovo", CURRENT_METHOD)) {
+  if (grepl("M2_HISAT2_DeNovo", CURRENT_METHOD, ignore.case = TRUE)) {
     cat("Differential expression is not supported for M2 HISAT2 De Novo.\n")
     cat("M2 produces only TPM/FPKM/coverage (not raw integer counts).\n")
     cat("Use M1 (prepDE.py counts), M3/M4 (Salmon NumReads), or M5 (RSEM expected_count).\n")
@@ -386,7 +380,7 @@ run_differential_expression <- function(config = NULL, matrices_dir = NULL) {
   print_config_summary("DIFFERENTIAL EXPRESSION ANALYSIS", config)
 
   # M1 RefGuided: use prepDE.py integer count matrix from deseq2_input/
-  is_m1 <- grepl("M1_HISAT2_RefGuided", CURRENT_METHOD)
+  is_m1 <- grepl("M1_HISAT2_RefGuided", CURRENT_METHOD, ignore.case = TRUE)
 
   # For M3/M4/M5: load tximport RDS if available (saved by Matrix_Creation scripts).
   # DESeqDataSetFromTximport preserves transcript-length offsets for more accurate DEA.
@@ -403,8 +397,11 @@ run_differential_expression <- function(config = NULL, matrices_dir = NULL) {
       cat("  Loaded tximport RDS (transcript-length offsets available)\n")
     }
   } else if (method_type %in% c("salmon", "rsem", "star")) {
-    cat("  Note: tximport RDS not found at:", txi_rds_path, "\n")
-    cat("  Using rounded counts (re-run Matrix_Creation to enable tximport offsets)\n")
+    warning("tximport RDS not found at: ", txi_rds_path,
+            " — using rounded counts (re-run Matrix_Creation to enable tximport offsets)",
+            call. = FALSE)
+    cat("  WARNING: tximport RDS not found, falling back to rounded counts\n")
+    cat("  Re-run Matrix_Creation to enable transcript-length offset corrections\n")
   }
 
   successful <- 0
@@ -415,6 +412,43 @@ run_differential_expression <- function(config = NULL, matrices_dir = NULL) {
     return(invisible(NULL))
   }
 
+  # Pre-cache gene group CSV gene IDs (avoids re-reading per contrast pair)
+  # Single recursive list.files() call instead of one per gene group
+  .gene_group_ids_cache <- list()
+  .all_csvs <- list.files(GENE_GROUPS_DIR, pattern = "\\.csv$",
+                          recursive = TRUE, full.names = TRUE)
+  .csv_lookup <- setNames(.all_csvs, tools::file_path_sans_ext(basename(.all_csvs)))
+  for (.gg in config$gene_groups) {
+    .gg_csv <- file.path(GENE_GROUPS_DIR, paste0(.gg, ".csv"))
+    if (!file.exists(.gg_csv) && .gg %in% names(.csv_lookup)) {
+      .gg_csv <- .csv_lookup[[.gg]]
+    }
+    if (file.exists(.gg_csv)) {
+      .gdf <- tryCatch(data.table::fread(.gg_csv, header = TRUE),
+                       error = function(e) NULL)
+      if (!is.null(.gdf) && nrow(.gdf) > 0) {
+        .gene_group_ids_cache[[.gg]] <- if ("Gene_ID" %in% colnames(.gdf)) trimws(.gdf$Gene_ID) else trimws(.gdf[[1]])
+      }
+    }
+  }
+
+  # Pre-load M1 genome-wide matrix once (avoids re-reading per gene group)
+  .m1_full_matrix_cache <- NULL
+  if (is_m1) {
+    .m1_csv <- file.path(matrices_dir, config$master_reference, "deseq2_input", "gene_count_matrix.csv")
+    if (file.exists(.m1_csv)) {
+      .m1_full_matrix_cache <- tryCatch({
+        .m <- as.matrix(data.table::fread(.m1_csv, header = TRUE, data.table = FALSE, check.names = FALSE))
+        rownames(.m) <- .m[, 1]
+        .m <- .m[, -1, drop = FALSE]
+        storage.mode(.m) <- "numeric"
+        .m
+      }, error = function(e) NULL)
+      if (!is.null(.m1_full_matrix_cache))
+        cat("  M1: pre-loaded genome matrix (", nrow(.m1_full_matrix_cache), " genes)\n")
+    }
+  }
+
   for (gene_group in config$gene_groups) {
     cat("Processing:", gene_group, "\n")
 
@@ -423,7 +457,9 @@ run_differential_expression <- function(config = NULL, matrices_dir = NULL) {
     ensure_output_dir(output_dir)
 
     if (is_m1) {
-      validation <- load_m1_gene_group_counts(gene_group, matrices_dir, config$master_reference)
+      validation <- load_m1_gene_group_counts(gene_group, matrices_dir, config$master_reference,
+                                                cached_gene_ids = .gene_group_ids_cache[[gene_group]],
+                                                cached_full_matrix = .m1_full_matrix_cache)
     } else {
       # DESeq2 requires raw integer counts (NumReads/expected_count), NOT TPM.
       # get_raw_count_type() returns the appropriate raw count type for each method.
@@ -517,21 +553,8 @@ run_differential_expression <- function(config = NULL, matrices_dir = NULL) {
         # Prefer tximport path for M3/M4/M5 (preserves length offsets)
         dds <- NULL
         if (!is.null(txi_obj)) {
-          # Load gene group gene list for filtering tximport object
-          gene_group_csv <- file.path(GENE_GROUPS_DIR, paste0(gene_group, ".csv"))
-          if (!file.exists(gene_group_csv)) {
-            hits <- list.files(GENE_GROUPS_DIR, pattern = paste0("^", gene_group, "\\.csv$"),
-                               recursive = TRUE, full.names = TRUE)
-            if (length(hits) > 0) gene_group_csv <- hits[1]
-          }
-          gene_ids_for_filter <- NULL
-          if (file.exists(gene_group_csv)) {
-            gdf <- tryCatch(read.csv(gene_group_csv, stringsAsFactors = FALSE, header = TRUE),
-                           error = function(e) NULL)
-            if (!is.null(gdf) && nrow(gdf) > 0) {
-              gene_ids_for_filter <- if ("Gene_ID" %in% colnames(gdf)) trimws(gdf$Gene_ID) else trimws(gdf[[1]])
-            }
-          }
+          # Use cached gene IDs (loaded once per gene_group, not per contrast)
+          gene_ids_for_filter <- .gene_group_ids_cache[[gene_group]]
           dds <- tryCatch(
             prepare_deseq_from_tximport(txi_obj, all_samples, sample_info,
                                         gene_ids = gene_ids_for_filter),

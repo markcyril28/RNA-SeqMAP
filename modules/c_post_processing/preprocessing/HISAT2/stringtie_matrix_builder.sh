@@ -46,7 +46,7 @@ case "$STRINGTIE_METHOD" in
         _METHOD_LABEL="M2 De Novo"
         ;;
     *)
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: Unknown STRINGTIE_METHOD='$STRINGTIE_METHOD' (expected M1 or M2)"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: Unknown STRINGTIE_METHOD='$STRINGTIE_METHOD' (expected M1 or M2)" >&2
         exit 1
         ;;
 esac
@@ -108,7 +108,7 @@ TPM_COL=9
 # SRR_CSV_DIR is exported by run_all_post_processing.sh
 # Fallback to inputs/SRR_csv relative to the project root
 
-SRR_CSV_DIR="${SRR_CSV_DIR:-$SCRIPT_DIR/../../../inputs/SRR_csv}"
+SRR_CSV_DIR="${SRR_CSV_DIR:-$SCRIPT_DIR/../../../../inputs/SRR_csv}"
 
 load_samples_from_csv() {
     local csv_dir="$1"
@@ -244,10 +244,11 @@ merge_group_counts() {
     fi
 
     # Extract gene names from reference CSV (first column is Gene_ID)
-    tail -n +2 "${ref_csv}" | cut -d',' -f1 > "$tmpdir/gene_names.txt" \
+    # Single awk pass replaces tail|cut pipeline (1 process instead of 2)
+    awk -F',' 'NR>1 && NF>0 {print $1}' "${ref_csv}" > "$tmpdir/gene_names.txt" \
         || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: Failed to extract gene names from $ref_csv"; rm -rf "$tmpdir"; return 1; }
     local gene_name_count
-    gene_name_count=$(grep -c . "$tmpdir/gene_names.txt" || true)
+    gene_name_count=$(wc -l < "$tmpdir/gene_names.txt")
     if [[ "$gene_name_count" -eq 0 ]]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: No genes found in reference CSV: $ref_csv"
         rm -rf "$tmpdir"
@@ -255,16 +256,31 @@ merge_group_counts() {
     fi
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gene names extracted: $gene_name_count lines."
 
-    for count_type in coverage fpkm tpm; do
-        local COUNT_COL_VAR="${count_type^^}_COL"
-        local COUNT_COL="${!COUNT_COL_VAR}"
+    # Extract ALL 3 count types (coverage, fpkm, tpm) in a SINGLE awk pass per sample.
+    # Replaces 3 separate tail|cut pipelines per sample (was 3×N process spawns, now 1×N).
+    # Write to $tmpdir (not alongside input) so cleanup is guaranteed on error.
+    for srr in "${processed_srrs[@]}"; do
+        awk -F'\t' -v gc="$GENENAME_COL" -v outdir="$tmpdir" -v srr="$srr" 'NR > 1 {
+            print $gc "\t" $7 > outdir "/" srr ".cov"
+            print $gc "\t" $8 > outdir "/" srr ".fpkm"
+            print $gc "\t" $9 > outdir "/" srr ".tpm"
+        }' "${srr_to_file[$srr]}"
+    done
 
-        # Extract count data from each sample file (O(1) lookup via srr_to_file map)
+    for count_type in coverage fpkm tpm; do
         local -a sample_files=()
+        local ext
+        case "$count_type" in
+            coverage) ext="cov" ;;
+            fpkm)     ext="fpkm" ;;
+            tpm)      ext="tpm" ;;
+        esac
 
         for srr in "${processed_srrs[@]}"; do
-            tail -n +2 "${srr_to_file[$srr]}" | cut -f"$GENENAME_COL","$COUNT_COL" > "$tmpdir/${srr}.txt"
-            sample_files+=("$tmpdir/${srr}.txt")
+            local extracted="$tmpdir/${srr}.${ext}"
+            if [[ -f "$extracted" ]]; then
+                sample_files+=("$extracted")
+            fi
         done
 
         if [[ ${#sample_files[@]} -eq 0 ]]; then
@@ -304,8 +320,7 @@ merge_group_counts() {
         } > "$output_geneName_Organ_tsv"
 
         rm -f "$matrix_body"
-
-        rm -f "${sample_files[@]}"
+        # sample_files are in $tmpdir; cleaned by rm -rf "$tmpdir" at function exit
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Completed $count_type matrix generation"
     done
 
@@ -341,7 +356,8 @@ build_full_transcriptome_matrix() {
     for srr in "${SAMPLE_IDS[@]}"; do
         local file_path="$INPUTS_DIR/$MASTER_REFERENCE/$srr/${srr}_${MASTER_REFERENCE}${ABUNDANCE_SUFFIX}"
         if [[ -f "$file_path" ]]; then
-            tail -n +2 "$file_path" | cut -f"$GENENAME_COL" >> "$tmp_csv"
+            # Single awk replaces tail|cut pipeline (1 process instead of 2 per sample)
+            awk -F'\t' -v c="$GENENAME_COL" 'NR>1 {print $c}' "$file_path" >> "$tmp_csv"
             files_found=$((files_found + 1))
         fi
     done
@@ -352,15 +368,14 @@ build_full_transcriptome_matrix() {
         return 1
     fi
 
-    # De-duplicate the collected gene IDs (header line is already first)
+    # De-duplicate the collected gene IDs — single awk pass (replaces head/tail|sort -u pipeline)
     local tmp_dedup
     tmp_dedup=$(mktemp --suffix=.csv)
-    head -1 "$tmp_csv" > "$tmp_dedup"
-    tail -n +2 "$tmp_csv" | sort -u >> "$tmp_dedup"
+    awk 'NR==1{print; next} !seen[$0]++' "$tmp_csv" > "$tmp_dedup"
     mv "$tmp_dedup" "$tmp_csv"
 
     local gene_count
-    gene_count=$(tail -n +2 "$tmp_csv" | grep -c . || true)
+    gene_count=$(( $(wc -l < "$tmp_csv") - 1 ))
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Full transcriptome: $gene_count genes (union from $files_found samples)"
 
     # Reuse merge_group_counts with MASTER_REFERENCE as the gene group name
@@ -377,7 +392,7 @@ build_full_transcriptome_matrix() {
 # ===============================================
 
 # Centralized gene groups CSV directory
-GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-$SCRIPT_DIR/../../../inputs/gene_groups_csv}}"
+GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-$SCRIPT_DIR/../../../../inputs/gene_groups_csv}}"
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gene groups CSV directory: $GENE_GROUPS_CSV_DIR"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting count matrix generation for ${#GENE_GROUPS[@]} gene groups"

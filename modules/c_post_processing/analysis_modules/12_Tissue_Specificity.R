@@ -144,6 +144,7 @@ create_tissue_specificity_heatmap <- function(data_matrix, specificity_df, outpu
   hm_scaled[is.na(hm_scaled)] <- 0
   
   png(output_path, width = 1000, height = 800, res = 100)
+  on.exit(try(dev.off(), silent = TRUE), add = TRUE)
   # Strip R's make.unique suffixes (.1, .2) from organ labels for display
   clean_col_labels <- sub("\\.[0-9]+$", "", colnames(hm_scaled))
   pheatmap(
@@ -157,6 +158,7 @@ create_tissue_specificity_heatmap <- function(data_matrix, specificity_df, outpu
     border_color = NA
   )
   dev.off()
+  on.exit(NULL)
   
   return(TRUE)
 }

@@ -33,16 +33,16 @@ save_count_matrices <- function(counts, output_dir, prefix, master_ref, level,
   # Always save Gene_ID (needed as source for Shortened_Name and by DESeq2)
   save_matrix(counts, count_type_label, "Gene_ID")
   if ("Shortened_Name" %in% GENE_TYPES) {
-    # Only convert column headers from SRR IDs to organ labels when "Organ" is
-    # an active label type; otherwise keep original SRR column names.
-    counts_short <- if ("Organ" %in% LABEL_TYPES) convert_to_organ_labels(counts) else counts
-    # Also convert row names from Gene_ID to Shortened_Name using the gene group mapping.
-    # prefix is typically the gene_group or folder_name; extract gene_group portion
-    # (strip "_in_<dataset>" suffix if present) for the mapping lookup.
+    # Do NOT pre-apply convert_to_organ_labels() here — column label conversion
+    # is handled at runtime by apply_labels() in the processing engine.
+    # Pre-applying Organ labels bakes them into the file, making it impossible
+    # for the processing engine to produce SRR_ID-labeled output from this file.
+    # Row name conversion (Gene_ID -> Shortened_Name) is safe to bake in since
+    # apply_labels() detects already-shortened names and skips re-conversion.
     gene_group_for_map <- sub("_in_.*$", "", prefix)
     counts_short <- tryCatch(
-      convert_to_shortened_names(counts_short, gene_group_for_map),
-      error = function(e) counts_short
+      convert_to_shortened_names(counts, gene_group_for_map),
+      error = function(e) counts
     )
     save_matrix(counts_short, count_type_label, "Shortened_Name")
   }
@@ -50,11 +50,10 @@ save_count_matrices <- function(counts, output_dir, prefix, master_ref, level,
   if (!is.null(tpm)) {
     save_matrix(tpm, "tpm", "Gene_ID")
     if ("Shortened_Name" %in% GENE_TYPES) {
-      tpm_short <- if ("Organ" %in% LABEL_TYPES) convert_to_organ_labels(tpm) else tpm
       gene_group_for_map <- sub("_in_.*$", "", prefix)
       tpm_short <- tryCatch(
-        convert_to_shortened_names(tpm_short, gene_group_for_map),
-        error = function(e) tpm_short
+        convert_to_shortened_names(tpm, gene_group_for_map),
+        error = function(e) tpm
       )
       save_matrix(tpm_short, "tpm", "Shortened_Name")
     }
@@ -92,7 +91,7 @@ filter_by_gene_group <- function(counts_matrix, gene_list_file) {
       if ("Gene_ID" %in% colnames(gene_df)) gene_df$Gene_ID else gene_df[[1]])
   } else {
     gene_list <- suppressWarnings(readLines(gene_list_file))
-    gene_list <- gene_list[!grepl("^#|^Gene", gene_list, ignore.case = TRUE) & nzchar(gene_list)]
+    gene_list <- gene_list[!grepl("^#|^Gene_ID$|^Gene$", gene_list, ignore.case = TRUE) & nzchar(gene_list)]
     gene_list <- trimws(sub("\t.*", "", gene_list))  # strip tab-delimited extra fields (e.g. gene names)
   }
 
@@ -138,6 +137,15 @@ run_matrix_saving <- function(results, output_dir, master_ref,
   # Skip companion "_tpm" keys — they are processed alongside their parent level
   level_names <- names(results)[!grepl("_tpm$", names(results))]
 
+  # Pre-build gene group file lookup (single list.files call instead of one per group per level)
+  .gg_file_map <- NULL
+  if (!is.null(gene_groups_dir) && dir.exists(gene_groups_dir)) {
+    .all_gg_files <- list.files(gene_groups_dir, pattern = "\\.(csv|txt|tsv)$",
+                                recursive = TRUE, full.names = TRUE)
+    .gg_file_map <- setNames(.all_gg_files,
+                              tools::file_path_sans_ext(basename(.all_gg_files)))
+  }
+
   for (level in level_names) {
     level_output <- file.path(output_dir, master_ref, level)
     ensure_output_dir(level_output)
@@ -153,15 +161,13 @@ run_matrix_saving <- function(results, output_dir, master_ref,
                         tpm = tpm_data, count_type_label = count_label)
 
     # Gene-group-filtered matrices
-    if (!is.null(gene_groups_dir) && dir.exists(gene_groups_dir)) {
+    if (!is.null(.gg_file_map)) {
       for (gene_group in config$gene_groups) {
         gf <- file.path(gene_groups_dir, paste0(gene_group, ".csv"))
         if (!file.exists(gf)) gf <- file.path(gene_groups_dir, paste0(gene_group, ".txt"))
-        # Search subdirectories if not found at top level
-        if (!file.exists(gf)) {
-          hits <- list.files(gene_groups_dir, pattern = paste0("^", gene_group, "\\.(csv|txt)$"),
-                             recursive = TRUE, full.names = TRUE)
-          if (length(hits) > 0) gf <- hits[1]
+        # Use pre-built lookup instead of per-group list.files()
+        if (!file.exists(gf) && gene_group %in% names(.gg_file_map)) {
+          gf <- .gg_file_map[[gene_group]]
         }
         if (!file.exists(gf)) {
           cat("Gene group file not found:", gene_group, "\n")
@@ -173,7 +179,10 @@ run_matrix_saving <- function(results, output_dir, master_ref,
           folder_name  <- get_output_folder_name(gene_group)
           group_output <- file.path(level_output, folder_name)
           ensure_output_dir(group_output)
-          filtered_tpm <- if (!is.null(tpm_data)) tpm_data[rownames(filtered), , drop = FALSE] else NULL
+          filtered_tpm <- if (!is.null(tpm_data)) {
+            common_rows <- intersect(rownames(filtered), rownames(tpm_data))
+            if (length(common_rows) > 0) tpm_data[common_rows, , drop = FALSE] else NULL
+          } else NULL
           save_count_matrices(filtered, group_output, folder_name,
                               master_ref, level,
                               tpm = filtered_tpm, count_type_label = count_label)

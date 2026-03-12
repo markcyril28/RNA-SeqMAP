@@ -54,9 +54,12 @@ if (GENERATE_GENE_LEVEL) {
 
   # Generate tx2gene from GTF if missing (alignment step may not have been run)
   if (length(tx2gene_files) == 0) {
+    gtf_ref_dir <- file.path(base_dir, "inputs", "gtf", "reference")
     gtf_candidates <- c(
       Sys.getenv("STAR_GTF_FILE", unset = ""),
-      file.path(base_dir, "inputs", "gtf", "reference", paste0(MASTER_REFERENCE, ".gtf"))
+      file.path(gtf_ref_dir, paste0(MASTER_REFERENCE, ".gtf")),
+      file.path(gtf_ref_dir, paste0(MASTER_REFERENCE, "_function_IPR_final.gtf")),
+      file.path(gtf_ref_dir, paste0(MASTER_REFERENCE, "_function_IPR_final_stringtie.gtf"))
     )
     gtf_file <- Filter(file.exists, gtf_candidates)[1]
     if (!is.na(gtf_file) && nzchar(gtf_file)) {
@@ -83,51 +86,63 @@ if (GENERATE_GENE_LEVEL) {
     if (nrow(tx2gene) == 0 || ncol(tx2gene) < 2) {
       cat("  Error: tx2gene file is empty or malformed:", tx2gene_files[1], "\n")
     } else {
-    quant_files <- file.path(quant_dir, SAMPLE_IDS, "quant.sf")
-    names(quant_files) <- SAMPLE_IDS
-    missing_qf <- quant_files[!file.exists(quant_files)]
-    if (length(missing_qf) > 0) {
-      cat("  Warning: Missing quant.sf for", length(missing_qf), "samples:",
-          paste(names(missing_qf), collapse = ", "), "\n")
-      quant_files <- quant_files[file.exists(quant_files)]
-    }
-    if (length(quant_files) < 2) {
-      cat("  Error: Need >= 2 quant.sf files for gene-level import\n")
-    } else {
+      quant_files <- file.path(quant_dir, SAMPLE_IDS, "quant.sf")
+      names(quant_files) <- SAMPLE_IDS
+      # Tissue-specific fallback: scan subdirectories for quant.sf files
+      if (sum(file.exists(quant_files)) == 0 && dir.exists(quant_dir)) {
+        cat("  No quant.sf in flat layout; scanning tissue subdirectories...\n")
+        tissue_dirs <- list.dirs(quant_dir, recursive = FALSE, full.names = TRUE)
+        for (sid in SAMPLE_IDS) {
+          for (td in tissue_dirs) {
+            candidate <- file.path(td, sid, "quant.sf")
+            if (file.exists(candidate)) {
+              quant_files[sid] <- candidate
+              break
+            }
+          }
+        }
+      }
+      missing_qf <- quant_files[!file.exists(quant_files)]
+      if (length(missing_qf) > 0) {
+        cat("  Warning: Missing quant.sf for", length(missing_qf), "samples:",
+            paste(names(missing_qf), collapse = ", "), "\n")
+        quant_files <- quant_files[file.exists(quant_files)]
+      }
+      if (length(quant_files) < 2) {
+        cat("  Error: Need >= 2 quant.sf files for gene-level import\n")
+      } else {
+        # Validate tx2gene transcript IDs match quant.sf transcript IDs
+        sample_qf <- read.delim(quant_files[1], header = TRUE, nrows = 100,
+                                 stringsAsFactors = FALSE)
+        qf_ids <- sample_qf$Name
+        tx_ids <- tx2gene$TXNAME
+        overlap <- length(intersect(qf_ids, tx_ids))
+        match_rate <- overlap / length(qf_ids)
+        if (match_rate < 0.5) {
+          cat("  ERROR: tx2gene transcript IDs poorly match quant.sf IDs!\n")
+          cat("    Match rate:", round(match_rate * 100), "% (", overlap, "/", length(qf_ids), "sampled)\n")
+          cat("    tx2gene IDs (first 3):", paste(head(tx2gene$TXNAME, 3), collapse = ", "), "\n")
+          cat("    quant.sf IDs (first 3):", paste(head(sample_qf$Name, 3), collapse = ", "), "\n")
+          cat("    This usually means tx2gene was generated from the wrong GTF.\n")
+          cat("    Re-run STAR+Salmon alignment to regenerate tx2gene.\n")
+          cat("    Skipping gene-level import.\n\n")
+        } else {
+          txi_gene <- tryCatch(
+            tximport(quant_files, type = "salmon", tx2gene = tx2gene, ignoreTxVersion = FALSE),
+            error = function(e) { cat("  Gene-level import error:", e$message, "\n"); NULL })
 
-    # Validate tx2gene transcript IDs match quant.sf transcript IDs
-    sample_qf <- read.delim(quant_files[1], header = TRUE, nrows = 100,
-                             stringsAsFactors = FALSE)
-    qf_ids <- sample_qf$Name
-    tx_ids <- tx2gene$TXNAME
-    overlap <- length(intersect(qf_ids, tx_ids))
-    match_rate <- overlap / length(qf_ids)
-    if (match_rate < 0.5) {
-      cat("  ERROR: tx2gene transcript IDs poorly match quant.sf IDs!\n")
-      cat("    Match rate:", round(match_rate * 100), "% (", overlap, "/", length(qf_ids), "sampled)\n")
-      cat("    tx2gene IDs (first 3):", paste(head(tx2gene$TXNAME, 3), collapse = ", "), "\n")
-      cat("    quant.sf IDs (first 3):", paste(head(sample_qf$Name, 3), collapse = ", "), "\n")
-      cat("    This usually means tx2gene was generated from the wrong GTF.\n")
-      cat("    Re-run STAR+Salmon alignment to regenerate tx2gene.\n")
-      cat("    Skipping gene-level import.\n\n")
-    } else {
-
-    txi_gene <- tryCatch(
-      tximport(quant_files, type = "salmon", tx2gene = tx2gene, ignoreTxVersion = FALSE),
-      error = function(e) { cat("  Gene-level import error:", e$message, "\n"); NULL })
-
-    if (!is.null(txi_gene)) {
-      results$gene_level     <- txi_gene$counts
-      results$gene_level_tpm <- txi_gene$abundance
-      # Save full tximport object for DESeq2 (preserves transcript-length offsets)
-      txi_rds_dir <- file.path(output_dir, MASTER_REFERENCE, "gene_level")
-      ensure_output_dir(txi_rds_dir)
-      saveRDS(txi_gene, file.path(txi_rds_dir, "tximport_gene_level.rds"))
-      cat("Saved tximport RDS for DESeq2: tximport_gene_level.rds\n")
+          if (!is.null(txi_gene)) {
+            results$gene_level     <- txi_gene$counts
+            results$gene_level_tpm <- txi_gene$abundance
+            # Save full tximport object for DESeq2 (preserves transcript-length offsets)
+            txi_rds_dir <- file.path(output_dir, MASTER_REFERENCE, "gene_level")
+            ensure_output_dir(txi_rds_dir)
+            saveRDS(txi_gene, file.path(txi_rds_dir, "tximport_gene_level.rds"))
+            cat("Saved tximport RDS for DESeq2: tximport_gene_level.rds\n")
+          }
+        }
+      }
     }
-    }
-    }
-    }  # tx2gene validation
   } else {
     cat("  Warning: tx2gene file not found in", file.path(output_dir, MASTER_REFERENCE),
         "— skipping gene-level import\n")
@@ -138,6 +153,20 @@ if (GENERATE_GENE_LEVEL) {
 if (GENERATE_ISOFORM_LEVEL) {
   quant_files <- file.path(quant_dir, SAMPLE_IDS, "quant.sf")
   names(quant_files) <- SAMPLE_IDS
+  # Tissue-specific fallback: scan subdirectories for quant.sf files
+  if (sum(file.exists(quant_files)) == 0 && dir.exists(quant_dir)) {
+    cat("  No quant.sf in flat layout; scanning tissue subdirectories...\n")
+    tissue_dirs <- list.dirs(quant_dir, recursive = FALSE, full.names = TRUE)
+    for (sid in SAMPLE_IDS) {
+      for (td in tissue_dirs) {
+        candidate <- file.path(td, sid, "quant.sf")
+        if (file.exists(candidate)) {
+          quant_files[sid] <- candidate
+          break
+        }
+      }
+    }
+  }
   quant_files <- quant_files[file.exists(quant_files)]
   if (length(quant_files) < 2) {
     cat("  Error: Need >= 2 quant.sf files for isoform-level import\n")

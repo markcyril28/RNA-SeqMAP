@@ -27,14 +27,14 @@ import_salmon <- function(quant_dir, sample_ids, tx2gene = NULL) {
   files <- file.path(quant_dir, sample_ids, "quant.sf")
   names(files) <- sample_ids
 
-  missing <- files[!file.exists(files)]
-  if (length(missing) == length(files)) {
+  files_exist <- file.exists(files)
+  if (!any(files_exist)) {
     cat("ERROR: No Salmon quant.sf files found in", quant_dir, "\n")
     return(NULL)
   }
-  if (length(missing) > 0) {
-    cat("WARNING: Missing quant.sf for:", paste(names(missing), collapse = ", "), "\n")
-    files <- files[file.exists(files)]
+  if (!all(files_exist)) {
+    cat("WARNING: Missing quant.sf for:", paste(names(files)[!files_exist], collapse = ", "), "\n")
+    files <- files[files_exist]
   }
 
   if (!is.null(tx2gene)) {
@@ -55,28 +55,30 @@ import_salmon <- function(quant_dir, sample_ids, tx2gene = NULL) {
 if (!nzchar(.input_fastas_dir) && nzchar(.base_dir))
   .input_fastas_dir <- file.path(.base_dir, "inputs")
 
+# Lazy tx2gene search: check known paths first, only recurse as fallback
 .candidates <- c(
   Sys.getenv("GENE_TRANS_MAP_FILE", unset = ""),
   file.path(.input_fastas_dir, "mapping", paste0(MASTER_REFERENCE, ".fa.gene_trans_map")),
   file.path(.input_fastas_dir, "mapping", paste0(MASTER_REFERENCE, ".fasta.gene_trans_map")),
   file.path(.input_fastas_dir, "fasta",   paste0(MASTER_REFERENCE, ".fa.gene_trans_map"))
 )
-if (nzchar(.input_fastas_dir)) {
-  .all_maps   <- list.files(.input_fastas_dir, pattern = "\\.gene_trans_map$",
-                            recursive = TRUE, full.names = TRUE)
-  .candidates <- c(.candidates, .all_maps[grepl(MASTER_REFERENCE, .all_maps, fixed = TRUE)])
-}
 
 .tx2gene_file <- NULL
 for (.cand in .candidates) {
   if (nzchar(.cand) && file.exists(.cand)) { .tx2gene_file <- .cand; break }
 }
+# Only recurse directory tree if direct paths failed
+if (is.null(.tx2gene_file) && nzchar(.input_fastas_dir)) {
+  .all_maps <- list.files(.input_fastas_dir, pattern = "\\.gene_trans_map$",
+                          recursive = TRUE, full.names = TRUE)
+  .hits <- .all_maps[grepl(MASTER_REFERENCE, .all_maps, fixed = TRUE)]
+  if (length(.hits) > 0) .tx2gene_file <- .hits[1]
+}
 
 .tx2gene <- if (!is.null(.tx2gene_file)) {
   .t2g <- read.table(.tx2gene_file, header = FALSE, sep = "\t", stringsAsFactors = FALSE,
-                     colClasses = c("character", "character"))
+                     colClasses = c("character", "character"), strip.white = TRUE)
   colnames(.t2g) <- c("GENEID", "TXNAME")
-  .t2g$GENEID <- trimws(.t2g$GENEID); .t2g$TXNAME <- trimws(.t2g$TXNAME)
   .t2g[, c("TXNAME", "GENEID")]
 } else {
   cat("  Warning: tx2gene mapping not found for M4 — gene-level import will be transcript-level\n")
@@ -84,7 +86,7 @@ for (.cand in .candidates) {
 }
 
 rm(list = intersect(c(".base_dir", ".input_fastas_dir", ".candidates",
-                       ".tx2gene_file", ".cand", ".all_maps"), ls()))
+                       ".tx2gene_file", ".cand", ".all_maps", ".hits"), ls()))
 
 # ===============================================
 # MAIN
@@ -136,13 +138,15 @@ if (GENERATE_GENE_LEVEL) {
 }
 
 if (GENERATE_ISOFORM_LEVEL) {
-  txi <- import_salmon(quant_dir, SAMPLE_IDS)   # txOut = TRUE (no tx2gene)
+  txi <- tryCatch(
+    import_salmon(quant_dir, SAMPLE_IDS),   # txOut = TRUE (no tx2gene)
+    error = function(e) { cat("  Isoform-level import error:", e$message, "\n"); NULL })
   if (!is.null(txi)) {
     results$isoform_level     <- txi$counts
     results$isoform_level_tpm <- txi$abundance
   }
 }
 
-rm(.tx2gene)
+if (exists(".tx2gene")) rm(.tx2gene)
 
 run_matrix_saving(results, output_dir, MASTER_REFERENCE, count_label, GENE_GROUPS_DIR)

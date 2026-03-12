@@ -21,6 +21,53 @@
 
 source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
 
+# Use data.table for fast file I/O when available
+.use_dt <- requireNamespace("data.table", quietly = TRUE)
+
+# -----------------------------------------------
+# Helper: assemble gene x sample matrix from a named list of named vectors
+# Replaces the repeated unique(unlist(lapply())) + sparse-assignment loop
+# that appeared 5 times (once per method) with a single vectorized merge.
+# -----------------------------------------------
+.assemble_tpm_matrix <- function(tpm_list, filter_genes = TRUE) {
+  if (length(tpm_list) == 0) return(NULL)
+
+  if (.use_dt) {
+    # Build long-form data.table and reshape — avoids O(genes * samples) sparse assignment
+    dt_list <- lapply(names(tpm_list), function(srr) {
+      data.table::data.table(gene = names(tpm_list[[srr]]),
+                             tpm  = as.numeric(tpm_list[[srr]]),
+                             srr  = srr)
+    })
+    long <- data.table::rbindlist(dt_list)
+    if (filter_genes) long <- long[nzchar(gene) & !is.na(gene)]
+    wide <- data.table::dcast(long, gene ~ srr, value.var = "tpm", fill = 0)
+    mat <- as.matrix(wide[, -1, with = FALSE])
+    rownames(mat) <- wide$gene
+  } else {
+    # Fallback: original approach
+    all_genes <- unique(unlist(lapply(tpm_list, names)))
+    if (filter_genes) all_genes <- all_genes[nzchar(all_genes) & !is.na(all_genes)]
+    mat <- matrix(0, nrow = length(all_genes), ncol = length(tpm_list),
+                  dimnames = list(all_genes, names(tpm_list)))
+    for (srr in names(tpm_list)) {
+      genes <- intersect(names(tpm_list[[srr]]), all_genes)
+      mat[genes, srr] <- tpm_list[[srr]][genes]
+    }
+  }
+  return(mat)
+}
+
+# Helper: fast file read (data.table::fread when available, else read.table)
+.fast_read_tsv <- function(path, ...) {
+  if (.use_dt) {
+    as.data.frame(data.table::fread(path, ...))
+  } else {
+    read.table(path, header = TRUE, sep = "\t", stringsAsFactors = FALSE,
+               comment.char = "", quote = "")
+  }
+}
+
 cat("\n=== STEP 1: Loading Expression Matrices ===\n\n")
 
 # -----------------------------------------------
@@ -54,24 +101,18 @@ load_m1_tpm <- function() {
     abundance_files <- list.files(sdir, pattern = "gene_abundances.*\\.tsv$", full.names = TRUE)
     if (length(abundance_files) == 0) next
 
-    df <- read.table(abundance_files[1], header = TRUE, sep = "\t",
-                     stringsAsFactors = FALSE, comment.char = "", quote = "")
-    # Columns: Gene.ID, Gene.Name, Reference, Strand, Start, End, Coverage, FPKM, TPM
-    tpm_list[[srr]] <- setNames(df$TPM, df$Gene.ID)
+    df <- .fast_read_tsv(abundance_files[1])
+    if (!"TPM" %in% colnames(df)) {
+      cat("[M1] Warning: No TPM column in", basename(abundance_files[1]), "for", srr, "\n")
+      next
+    }
+    # Use column index: fread keeps "Gene ID" (space) while read.table converts to "Gene.ID"
+    tpm_list[[srr]] <- setNames(df$TPM, df[[1]])
   }
 
-  if (length(tpm_list) == 0) return(NULL)
-
-  # Merge into a gene x sample matrix
-  all_genes <- unique(unlist(lapply(tpm_list, names)))
-  tpm_matrix <- matrix(0, nrow = length(all_genes), ncol = length(tpm_list),
-                        dimnames = list(all_genes, names(tpm_list)))
-  for (srr in names(tpm_list)) {
-    genes <- names(tpm_list[[srr]])
-    tpm_matrix[genes, srr] <- tpm_list[[srr]]
-  }
-
-  cat("[M1] Loaded:", nrow(tpm_matrix), "genes x", ncol(tpm_matrix), "samples\n")
+  tpm_matrix <- .assemble_tpm_matrix(tpm_list, filter_genes = TRUE)
+  if (!is.null(tpm_matrix))
+    cat("[M1] Loaded:", nrow(tpm_matrix), "genes x", ncol(tpm_matrix), "samples\n")
   return(tpm_matrix)
 }
 
@@ -106,33 +147,21 @@ load_m2_tpm <- function() {
     abundance_files <- list.files(sdir, pattern = "gene_abundances.*\\.tsv$", full.names = TRUE)
     if (length(abundance_files) == 0) next
 
-    df <- read.table(abundance_files[1], header = TRUE, sep = "\t",
-                     stringsAsFactors = FALSE, comment.char = "", quote = "")
+    df <- .fast_read_tsv(abundance_files[1])
 
+    if (!all(c("TPM", "Reference") %in% colnames(df))) {
+      cat("[M2] Warning: Missing TPM/Reference column in", basename(abundance_files[1]), "for", srr, "\n")
+      next
+    }
     # Map STRG.N -> reference gene ID via the Reference column
-    # Reference column contains transcript IDs (e.g., SMEL5_01g000110.1)
-    # Strip transcript suffix to get gene-level ID (SMEL5_01g000110)
     gene_ids <- sub("\\.[0-9]+$", "", df$Reference)
-
-    # Some STRG genes may map to the same gene - aggregate by summing TPM
     agg <- tapply(df$TPM, gene_ids, sum, na.rm = TRUE)
     tpm_list[[srr]] <- agg
   }
 
-  if (length(tpm_list) == 0) return(NULL)
-
-  all_genes <- unique(unlist(lapply(tpm_list, names)))
-  # Remove empty/NA gene names
-  all_genes <- all_genes[nzchar(all_genes) & !is.na(all_genes)]
-
-  tpm_matrix <- matrix(0, nrow = length(all_genes), ncol = length(tpm_list),
-                        dimnames = list(all_genes, names(tpm_list)))
-  for (srr in names(tpm_list)) {
-    genes <- intersect(names(tpm_list[[srr]]), all_genes)
-    tpm_matrix[genes, srr] <- tpm_list[[srr]][genes]
-  }
-
-  cat("[M2] Loaded:", nrow(tpm_matrix), "genes x", ncol(tpm_matrix), "samples\n")
+  tpm_matrix <- .assemble_tpm_matrix(tpm_list, filter_genes = TRUE)
+  if (!is.null(tpm_matrix))
+    cat("[M2] Loaded:", nrow(tpm_matrix), "genes x", ncol(tpm_matrix), "samples\n")
   return(tpm_matrix)
 }
 
@@ -182,39 +211,25 @@ load_m3_tpm <- function() {
     qsf <- file.path(sdir, "quant.sf")
     if (!file.exists(qsf)) next
 
-    df <- read.table(qsf, header = TRUE, sep = "\t", stringsAsFactors = FALSE, comment.char = "")
+    df <- .fast_read_tsv(qsf)
 
     if (!is.null(tx2gene)) {
-      # Map transcript -> gene using tx2gene
       df$gene_id <- tx2gene$gene_id[match(df$Name, tx2gene$transcript_id)]
-      # Unmatched transcripts: derive gene ID by stripping suffix
       unmapped <- is.na(df$gene_id)
       if (any(unmapped)) {
         df$gene_id[unmapped] <- sub("\\.[0-9]+$", "", df$Name[unmapped])
       }
     } else {
-      # No tx2gene: strip transcript suffix
       df$gene_id <- sub("\\.[0-9]+$", "", df$Name)
     }
 
-    # Aggregate TPM to gene level
     agg <- tapply(df$TPM, df$gene_id, sum, na.rm = TRUE)
     tpm_list[[srr]] <- agg
   }
 
-  if (length(tpm_list) == 0) return(NULL)
-
-  all_genes <- unique(unlist(lapply(tpm_list, names)))
-  all_genes <- all_genes[nzchar(all_genes) & !is.na(all_genes)]
-
-  tpm_matrix <- matrix(0, nrow = length(all_genes), ncol = length(tpm_list),
-                        dimnames = list(all_genes, names(tpm_list)))
-  for (srr in names(tpm_list)) {
-    genes <- intersect(names(tpm_list[[srr]]), all_genes)
-    tpm_matrix[genes, srr] <- tpm_list[[srr]][genes]
-  }
-
-  cat("[M3] Loaded:", nrow(tpm_matrix), "genes x", ncol(tpm_matrix), "samples\n")
+  tpm_matrix <- .assemble_tpm_matrix(tpm_list, filter_genes = TRUE)
+  if (!is.null(tpm_matrix))
+    cat("[M3] Loaded:", nrow(tpm_matrix), "genes x", ncol(tpm_matrix), "samples\n")
   return(tpm_matrix)
 }
 
@@ -248,8 +263,7 @@ load_m4_tpm <- function() {
     qsf <- file.path(sdir, "quant.sf")
     if (!file.exists(qsf)) next
 
-    df <- read.table(qsf, header = TRUE, sep = "\t", stringsAsFactors = FALSE, comment.char = "")
-    # Transcript IDs -> gene-level: strip trailing .N suffix
+    df <- .fast_read_tsv(qsf)
     df$gene_id <- sub("\\.[0-9]+$", "", df$Name)
     agg <- tapply(df$TPM, df$gene_id, sum, na.rm = TRUE)
     tpm_list[[srr]] <- agg
@@ -262,23 +276,16 @@ load_m4_tpm <- function() {
                           "deseq2_input", "gene_tpm_matrix.csv")
     if (file.exists(tpm_file)) {
       cat("[M4] Using pre-built TPM matrix:", tpm_file, "\n")
-      df <- read.csv(tpm_file, row.names = 1, check.names = FALSE)
+      df <- if (.use_dt) as.data.frame(data.table::fread(tpm_file)) else read.csv(tpm_file, check.names = FALSE)
+      rownames(df) <- df[[1]]; df <- df[, -1, drop = FALSE]
       return(as.matrix(df))
     }
     return(NULL)
   }
 
-  all_genes <- unique(unlist(lapply(tpm_list, names)))
-  all_genes <- all_genes[nzchar(all_genes) & !is.na(all_genes)]
-
-  tpm_matrix <- matrix(0, nrow = length(all_genes), ncol = length(tpm_list),
-                        dimnames = list(all_genes, names(tpm_list)))
-  for (srr in names(tpm_list)) {
-    genes <- intersect(names(tpm_list[[srr]]), all_genes)
-    tpm_matrix[genes, srr] <- tpm_list[[srr]][genes]
-  }
-
-  cat("[M4] Loaded:", nrow(tpm_matrix), "genes x", ncol(tpm_matrix), "samples\n")
+  tpm_matrix <- .assemble_tpm_matrix(tpm_list, filter_genes = TRUE)
+  if (!is.null(tpm_matrix))
+    cat("[M4] Loaded:", nrow(tpm_matrix), "genes x", ncol(tpm_matrix), "samples\n")
   return(tpm_matrix)
 }
 
@@ -305,30 +312,19 @@ load_m5_tpm <- function() {
         results_file <- file.path(sdir, paste0(srr, ".genes.results"))
         if (!file.exists(results_file)) next
 
-        df <- read.table(results_file, header = TRUE, sep = "\t",
-                         stringsAsFactors = FALSE, comment.char = "")
-        # gene_id column contains gene IDs; TPM column has TPM values
-        # Strip transcript suffix for gene-level comparison
+        df <- .fast_read_tsv(results_file)
         gene_ids <- sub("\\.[0-9]+$", "", df$gene_id)
-        # Aggregate by gene ID (in case of duplicates after suffix stripping)
         agg <- tapply(df$TPM, gene_ids, sum, na.rm = TRUE)
         tpm_list[[srr]] <- agg
       }
 
       if (length(tpm_list) > 0) {
-        all_genes <- unique(unlist(lapply(tpm_list, names)))
-        all_genes <- all_genes[nzchar(all_genes) & !is.na(all_genes)]
-
-        tpm_matrix <- matrix(0, nrow = length(all_genes), ncol = length(tpm_list),
-                              dimnames = list(all_genes, names(tpm_list)))
-        for (srr in names(tpm_list)) {
-          genes <- intersect(names(tpm_list[[srr]]), all_genes)
-          tpm_matrix[genes, srr] <- tpm_list[[srr]][genes]
+        tpm_matrix <- .assemble_tpm_matrix(tpm_list, filter_genes = TRUE)
+        if (!is.null(tpm_matrix)) {
+          cat("[M5] Loaded:", nrow(tpm_matrix), "genes x", ncol(tpm_matrix),
+              "samples (per-sample .genes.results)\n")
+          return(tpm_matrix)
         }
-
-        cat("[M5] Loaded:", nrow(tpm_matrix), "genes x", ncol(tpm_matrix),
-            "samples (per-sample .genes.results)\n")
-        return(tpm_matrix)
       }
     }
   }
@@ -413,13 +409,7 @@ loader_map <- list(
 )
 
 tpm_matrices <- list()
-method_stats <- data.frame(
-  method = character(),
-  short_name = character(),
-  n_genes_raw = integer(),
-  n_samples_raw = integer(),
-  stringsAsFactors = FALSE
-)
+stats_list <- list()  # pre-allocate list; single do.call(rbind) at end
 
 for (method in CONCORDANCE_METHODS) {
   cat("\nLoading", method, "...\n")
@@ -436,17 +426,18 @@ for (method in CONCORDANCE_METHODS) {
 
   if (!is.null(mat) && nrow(mat) > 0 && ncol(mat) > 0) {
     tpm_matrices[[method]] <- mat
-    method_stats <- rbind(method_stats, data.frame(
+    stats_list[[length(stats_list) + 1]] <- data.frame(
       method = method,
       short_name = get_short_name(method),
       n_genes_raw = nrow(mat),
       n_samples_raw = ncol(mat),
       stringsAsFactors = FALSE
-    ))
+    )
   } else {
     cat("  [WARN] No data loaded for", method, "\n")
   }
 }
+method_stats <- do.call(rbind, stats_list)
 
 if (length(tpm_matrices) < 2) {
   stop("Need at least 2 methods with data for concordance analysis. Found: ",
@@ -472,12 +463,20 @@ for (method in names(tpm_matrices)) {
   if (any(grepl("^SMEL[0-9].*\\.[0-9]+$", rn))) {
     new_rn <- sub("\\.[0-9]+$", "", rn)
     if (any(duplicated(new_rn))) {
-      # Aggregate duplicates by summing
-      gene_names <- new_rn
-      mat_agg <- aggregate(as.data.frame(mat), by = list(gene = gene_names), FUN = sum)
-      rownames(mat_agg) <- mat_agg$gene
-      mat_agg$gene <- NULL
-      tpm_matrices[[method]] <- as.matrix(mat_agg)
+      # Aggregate duplicates by summing — use data.table when available for speed
+      if (.use_dt) {
+        dt <- data.table::as.data.table(mat, keep.rownames = FALSE)
+        dt[, gene := new_rn]
+        agg <- dt[, lapply(.SD, sum), by = gene]
+        mat_agg <- as.matrix(agg[, -1, with = FALSE])
+        rownames(mat_agg) <- agg$gene
+      } else {
+        mat_agg <- aggregate(as.data.frame(mat), by = list(gene = new_rn), FUN = sum)
+        rownames(mat_agg) <- mat_agg$gene
+        mat_agg$gene <- NULL
+        mat_agg <- as.matrix(mat_agg)
+      }
+      tpm_matrices[[method]] <- mat_agg
     } else {
       rownames(mat) <- new_rn
       tpm_matrices[[method]] <- mat

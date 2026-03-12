@@ -68,9 +68,9 @@ MATRICES_OUTPUT_DIR <- if (nzchar(BASE_DIR)) {
 }
 # Use shared GENE_GROUPS_DIR from 0_shared_config.R (already sourced)
 
-# Toggle to generate both gene-level and isoform-level matrices
-GENERATE_GENE_LEVEL <- TRUE      # Summarize transcripts to genes
-GENERATE_ISOFORM_LEVEL <- TRUE   # Keep transcript-level data
+# Toggle to generate both gene-level and isoform-level matrices (overridable via env vars)
+GENERATE_GENE_LEVEL <- as.logical(Sys.getenv("SALMON_GENERATE_GENE_LEVEL", unset = "TRUE"))
+GENERATE_ISOFORM_LEVEL <- as.logical(Sys.getenv("SALMON_GENERATE_ISOFORM_LEVEL", unset = "TRUE"))
 
 # Use SAMPLE_IDS from shared config (0_shared_config.R)
 # Override here if needed for method-specific samples
@@ -174,15 +174,17 @@ for (level_name in names(processing_levels)) {
     file.path(INPUT_FASTAS_DIR, "mapping", paste0(MASTER_REFERENCE, ".fasta.gene_trans_map")),
     file.path(INPUT_FASTAS_DIR, "fasta", paste0(MASTER_REFERENCE, ".fa.gene_trans_map"))
   )
-  # Glob-based fallback: find any .gene_trans_map containing MASTER_REFERENCE
-  all_maps <- list.files(INPUT_FASTAS_DIR, pattern = "\\.gene_trans_map$",
-                         recursive = TRUE, full.names = TRUE)
-  ref_maps <- all_maps[grepl(MASTER_REFERENCE, all_maps, fixed = TRUE)]
-  tx2gene_candidates <- c(tx2gene_candidates, ref_maps)
 
   tx2gene_file <- NULL
   for (.cand in tx2gene_candidates) {
     if (nzchar(.cand) && file.exists(.cand)) { tx2gene_file <- .cand; break }
+  }
+  # Lazy fallback: only recurse directory tree if direct paths failed
+  if (is.null(tx2gene_file) && nzchar(INPUT_FASTAS_DIR)) {
+    all_maps <- list.files(INPUT_FASTAS_DIR, pattern = "\\.gene_trans_map$",
+                           recursive = TRUE, full.names = TRUE)
+    ref_maps <- all_maps[grepl(MASTER_REFERENCE, all_maps, fixed = TRUE)]
+    if (length(ref_maps) > 0) tx2gene_file <- ref_maps[1]
   }
   rm(.cand)
 

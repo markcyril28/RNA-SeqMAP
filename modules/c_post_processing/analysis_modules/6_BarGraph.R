@@ -42,12 +42,31 @@ generate_bar_graph <- function(data_matrix, output_path, title,
     df$Gene <- rownames(df)
     
     df_long <- tidyr::pivot_longer(
-      df, 
-      cols = -Gene, 
-      names_to = "Sample", 
+      df,
+      cols = -Gene,
+      names_to = "Sample",
       values_to = "Expression"
     )
-    
+
+    # Strip make.unique suffixes (.1, .2, etc.) from sample labels
+    df_long$Sample <- sub("\\.[0-9]+$", "", df_long$Sample)
+
+    # Average biological replicates that now share the same Sample name
+    df_long <- df_long %>%
+      group_by(Gene, Sample) %>%
+      summarise(Expression = mean(Expression, na.rm = TRUE), .groups = "drop")
+
+    # Preserve CSV sample order: set factor levels from SAMPLE_LABELS (organ names)
+    # so that ggplot respects biological ordering instead of alphabetical
+    if (length(SAMPLE_LABELS) > 0) {
+      ordered_organs <- unique(as.character(SAMPLE_LABELS))
+      # Keep only levels that actually appear in the data
+      valid_levels <- ordered_organs[ordered_organs %in% unique(df_long$Sample)]
+      # Append any remaining samples not in SAMPLE_LABELS at the end
+      extra <- setdiff(unique(df_long$Sample), valid_levels)
+      df_long$Sample <- factor(df_long$Sample, levels = c(valid_levels, extra))
+    }
+
     # Color palette
     n_samples <- length(unique(df_long$Sample))
     if (n_samples <= 8) {
@@ -77,7 +96,7 @@ generate_bar_graph <- function(data_matrix, output_path, title,
         summarise(
           Mean = mean(Expression, na.rm = TRUE),
           SD = sd(Expression, na.rm = TRUE),
-          SE = sd(Expression, na.rm = TRUE) / sqrt(n()),
+          SE = SD / sqrt(n()),
           .groups = "drop"
         )
 
