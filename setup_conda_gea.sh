@@ -274,7 +274,7 @@ fi
 
 log_info "Installing packages into '${ENV_NAME}'..."
 if [[ "$DRY_RUN" == true ]]; then
-    echo "[DRY RUN] Would execute: ${PKG_MGR} install -n ${ENV_NAME} ${CHANNELS} ${ALL_PACKAGES[@]} -y"
+    echo "[DRY RUN] Would execute: ${PKG_MGR} install -n ${ENV_NAME} ${CHANNELS} ${ALL_PACKAGES[*]} -y"
 else
     ${PKG_MGR} install -n "${ENV_NAME}" ${CHANNELS} -y "${ALL_PACKAGES[@]}" || {
         log_warn "${PKG_MGR} installation failed, falling back to conda..."
@@ -287,7 +287,7 @@ fi
 #===============================================================================
 
 log_info "Configuring SRA tools..."
-run_cmd ${PKG_MGR} run -n "${ENV_NAME}" vdb-config --prefetch-to-cwd
+run_cmd conda run -n "${ENV_NAME}" vdb-config --prefetch-to-cwd
 
 #===============================================================================
 # ACTIVATE AND VERIFY

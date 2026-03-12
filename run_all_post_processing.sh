@@ -82,13 +82,10 @@ get_output_folder_name() {
 # INITIALIZATION
 #===============================================================================
 
-[[ ${#PIPELINE_CONFIGS[@]} -eq 0 ]] && { echo "ERROR: No configs enabled in PIPELINE_CONFIGS"; exit 1; }
+[[ ${#PIPELINE_CONFIGS[@]} -eq 0 ]] && { log_error "No configs enabled in PIPELINE_CONFIGS"; exit 1; }
 
 eval "$(conda shell.bash hook)"
-conda activate gea 2>/dev/null || echo "Warning: conda env 'gea' not found, using current env"
-
-[[ -f "$BASE_DIR/modules/config.sh" ]]       && source "$BASE_DIR/modules/config.sh"
-[[ -f "$BASE_DIR/modules/shared_utils.sh" ]] && source "$BASE_DIR/modules/shared_utils.sh"
+conda activate gea 2>/dev/null || log_warn "conda env 'gea' not found, using current env"
 
 # Log dirs use absolute paths so subprocesses that change directories still resolve correctly
 LOG_DIR="$BASE_DIR/3_POST_PROC/logs/log_files"
@@ -103,10 +100,18 @@ export LOG_DIR TIME_DIR SPACE_DIR SPACE_TIME_DIR ERROR_WARN_DIR SOFTWARE_CATALOG
 setup_logging "$CLEAR_LOGS"
 export LOG_FILE TIME_FILE SPACE_FILE SPACE_TIME_FILE ERROR_WARN_FILE SOFTWARE_FILE GPU_LOG_FILE
 
-catalog_all_software
+# Skip software catalog if already generated this session (saves ~2s)
+if [[ ! -f "${SOFTWARE_FILE:-}" ]] || [[ ! -s "${SOFTWARE_FILE:-}" ]]; then
+	catalog_all_software
+else
+	log_info "Software catalog already exists, skipping: $SOFTWARE_FILE"
+fi
 
 log_step "Starting Post-Processing Pipeline (${#PIPELINE_CONFIGS[@]} config(s) enabled)"
 
+# Cache parallel availability once (avoids 3 PATH lookups per dataset iteration)
+_HAS_PARALLEL=false
+command -v parallel &>/dev/null && _HAS_PARALLEL=true
 
 #===============================================================================
 # CONFIG LOOP
@@ -124,16 +129,23 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
     source "$CONFIG_FILE"
     log_step "Config: $(basename "$CONFIG_FILE")"
 
+    # Snapshot error/warning line count so we can report per-config delta
+    _err_baseline=0
+    [[ -f "$ERROR_WARN_FILE" ]] && _err_baseline=$(wc -l < "$ERROR_WARN_FILE")
+
     MASTER_REFERENCE="${MASTER_REFERENCES[0]}"
     [[ "$CLEAR_OUTPUT_FOLDER" == "TRUE" ]] && OVERWRITE_EXISTING="TRUE" || OVERWRITE_EXISTING="FALSE"
     export AVAILABLE_RAM_GB GPU_VRAM_GB OVERWRITE_EXISTING
 
-    # Build combined SRR list
+    # Build combined SRR list and cache per-dataset results (avoids re-parsing later)
     SRR_COMBINED_LIST=()
+    declare -A _CACHED_SRR_LISTS=()
     for dataset in "${SRR_DATASETS[@]}"; do
         csv_file="$SRR_CSV_DIR/${dataset}.csv"
         if [[ -f "$csv_file" ]]; then
-            mapfile -t -O "${#SRR_COMBINED_LIST[@]}" SRR_COMBINED_LIST < <(parse_srr_csv "$csv_file")
+            _cached=$(parse_srr_csv "$csv_file")
+            _CACHED_SRR_LISTS["$dataset"]="$_cached"
+            mapfile -t -O "${#SRR_COMBINED_LIST[@]}" SRR_COMBINED_LIST <<< "$_cached"
         else
             log_warn "SRR CSV not found: $csv_file"
         fi
@@ -152,19 +164,23 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
         (( JOBS < 1 )) && JOBS=1
     fi
 
-    # Clear output folders if requested
+    # Clear output folders if requested (batch find+delete instead of per-folder rm)
     if [[ "$CLEAR_OUTPUT_FOLDER" == "TRUE" ]]; then
-        log_info "Clearing output folders..."
+        log_info "Clearing output folders for $MASTER_REFERENCE..."
+        _cleared=0
         for method in "${METHODS[@]}"; do
             output_base="$BASE_DIR/3_POST_PROC/$method/Figure_Outputs"
+            [[ -d "$output_base" ]] || continue
             for analysis in "${ANALYSES[@]}"; do
                 folder_name=$(get_output_folder_name "$analysis")
-                if [[ -n "$folder_name" && -d "$output_base/$folder_name/$MASTER_REFERENCE" ]]; then
-                    log_info "  Clearing: $method/$folder_name/$MASTER_REFERENCE"
-                    rm -rf "$output_base/$folder_name/$MASTER_REFERENCE"/* 2>/dev/null || true
+                target="$output_base/$folder_name/$MASTER_REFERENCE"
+                if [[ -n "$folder_name" && -d "$target" ]]; then
+                    find "$target" -mindepth 1 -delete 2>/dev/null || true
+                    ((_cleared++)) || true
                 fi
             done
         done
+        [[ $_cleared -gt 0 ]] && log_info "  Cleared $_cleared output directories"
     fi
 
     # Export for R scripts and subprocesses
@@ -177,15 +193,14 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
     log_info "Gene Groups: ${GENE_GROUPS[*]} | Datasets: ${SRR_DATASETS[*]} (${#SRR_COMBINED_LIST[@]} samples)"
     log_info "Analyses: ${ANALYSES[*]}"
 
-    # Process each dataset
+    # Process each dataset (reuse cached CSV parse — avoids redundant file I/O)
     for dataset in "${SRR_DATASETS[@]}"; do
-        csv_file="$SRR_CSV_DIR/${dataset}.csv"
-        if [[ ! -f "$csv_file" ]]; then
-            log_warn "SRR CSV not found: $csv_file, skipping $dataset"
+        if [[ -z "${_CACHED_SRR_LISTS[$dataset]+x}" ]]; then
+            log_warn "No cached SRR data for $dataset, skipping"
             continue
         fi
 
-        mapfile -t CURRENT_SRR_LIST < <(parse_srr_csv "$csv_file")
+        mapfile -t CURRENT_SRR_LIST <<< "${_CACHED_SRR_LISTS[$dataset]}"
         if [[ ${#CURRENT_SRR_LIST[@]} -eq 0 ]]; then
             log_warn "No samples found in $dataset, skipping"
             continue
@@ -196,14 +211,32 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
 
         # ── Phase 0: Setup method environments ──
         for method in "${METHODS[@]}"; do
-            setup_method_env "$method" "$MASTER_REFERENCE"
+            setup_method_env "$method" "$MASTER_REFERENCE" || {
+                log_error "Failed to set up environment for $method — skipping dataset $dataset"
+                continue 2
+            }
         done
 
-        # ── Phase 1: Preprocessing (sequential — needs full threads) ──
-        log_info "Phase 1: Preprocessing (sequential, all threads)"
-        for method in "${METHODS[@]}"; do
-            run_method_preprocessing "$method" "$MASTER_REFERENCE"
-        done
+        # Export utils once per dataset (avoids repeated export -f in each phase)
+        if $_HAS_PARALLEL && [[ "$ENABLE_GNU_PARALLEL" == "TRUE" ]]; then
+            export_utils_for_parallel
+            export SCRIPT_DIR LOG_FILE ERROR_WARN_FILE RUN_ID
+        fi
+
+        # ── Phase 1: Preprocessing (parallel across methods when possible) ──
+        if [[ ${#METHODS[@]} -gt 1 && "$ENABLE_GNU_PARALLEL" == "TRUE" ]] && $_HAS_PARALLEL; then
+            log_info "Phase 1: Preprocessing (parallel across ${#METHODS[@]} methods)"
+            printf '%s\n' "${METHODS[@]}" | parallel \
+                -j "${#METHODS[@]}" \
+                --halt soon,fail=1 \
+                --joblog "$LOG_DIR/parallel_preproc_${dataset}.log" \
+                run_method_preprocessing {} "$MASTER_REFERENCE"
+        else
+            log_info "Phase 1: Preprocessing (sequential, all threads)"
+            for method in "${METHODS[@]}"; do
+                run_method_preprocessing "$method" "$MASTER_REFERENCE"
+            done
+        fi
 
         # ── Phase 2: Thread-heavy analyses (sequential — needs full threads) ──
         # Includes: Matrix_Creation, Differential_Expression, WGCNA, GSEA, PCA
@@ -219,21 +252,45 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
         done
 
         if [[ ${#HEAVY_ANALYSES[@]} -gt 0 ]]; then
-            log_info "Phase 2: Heavy analyses (sequential): ${HEAVY_ANALYSES[*]}"
-            for method in "${METHODS[@]}"; do
-                log_step "Processing Method (heavy): $method"
-                for analysis in "${HEAVY_ANALYSES[@]}"; do
-                    run_single_analysis "$method" "$MASTER_REFERENCE" "$analysis"
+            if [[ ${#METHODS[@]} -gt 1 && "$ENABLE_GNU_PARALLEL" == "TRUE" ]] && $_HAS_PARALLEL; then
+                # Each method's heavy analyses are independent of other methods.
+                # Run methods in parallel, each getting THREADS/N_METHODS cores.
+                _n_methods=${#METHODS[@]}
+                _threads_per_method=$(( THREADS / _n_methods ))
+                (( _threads_per_method < 1 )) && _threads_per_method=1
+                log_info "Phase 2: Heavy analyses (parallel across ${_n_methods} methods, ${_threads_per_method} threads each): ${HEAVY_ANALYSES[*]}"
+                # Worker function: run all heavy analyses for one method with reduced thread count
+                _run_heavy_for_method() {
+                    local _method="$1" _ref="$2" _orig_threads="$THREADS"
+                    shift 2
+                    export THREADS="$_threads_per_method"
+                    for _analysis in "$@"; do
+                        run_single_analysis "$_method" "$_ref" "$_analysis"
+                    done
+                    export THREADS="$_orig_threads"
+                }
+                export -f _run_heavy_for_method
+                export _threads_per_method
+                printf '%s\n' "${METHODS[@]}" | parallel \
+                    -j "$_n_methods" \
+                    --halt soon,fail=1 \
+                    --joblog "$LOG_DIR/parallel_heavy_${dataset}.log" \
+                    _run_heavy_for_method {} "$MASTER_REFERENCE" "${HEAVY_ANALYSES[@]}"
+            else
+                log_info "Phase 2: Heavy analyses (sequential): ${HEAVY_ANALYSES[*]}"
+                for method in "${METHODS[@]}"; do
+                    log_step "Processing Method (heavy): $method"
+                    for analysis in "${HEAVY_ANALYSES[@]}"; do
+                        run_single_analysis "$method" "$MASTER_REFERENCE" "$analysis"
+                    done
                 done
-            done
+            fi
         fi
 
         # ── Phase 3: Figure generation (parallelisable — lightweight per job) ──
         if [[ ${#FIGURE_ANALYSES[@]} -gt 0 ]]; then
-            if [[ "$ENABLE_GNU_PARALLEL" == "TRUE" && $JOBS -gt 1 ]] && command -v parallel &>/dev/null; then
+            if [[ "$ENABLE_GNU_PARALLEL" == "TRUE" && $JOBS -gt 1 ]] && $_HAS_PARALLEL; then
                 log_info "Phase 3: Figure generation (GNU Parallel, $JOBS jobs): ${FIGURE_ANALYSES[*]}"
-                export_utils_for_parallel
-                export SCRIPT_DIR LOG_FILE ERROR_WARN_FILE RUN_ID
 
                 # Build method×analysis pairs (tab-separated) and parallelise
                 PARALLEL_TASKS=()
@@ -263,10 +320,13 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
     # Config summary
     log_step "Config Complete: $(basename "$CONFIG_FILE")"
     log_info "Datasets: ${SRR_DATASETS[*]} | Methods: ${#METHODS[@]} per dataset"
-    if [[ -f "$ERROR_WARN_FILE" && -s "$ERROR_WARN_FILE" ]]; then
-        log_info "Errors/Warnings: $(wc -l < "$ERROR_WARN_FILE") (see $ERROR_WARN_FILE)"
+    _err_total=0
+    [[ -f "$ERROR_WARN_FILE" ]] && _err_total=$(wc -l < "$ERROR_WARN_FILE")
+    _err_delta=$(( _err_total - _err_baseline ))
+    if [[ $_err_delta -gt 0 ]]; then
+        log_info "Errors/Warnings this config: $_err_delta (total: $_err_total, see $ERROR_WARN_FILE)"
     else
-        log_info "No errors encountered"
+        log_info "No errors encountered for this config"
     fi
 
 done
@@ -277,7 +337,4 @@ done
 
 log_step "All Configs Complete"
 log_info "Configs run: ${#PIPELINE_CONFIGS[@]} | Log: $LOG_FILE | Time: $TIME_FILE"
-
-echo -e "\n========================================"
-echo "Pipeline completed at $(date)"
-echo "========================================"
+log_step "Pipeline completed at $(date)"

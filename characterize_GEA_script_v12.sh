@@ -5,6 +5,8 @@
 # Author: Mark Cyril R. Mercado | Version: v12 | Date: December 2025
 # ==============================================================================
 
+set -o pipefail   # -e/-u omitted intentionally (sourced functions use boolean returns)
+
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_ROOT" || exit 1
 
@@ -45,22 +47,40 @@ CONFIG_FILES=(
 # PIPELINE FLAG HELPER
 # ==============================================================================
 
-_has_stage() { printf '%s\n' "${PIPELINE_STAGES[@]}" | grep -q "^$1$" && echo "TRUE" || echo "FALSE"; }
-
+# Build associative array from PIPELINE_STAGES for O(1) lookup — zero subshell spawns.
+# Old approach: 14 calls to _has_stage() = 14 subshell spawns via $().
 set_pipeline_flags() {
-	RUN_MAMBA_INSTALLATION=$(_has_stage "MAMBA_INSTALLATION")
-	RUN_DOWNLOAD_SRR=$(_has_stage "DOWNLOAD_SRR")
-	RUN_TRIM_SRR=$(_has_stage "TRIM_SRR")
-	RUN_DOWNLOAD_TRIM_and_DELETE_RAW_SRR=$(_has_stage "DOWNLOAD_TRIM_and_DELETE_RAW_SRR")
-	RUN_GZIP_TRIMMED_FILES=$(_has_stage "GZIP_TRIMMED_FILES")
-	RUN_DELETE_RAW_SRR=$(_has_stage "DELETE_RAW_SRR")
-	RUN_QUALITY_CONTROL=$(_has_stage "QUALITY_CONTROL")
-	RUN_METHOD_1_HISAT2_REF_GUIDED=$(_has_stage "METHOD_1_HISAT2_REF_GUIDED")
-	RUN_METHOD_2_HISAT2_DE_NOVO=$(_has_stage "METHOD_2_HISAT2_DE_NOVO")
-	RUN_METHOD_3_STAR_ALIGNMENT=$(_has_stage "METHOD_3_STAR_ALIGNMENT")
-	RUN_METHOD_4_SALMON_SAF=$(_has_stage "METHOD_4_SALMON_SAF")
-	RUN_METHOD_5_BOWTIE2_RSEM=$(_has_stage "METHOD_5_BOWTIE2_RSEM")
-	RUN_DELETE_TRIMMED_FASTQ_FILES=$(_has_stage "DELETE_TRIMMED_FASTQ_FILES")
+	# Build stage lookup set (single pass)
+	local -A _stage_set=()
+	local s
+	for s in "${PIPELINE_STAGES[@]}"; do _stage_set["$s"]=1; done
+
+	RUN_MAMBA_INSTALLATION="${_stage_set[MAMBA_INSTALLATION]:+TRUE}"
+	RUN_MAMBA_INSTALLATION="${RUN_MAMBA_INSTALLATION:-FALSE}"
+	RUN_DOWNLOAD_SRR="${_stage_set[DOWNLOAD_SRR]:+TRUE}"
+	RUN_DOWNLOAD_SRR="${RUN_DOWNLOAD_SRR:-FALSE}"
+	RUN_TRIM_SRR="${_stage_set[TRIM_SRR]:+TRUE}"
+	RUN_TRIM_SRR="${RUN_TRIM_SRR:-FALSE}"
+	RUN_DOWNLOAD_TRIM_and_DELETE_RAW_SRR="${_stage_set[DOWNLOAD_TRIM_and_DELETE_RAW_SRR]:+TRUE}"
+	RUN_DOWNLOAD_TRIM_and_DELETE_RAW_SRR="${RUN_DOWNLOAD_TRIM_and_DELETE_RAW_SRR:-FALSE}"
+	RUN_GZIP_TRIMMED_FILES="${_stage_set[GZIP_TRIMMED_FILES]:+TRUE}"
+	RUN_GZIP_TRIMMED_FILES="${RUN_GZIP_TRIMMED_FILES:-FALSE}"
+	RUN_DELETE_RAW_SRR="${_stage_set[DELETE_RAW_SRR]:+TRUE}"
+	RUN_DELETE_RAW_SRR="${RUN_DELETE_RAW_SRR:-FALSE}"
+	RUN_QUALITY_CONTROL="${_stage_set[QUALITY_CONTROL]:+TRUE}"
+	RUN_QUALITY_CONTROL="${RUN_QUALITY_CONTROL:-FALSE}"
+	RUN_METHOD_1_HISAT2_REF_GUIDED="${_stage_set[METHOD_1_HISAT2_REF_GUIDED]:+TRUE}"
+	RUN_METHOD_1_HISAT2_REF_GUIDED="${RUN_METHOD_1_HISAT2_REF_GUIDED:-FALSE}"
+	RUN_METHOD_2_HISAT2_DE_NOVO="${_stage_set[METHOD_2_HISAT2_DE_NOVO]:+TRUE}"
+	RUN_METHOD_2_HISAT2_DE_NOVO="${RUN_METHOD_2_HISAT2_DE_NOVO:-FALSE}"
+	RUN_METHOD_3_STAR_ALIGNMENT="${_stage_set[METHOD_3_STAR_ALIGNMENT]:+TRUE}"
+	RUN_METHOD_3_STAR_ALIGNMENT="${RUN_METHOD_3_STAR_ALIGNMENT:-FALSE}"
+	RUN_METHOD_4_SALMON_SAF="${_stage_set[METHOD_4_SALMON_SAF]:+TRUE}"
+	RUN_METHOD_4_SALMON_SAF="${RUN_METHOD_4_SALMON_SAF:-FALSE}"
+	RUN_METHOD_5_BOWTIE2_RSEM="${_stage_set[METHOD_5_BOWTIE2_RSEM]:+TRUE}"
+	RUN_METHOD_5_BOWTIE2_RSEM="${RUN_METHOD_5_BOWTIE2_RSEM:-FALSE}"
+	RUN_DELETE_TRIMMED_FASTQ_FILES="${_stage_set[DELETE_TRIMMED_FASTQ_FILES]:+TRUE}"
+	RUN_DELETE_TRIMMED_FASTQ_FILES="${RUN_DELETE_TRIMMED_FASTQ_FILES:-FALSE}"
 }
 
 # ==============================================================================
@@ -91,7 +111,11 @@ run_all() {
 
 	setup_logging
 	switch_log_stage "1_SRRs"
-	catalog_all_software
+	# Catalog software once per pipeline execution, not per FASTA
+	if [[ "${_SOFTWARE_CATALOGED:-}" != "true" ]]; then
+		catalog_all_software
+		_SOFTWARE_CATALOGED="true"
+	fi
 	log_configuration
 	log_step "Script started at: $(date -d @$start_time)"
 
@@ -138,73 +162,111 @@ run_all() {
 
 	switch_log_stage "2_ALIGNMENT_RESULTs"
 
-	# --- Alignment Methods ---
+	# --- Alignment Methods (parallel when independent) ---
+	# M1-M5 produce output in isolated directories and do not depend on each other.
+	# When PARALLEL_METHODS is enabled and multiple methods are requested, dispatch
+	# them concurrently as background jobs to reduce total wall-clock time.
+	local _enabled_methods=()
+	local _method_cmds=()
+
 	if [[ $RUN_METHOD_1_HISAT2_REF_GUIDED == "TRUE" ]]; then
-		log_step "STEP 02a: HISAT2 Reference-Guided Pipeline"
 		if [[ -z "${gtf_file:-}" || ! -f "${gtf_file:-}" ]]; then
 			log_error "GTF file required for reference-guided alignment: ${gtf_file:-<unset>}"
 			log_error "Skipping Method 1 — configure gtf_file variable"
 			((method_failures++)) || true
-		elif hisat2_ref_guided_pipeline --FASTA "$fasta" --GTF "$gtf_file" \
-			${HISAT2_STRANDNESS:+--STRANDNESS "$HISAT2_STRANDNESS"} \
-			--RNASEQ_LIST "${rnaseq_list[@]}"; then
-			log_info "Method 1 completed successfully"
 		else
-			log_error "Method 1 failed (exit code: $?) — continuing"
-			((method_failures++)) || true
+			_enabled_methods+=("M1")
+			_method_cmds+=("hisat2_ref_guided_pipeline --FASTA \"$fasta\" --GTF \"$gtf_file\" ${HISAT2_STRANDNESS:+--STRANDNESS \"$HISAT2_STRANDNESS\"} --RNASEQ_LIST ${rnaseq_list[*]}")
 		fi
 	fi
-
 	if [[ $RUN_METHOD_2_HISAT2_DE_NOVO == "TRUE" ]]; then
-		log_step "STEP 02b: HISAT2 De Novo Pipeline"
-		if hisat2_de_novo_pipeline --FASTA "$fasta" --RNASEQ_LIST "${rnaseq_list[@]}"; then
-			log_info "Method 2 completed successfully"
-		else
-			log_error "Method 2 failed (exit code: $?) — continuing"
-			((method_failures++)) || true
-		fi
+		_enabled_methods+=("M2")
+		_method_cmds+=("hisat2_de_novo_pipeline --FASTA \"$fasta\" --RNASEQ_LIST ${rnaseq_list[*]}")
 	fi
-
 	if [[ $RUN_METHOD_3_STAR_ALIGNMENT == "TRUE" ]]; then
-		log_step "STEP 03: STAR Splice-Aware Alignment"
-		if star_alignment_pipeline --FASTA "$fasta" --RNASEQ_LIST "${rnaseq_list[@]}"; then
-			log_info "Method 3 completed successfully"
-		else
-			log_error "Method 3 failed (exit code: $?) — continuing"
-			((method_failures++)) || true
-		fi
+		_enabled_methods+=("M3")
+		_method_cmds+=("star_alignment_pipeline --FASTA \"$fasta\" --RNASEQ_LIST ${rnaseq_list[*]}")
 	fi
-
 	if [[ $RUN_METHOD_4_SALMON_SAF == "TRUE" ]]; then
-		log_step "STEP 04: Salmon SAF Quantification"
 		if [[ ! -f "${decoy:-}" ]]; then
 			log_warn "Genome file '${decoy:-<unset>}' not found — skipping Salmon SAF pipeline."
-		elif salmon_saf_pipeline --FASTA "$fasta" --GENOME "$decoy" --RNASEQ_LIST "${rnaseq_list[@]}"; then
-			log_info "Method 4 completed successfully"
 		else
-			log_error "Method 4 failed (exit code: $?) — continuing"
-			((method_failures++)) || true
+			_enabled_methods+=("M4")
+			_method_cmds+=("salmon_saf_pipeline --FASTA \"$fasta\" --GENOME \"$decoy\" --RNASEQ_LIST ${rnaseq_list[*]}")
 		fi
 	fi
-
 	if [[ $RUN_METHOD_5_BOWTIE2_RSEM == "TRUE" ]]; then
-		log_step "STEP 05: Bowtie2 + RSEM Quantification"
-		if bowtie2_rsem_pipeline --FASTA "$fasta" --RNASEQ_LIST "${rnaseq_list[@]}"; then
-			log_info "Method 5 completed successfully"
+		_enabled_methods+=("M5")
+		_method_cmds+=("bowtie2_rsem_pipeline --FASTA \"$fasta\" --RNASEQ_LIST ${rnaseq_list[*]}")
+	fi
+
+	if [[ ${#_enabled_methods[@]} -eq 0 ]]; then
+		log_info "No alignment methods enabled"
+	elif [[ ${#_enabled_methods[@]} -eq 1 ]]; then
+		# Single method — run directly (no overhead from background dispatch)
+		log_step "Running ${_enabled_methods[0]} (single method)"
+		if eval "${_method_cmds[0]}"; then
+			log_info "${_enabled_methods[0]} completed successfully"
 		else
-			log_error "Method 5 failed (exit code: $?) — continuing"
+			log_error "${_enabled_methods[0]} failed (exit code: $?) — continuing"
 			((method_failures++)) || true
 		fi
+	elif [[ "${PARALLEL_METHODS:-TRUE}" == "TRUE" ]] && (( ${#_enabled_methods[@]} > 1 )); then
+		# Multiple methods — run concurrently as background jobs.
+		# Each method already manages its own GNU Parallel pool for per-sample work,
+		# so cross-method parallelism adds no contention beyond shared I/O bandwidth.
+		log_step "Running ${#_enabled_methods[@]} methods in parallel: ${_enabled_methods[*]}"
+		local -a _method_pids=()
+		local -a _method_logs=()
+		for _i in "${!_enabled_methods[@]}"; do
+			local _m="${_enabled_methods[$_i]}"
+			local _mlog="${LOG_DIR}/method_${_m}_${fasta_tag}.log"
+			_method_logs+=("$_mlog")
+			log_info "Dispatching ${_m} → $_mlog"
+			eval "${_method_cmds[$_i]}" > "$_mlog" 2>&1 &
+			_method_pids+=($!)
+		done
+
+		# Wait for all methods and collect exit codes
+		for _i in "${!_enabled_methods[@]}"; do
+			local _m="${_enabled_methods[$_i]}"
+			local _pid="${_method_pids[$_i]}"
+			if wait "$_pid"; then
+				log_info "${_m} completed successfully (pid=$_pid)"
+			else
+				log_error "${_m} failed (exit code: $?, pid=$_pid) — see ${_method_logs[$_i]}"
+				((method_failures++)) || true
+			fi
+		done
+		# Batch-append all method logs in a single I/O operation (avoids repeated open/seek/close)
+		local _existing_logs=()
+		for _mlog in "${_method_logs[@]}"; do
+			[[ -f "$_mlog" ]] && _existing_logs+=("$_mlog")
+		done
+		[[ ${#_existing_logs[@]} -gt 0 ]] && cat "${_existing_logs[@]}" >> "$LOG_FILE"
+	else
+		# PARALLEL_METHODS=FALSE: sequential fallback
+		log_step "Running ${#_enabled_methods[@]} methods sequentially"
+		for _i in "${!_enabled_methods[@]}"; do
+			local _m="${_enabled_methods[$_i]}"
+			log_step "Running ${_m}"
+			if eval "${_method_cmds[$_i]}"; then
+				log_info "${_m} completed successfully"
+			else
+				log_error "${_m} failed (exit code: $?) — continuing"
+				((method_failures++)) || true
+			fi
+		done
 	fi
 
 	compare_methods_summary "$fasta_tag"
-	catalog_all_software
 
 	end_time=$(date +%s)
 	elapsed=$((end_time - start_time))
 	log_step "Final timing"
 	log_info "Script ended at: $(date -d @$end_time)"
-	log_info "Elapsed time: $(date -u -d @${elapsed} +%H:%M:%S)"
+	# Pure bash arithmetic (avoids date subshell spawn)
+	log_info "Elapsed time: $(printf '%02d:%02d:%02d' $((elapsed/3600)) $(((elapsed%3600)/60)) $((elapsed%60)))"
 
 	if [[ $method_failures -gt 0 ]]; then
 		log_error "$method_failures method(s) failed for $fasta_tag"
@@ -216,7 +278,7 @@ run_all() {
 # EXECUTE
 # ==============================================================================
 
-[[ ${#CONFIG_FILES[@]} -eq 0 ]] && { echo "ERROR: No configuration files listed in CONFIG_FILES."; exit 1; }
+[[ ${#CONFIG_FILES[@]} -eq 0 ]] && { log_error "No configuration files listed in CONFIG_FILES."; exit 1; }
 
 # Cleanup trap: log summary on exit; clean up STAR temp dirs on signal kill
 _pipeline_cleanup() {
@@ -224,30 +286,28 @@ _pipeline_cleanup() {
 	# Remove any orphan STAR temp directories left by interrupted runs
 	find "${PROJECT_ROOT}" -maxdepth 4 -type d -name '_STARtmp*' -exec rm -rf {} + 2>/dev/null || true
 	if [[ $rc -ne 0 ]]; then
-		echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] Pipeline terminated with exit code $rc" >&2
+		log_error "Pipeline terminated with exit code $rc"
 	fi
-	echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] Pipeline finished. See logs under: 1_SRRs/logs/ and 2_ALIGNMENT_RESULTs/logs/"
+	log_info "Pipeline finished. See logs under: 1_SRRs/logs/ and 2_ALIGNMENT_RESULTs/logs/"
 }
 trap _pipeline_cleanup EXIT
 
 total_failures=0
 
 for config_file in "${CONFIG_FILES[@]}"; do
-	echo ""
-	echo "=============================================================================="
-	echo "  LOADING CONFIGURATION: $config_file"
-	echo "=============================================================================="
+	log_step "LOADING CONFIGURATION: $config_file"
 
-	[[ -f "$config_file" ]] || { echo "ERROR: Configuration file not found: $config_file"; exit 1; }
+	[[ -f "$config_file" ]] || { log_error "Configuration file not found: $config_file"; exit 1; }
 	GENOME_REF_PAIRS=()
 	ALL_FASTA_FILES=()
-	unset gtf_file STAR_TRANSCRIPTOME_FASTA decoy 2>/dev/null || true
-	source "$config_file"
+	unset gtf_file STAR_TRANSCRIPTOME_FASTA decoy
+	source "$config_file" || { log_error "Failed to load config: $config_file"; exit 1; }
 	set_pipeline_flags
 
 	mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT"
-	setup_logging
-	switch_log_stage "1_SRRs"
+	# setup_logging is called inside run_all(); avoid redundant re-initialization per config.
+	# Only switch log stage if logging is already initialized (first config handled by run_all).
+	[[ "${LOGGING_INITIALIZED:-}" == "true" ]] && switch_log_stage "1_SRRs"
 
 	[[ $RUN_MAMBA_INSTALLATION == "TRUE" ]] && mamba_install
 	if [[ $RUN_GZIP_TRIMMED_FILES == "TRUE" ]]; then
@@ -286,14 +346,11 @@ for config_file in "${CONFIG_FILES[@]}"; do
 		delete_trimmed_fastq_by_srr_list "${SRR_COMBINED_LIST[@]}"
 	fi
 
-	echo ""
-	echo "=============================================================================="
-	echo "  FINISHED CONFIG: $config_file"
-	echo "=============================================================================="
+	log_step "FINISHED CONFIG: $config_file"
 done
 
 if [[ $total_failures -gt 0 ]]; then
-	echo "PIPELINE COMPLETED WITH $total_failures METHOD FAILURE(S)"
+	log_error "PIPELINE COMPLETED WITH $total_failures METHOD FAILURE(S)"
 	exit 1
 fi
-echo "END OF SCRIPT"
+log_info "Pipeline execution completed"
