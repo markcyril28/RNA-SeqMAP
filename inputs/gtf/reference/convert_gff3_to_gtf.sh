@@ -68,19 +68,13 @@ function get_attr(attrs, key,    parts, i, kv) {
 }
 
 # --- Pass 1 & 2 combined via NR==FNR ---
-# First pass: collect mRNA→gene_id and mRNA→(chr, start, end, strand, source, score)
+# First pass: collect mRNA→gene_id mapping
 NR == FNR {
     if ($3 == "mRNA") {
         mrna_id = get_attr($9, "ID")
         parent  = get_attr($9, "Parent")
         if (mrna_id != "" && parent != "") {
             gene_of[mrna_id] = parent
-            mrna_chr[mrna_id]    = $1
-            mrna_source[mrna_id] = $2
-            mrna_start[mrna_id]  = $4
-            mrna_end[mrna_id]    = $5
-            mrna_score[mrna_id]  = $6
-            mrna_strand[mrna_id] = $7
         }
     }
     next
@@ -135,14 +129,15 @@ head -5 "$OUTPUT_GTF"
 echo ""
 
 echo "Validating GTF format..."
-if head -1 "$OUTPUT_GTF" | grep -qP 'transcript_id "[^"]+"; gene_id "[^"]+";'; then
+if head -1 "$OUTPUT_GTF" | grep -qE 'transcript_id "[^"]+"; gene_id "[^"]+";'; then
     echo "  OK: Attribute format is correct"
 else
     echo "  WARNING: Attribute format may need review"
 fi
 
 # Verify all transcripts have matching FASTA entries (if FASTA exists nearby)
-FASTA_FILE="../../fasta/reference_genomes/GPE001970_transcripts.fa"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FASTA_FILE="$SCRIPT_DIR/../../fasta/reference_genomes/GPE001970_transcripts.fa"
 if [[ -f "$FASTA_FILE" ]]; then
     FASTA_IDS=$(grep -c '^>' "$FASTA_FILE")
     echo "  FASTA transcripts: $FASTA_IDS"

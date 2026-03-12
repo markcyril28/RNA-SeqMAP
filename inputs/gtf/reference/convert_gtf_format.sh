@@ -47,10 +47,10 @@ if [[ -n "$MAPPING_FILE" && -f "$MAPPING_FILE" ]]; then
     echo "  Mapping: $MAPPING_FILE"
     
     # With chromosome mapping
-    awk -F'\t' -v OFS='\t' '
+    awk -F'\t' -v OFS='\t' -v mapfile="$MAPPING_FILE" '
     BEGIN {
         # Load mapping file
-        while ((getline line < "'"$MAPPING_FILE"'") > 0) {
+        while ((getline line < mapfile) > 0) {
             split(line, arr, "\t")
             chr_map[arr[1]] = arr[2]
             offset_map[arr[1]] = arr[3]

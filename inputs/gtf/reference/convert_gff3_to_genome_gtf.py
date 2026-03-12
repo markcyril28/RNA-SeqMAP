@@ -107,7 +107,9 @@ def gff3_to_gtf(input_gff, output_gtf):
                 gene_id = mrna_to_gene.get(parent, '')
                 if not parent or not gene_id:
                     continue
-                # Use frame from GFF3 for CDS
+                # Use frame from GFF3 for CDS; warn if unknown and defaulting to 0
+                if frame not in ('0', '1', '2'):
+                    print(f"  Warning: CDS with unknown frame '{frame}' for {parent}, defaulting to 0", file=sys.stderr)
                 cds_frame = frame if frame in ('0', '1', '2') else '0'
                 gtf_attr = f'gene_id "{gene_id}"; transcript_id "{parent}";'
                 out.write('\t'.join([seqname, source, 'CDS',
