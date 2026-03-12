@@ -46,7 +46,7 @@ GENE_GROUPS=(
     #"SmelGRFs"
     #"SmelGIF"
     #"Selected_GRF_GIF_Genes_vAll_GIF"
-    "Selected_GRF_GIF_Genes_vTwo_GIF.csv"
+    "Selected_GRF_GIF_Genes_vTwo_GIF"
 )
 
 # ==============================================================================
