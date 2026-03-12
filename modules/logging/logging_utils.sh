@@ -2,7 +2,7 @@
 # ==============================================================================
 # LOGGING UTILITIES
 # ==============================================================================
-# Five-version logging system for comprehensive pipeline tracking:
+# Six-component logging system for comprehensive pipeline tracking:
 # 1. Full logs (logs/log_files/*.log) - Complete execution output
 # 2. Time logs (logs/time_logs/*.csv) - Time/CPU/memory metrics only
 # 3. Space logs (logs/space_logs/*.csv) - File/directory size metrics only
