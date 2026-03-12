@@ -86,7 +86,7 @@ compare_methods_summary() {
 # THIS MUST BE CUSTOMIZED for differential expression analysis!
 # 
 # Option 1: Edit the sample_conditions.txt file at:
-#   0_INPUTS/sample_conditions.txt
+#   inputs/sample_conditions.txt
 #   Format (tab-separated):
 #     SRR_ID	condition	batch
 #     SRR3884597	Flowers	1
