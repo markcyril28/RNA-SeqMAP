@@ -206,7 +206,7 @@ read_count_matrix <- function(file_path) {
   tryCatch({
     # data.table::fread() is 10-50x faster than read.table() for large matrices
     data <- data.table::fread(file_path, header = TRUE, sep = "\t",
-                              na.strings = c("", " ", "NA", "null"),
+                              na.strings = c("", "NA", "null"),
                               data.table = FALSE)
     if (any(duplicated(data[, 1]))) {
       data[, 1] <- make.unique(as.character(data[, 1]), sep = "_")

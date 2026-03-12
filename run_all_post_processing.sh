@@ -12,7 +12,7 @@ set -o pipefail   # -e/-u omitted intentionally (sourced functions use boolean r
 THREADS=12
 ENABLE_GPU="FALSE"
 ENABLE_GNU_PARALLEL="TRUE"
-DESIRED_CPU_PER_JOB=2
+DESIRED_CPU_PER_JOB=1
 AVAILABLE_RAM_GB=64
 GPU_VRAM_GB=8
 
@@ -20,8 +20,8 @@ GPU_VRAM_GB=8
 # LOGGING AND OUTPUT
 # ==============================================================================
 
-CLEAR_LOGS="FALSE"
-CLEAR_OUTPUT_FOLDER="FALSE"
+CLEAR_LOGS="TRUE"
+CLEAR_OUTPUT_FOLDER="TRUE"
 
 
 PIPELINE_CONFIGS=(
@@ -195,24 +195,69 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
         export CURRENT_DATASET="$dataset" SRR_COMBINED_LIST_STR="${CURRENT_SRR_LIST[*]}"
         log_step "Dataset: $dataset (${#CURRENT_SRR_LIST[@]} samples)"
 
-        if [[ "$ENABLE_GNU_PARALLEL" == "TRUE" && $JOBS -gt 1 ]] && command -v parallel &>/dev/null; then
-            log_info "GNU Parallel: $JOBS jobs"
-            export_utils_for_parallel
-            # SCRIPT_DIR, LOG_FILE, etc. are only needed by parallel subshells;
-            # ANALYSIS_MODULES_DIR, GENE_GROUPS_DIR, MASTER_REFERENCE, THREADS,
-            # ENABLE_GPU, CURRENT_DATASET, GENE_GROUPS_STR, ANALYSES_STR are
-            # already exported at lines 165-166/188 — skip re-exporting them.
-            export SCRIPT_DIR LOG_FILE ERROR_WARN_FILE RUN_ID
-            printf '%s\n' "${METHODS[@]}" | parallel \
-                -j "$JOBS" \
-                --halt soon,fail=1 \
-                --joblog "$LOG_DIR/parallel_post_proc_${dataset}.log" \
-                run_method_analysis {} "$MASTER_REFERENCE"
-        else
-            log_info "Sequential: $dataset"
+        # ── Phase 0: Setup method environments ──
+        for method in "${METHODS[@]}"; do
+            setup_method_env "$method" "$MASTER_REFERENCE"
+        done
+
+        # ── Phase 1: Preprocessing (sequential — needs full threads) ──
+        log_info "Phase 1: Preprocessing (sequential, all threads)"
+        for method in "${METHODS[@]}"; do
+            run_method_preprocessing "$method" "$MASTER_REFERENCE"
+        done
+
+        # ── Phase 2: Thread-heavy analyses (sequential — needs full threads) ──
+        # Includes: Matrix_Creation, Differential_Expression, WGCNA, GSEA, PCA
+        HEAVY_ANALYSES=()
+        FIGURE_ANALYSES=()
+        for analysis in "${ANALYSES[@]}"; do
+            [[ -z "$analysis" ]] && continue
+            if is_figure_analysis "$analysis"; then
+                FIGURE_ANALYSES+=("$analysis")
+            else
+                HEAVY_ANALYSES+=("$analysis")
+            fi
+        done
+
+        if [[ ${#HEAVY_ANALYSES[@]} -gt 0 ]]; then
+            log_info "Phase 2: Heavy analyses (sequential): ${HEAVY_ANALYSES[*]}"
             for method in "${METHODS[@]}"; do
-                run_method_analysis "$method" "$MASTER_REFERENCE"
+                log_step "Processing Method (heavy): $method"
+                for analysis in "${HEAVY_ANALYSES[@]}"; do
+                    run_single_analysis "$method" "$MASTER_REFERENCE" "$analysis"
+                done
             done
+        fi
+
+        # ── Phase 3: Figure generation (parallelisable — lightweight per job) ──
+        if [[ ${#FIGURE_ANALYSES[@]} -gt 0 ]]; then
+            if [[ "$ENABLE_GNU_PARALLEL" == "TRUE" && $JOBS -gt 1 ]] && command -v parallel &>/dev/null; then
+                log_info "Phase 3: Figure generation (GNU Parallel, $JOBS jobs): ${FIGURE_ANALYSES[*]}"
+                export_utils_for_parallel
+                export SCRIPT_DIR LOG_FILE ERROR_WARN_FILE RUN_ID
+
+                # Build method×analysis pairs (tab-separated) and parallelise
+                PARALLEL_TASKS=()
+                for method in "${METHODS[@]}"; do
+                    for analysis in "${FIGURE_ANALYSES[@]}"; do
+                        PARALLEL_TASKS+=("${method}"$'\t'"${analysis}")
+                    done
+                done
+
+                printf '%s\n' "${PARALLEL_TASKS[@]}" | parallel \
+                    -j "$JOBS" \
+                    --colsep '\t' \
+                    --halt soon,fail=1 \
+                    --joblog "$LOG_DIR/parallel_figures_${dataset}.log" \
+                    run_single_analysis {1} "$MASTER_REFERENCE" {2}
+            else
+                log_info "Phase 3: Figure generation (sequential): ${FIGURE_ANALYSES[*]}"
+                for method in "${METHODS[@]}"; do
+                    for analysis in "${FIGURE_ANALYSES[@]}"; do
+                        run_single_analysis "$method" "$MASTER_REFERENCE" "$analysis"
+                    done
+                done
+            fi
         fi
     done
 

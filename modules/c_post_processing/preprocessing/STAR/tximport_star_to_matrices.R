@@ -205,8 +205,8 @@ for (level_name in names(processing_levels)) {
     # Validate tx2gene transcript IDs match quant.sf transcript IDs
     sample_qf <- read.delim(files[1], header = TRUE, nrows = 100,
                              stringsAsFactors = FALSE)
-    qf_ids <- sub("\\.[0-9]+$", "", sample_qf$Name)  # strip version suffix
-    tx_ids <- sub("\\.[0-9]+$", "", tx2gene$TXNAME)
+    qf_ids <- sample_qf$Name
+    tx_ids <- tx2gene$TXNAME
     overlap <- length(intersect(qf_ids, tx_ids))
     match_rate <- overlap / length(qf_ids)
     if (match_rate < 0.5) {
@@ -229,7 +229,7 @@ for (level_name in names(processing_levels)) {
 
   txi <- tryCatch({
     if (!level_config$tx_out) {
-      tximport(files, type = "salmon", tx2gene = tx2gene, ignoreTxVersion = TRUE)
+      tximport(files, type = "salmon", tx2gene = tx2gene, ignoreTxVersion = FALSE)
     } else {
       tximport(files, type = "salmon", txIn = TRUE, txOut = TRUE,
                ignoreTxVersion = FALSE, ignoreAfterBar = FALSE)

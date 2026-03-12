@@ -80,9 +80,6 @@ if (GENERATE_GENE_LEVEL) {
     tx2gene <- read.delim(tx2gene_files[1], header = FALSE,
                           col.names = c("TXNAME", "GENEID"),
                           stringsAsFactors = FALSE)
-    # Pre-strip version suffixes so tximport matching works reliably
-    # (tximport 1.30 strips versions from quant IDs but not from tx2gene)
-    tx2gene$TXNAME <- sub("\\.[0-9]+$", "", tx2gene$TXNAME)
     if (nrow(tx2gene) == 0 || ncol(tx2gene) < 2) {
       cat("  Error: tx2gene file is empty or malformed:", tx2gene_files[1], "\n")
     } else {
@@ -101,8 +98,8 @@ if (GENERATE_GENE_LEVEL) {
     # Validate tx2gene transcript IDs match quant.sf transcript IDs
     sample_qf <- read.delim(quant_files[1], header = TRUE, nrows = 100,
                              stringsAsFactors = FALSE)
-    qf_ids <- sub("\\.[0-9]+$", "", sample_qf$Name)  # strip version suffix
-    tx_ids <- sub("\\.[0-9]+$", "", tx2gene$TXNAME)
+    qf_ids <- sample_qf$Name
+    tx_ids <- tx2gene$TXNAME
     overlap <- length(intersect(qf_ids, tx_ids))
     match_rate <- overlap / length(qf_ids)
     if (match_rate < 0.5) {
@@ -116,7 +113,7 @@ if (GENERATE_GENE_LEVEL) {
     } else {
 
     txi_gene <- tryCatch(
-      tximport(quant_files, type = "salmon", tx2gene = tx2gene, ignoreTxVersion = TRUE),
+      tximport(quant_files, type = "salmon", tx2gene = tx2gene, ignoreTxVersion = FALSE),
       error = function(e) { cat("  Gene-level import error:", e$message, "\n"); NULL })
 
     if (!is.null(txi_gene)) {
