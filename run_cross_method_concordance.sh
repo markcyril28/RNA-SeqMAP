@@ -71,9 +71,9 @@ GENE_GROUPS_DIR="${GENE_GROUPS_DIR:-${BASE_DIR}/inputs/gene_groups_csv/experimen
 SRR_CSV_DIR="${SRR_CSV_DIR:-${BASE_DIR}/inputs/SRR_csv}"
 
 # System resources
-THREADS="${THREADS:-64}"
+THREADS="${THREADS:-12}"
 ENABLE_GPU="${ENABLE_GPU:-FALSE}"
-AVAILABLE_RAM_GB="${AVAILABLE_RAM_GB:-128}"
+AVAILABLE_RAM_GB="${AVAILABLE_RAM_GB:-24}"
 GPU_VRAM_GB="${GPU_VRAM_GB:-8}"
 
 #===============================================================================
