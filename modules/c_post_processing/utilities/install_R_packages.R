@@ -11,6 +11,7 @@ required_cran <- c(
   "dplyr",
   "tibble",
   "readr",
+  "tidyr",
   "ggplot2",
   "RColorBrewer",
   "circlize",
@@ -19,6 +20,8 @@ required_cran <- c(
   "pheatmap",
   "ggrepel",
   "scales",
+  "data.table",
+  "matrixStats",
   "dynamicTreeCut",
   "fastcluster",
   "Rtsne",
@@ -31,7 +34,8 @@ required_cran <- c(
   "corrplot",
   "dendextend",
   "gridExtra",
-  "reshape2"
+  "reshape2",
+  "WGCNA"
 )
 
 required_bioc <- c(
@@ -42,35 +46,35 @@ required_bioc <- c(
   "tximeta",
   "AnnotationDbi",
   # org.Mm.eg.db removed — mouse annotation, not relevant for plant genomics
-  "WGCNA",
   "fgsea",
   "clusterProfiler",
   "enrichplot",
   "DOSE"
 )
 
-install_if_missing_cran <- function(pkgs) {
-  to_install <- pkgs[!(pkgs %in% installed.packages()[, "Package"]) ]
-  if (length(to_install) > 0) {
-    message("Installing CRAN packages: ", paste(to_install, collapse = ", "))
+install_if_missing <- function(pkgs, source = c("cran", "bioc")) {
+  source <- match.arg(source)
+  # Cache installed.packages() once (avoid repeated slow lookup)
+  installed <- installed.packages()[, "Package"]
+  to_install <- pkgs[!(pkgs %in% installed)]
+  if (length(to_install) == 0) {
+    message("All ", toupper(source), " packages already installed.")
+    return(invisible(NULL))
+  }
+  message("Installing ", toupper(source), " packages: ", paste(to_install, collapse = ", "))
+  if (source == "cran") {
     install.packages(to_install, repos = "https://cloud.r-project.org")
   } else {
-    message("All CRAN packages already installed.")
+    if (!requireNamespace("BiocManager", quietly = TRUE)) {
+      install.packages("BiocManager", repos = "https://cloud.r-project.org")
+    }
+    BiocManager::install(to_install, ask = FALSE, update = FALSE)
   }
 }
 
-install_if_missing_bioc <- function(pkgs) {
-  if (!requireNamespace("BiocManager", quietly = TRUE)) {
-    install.packages("BiocManager", repos = "https://cloud.r-project.org")
-  }
-  to_install <- pkgs[!(pkgs %in% installed.packages()[, "Package"]) ]
-  if (length(to_install) > 0) {
-    message("Installing Bioconductor packages: ", paste(to_install, collapse = ", "))
-    BiocManager::install(to_install, ask = FALSE, update = FALSE)
-  } else {
-    message("All Bioconductor packages already installed.")
-  }
-}
+# Backward-compatible wrappers
+install_if_missing_cran <- function(pkgs) install_if_missing(pkgs, "cran")
+install_if_missing_bioc <- function(pkgs) install_if_missing(pkgs, "bioc")
 
 message("Checking / installing CRAN packages...")
 install_if_missing_cran(required_cran)

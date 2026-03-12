@@ -61,17 +61,14 @@ calculate_cv <- function(data_matrix, is_log_scale = FALSE, margin = 1) {
     cv <- ifelse(rm > 0 & is.finite(rm) & is.finite(row_sds), row_sds / rm * 100, NA)
     return(cv)
   } else {
-    # Column-wise (per sample)
+    # Column-wise (per sample) — use sweep() to avoid large temp vector from rep()
+    cm <- colMeans(data_matrix, na.rm = TRUE)
+    centered <- sweep(data_matrix, 2, cm, "-")
+    col_sds <- sqrt(colSums(centered^2, na.rm = TRUE) / (nrow(data_matrix) - 1))
     if (is_log_scale) {
-      cm <- colMeans(data_matrix, na.rm = TRUE)
-      n_r <- nrow(data_matrix)
-      col_sds <- sqrt(colSums((data_matrix - rep(cm, each = n_r))^2, na.rm = TRUE) / (n_r - 1))
       col_sds[!is.finite(col_sds)] <- NA
       return(col_sds)
     }
-    cm <- colMeans(data_matrix, na.rm = TRUE)
-    n_r <- nrow(data_matrix)
-    col_sds <- sqrt(colSums((data_matrix - rep(cm, each = n_r))^2, na.rm = TRUE) / (n_r - 1))
     cv <- ifelse(cm > 0 & is.finite(cm) & is.finite(col_sds), col_sds / cm * 100, NA)
     return(cv)
   }
@@ -121,11 +118,11 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
         data_matrix <- data_matrix[, sort_order, drop = FALSE]
         col_cv <- col_cv[sort_order]
       } else {
-        # Genes_as_Rows: sort columns (samples) so high expression is RIGHT
-        col_means <- colMeans(data_matrix, na.rm = TRUE)
-        sort_order <- order(col_means, decreasing = FALSE)
-        data_matrix <- data_matrix[, sort_order, drop = FALSE]
-        col_cv <- col_cv[sort_order]
+        # Genes_as_Rows: sort rows (genes) so high expression is at the top
+        row_means <- rowMeans(data_matrix, na.rm = TRUE)
+        sort_order <- order(row_means, decreasing = TRUE)
+        data_matrix <- data_matrix[sort_order, , drop = FALSE]
+        row_cv <- row_cv[sort_order]
       }
     }
     
@@ -310,8 +307,10 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
     
     # Save with auto-adjusted dimensions
     png(output_path, width = img_width, height = img_height, res = 150)
+    on.exit(try(dev.off(), silent = TRUE), add = TRUE)
     draw(ht, heatmap_legend_side = LEGEND_POSITION)
     dev.off()
+    on.exit(NULL)  # clear handler after successful close
     
     # Export raw values with CV as TSV alongside the PNG
     if (exists("EXPORT_RAW_VALUES") && EXPORT_RAW_VALUES) {

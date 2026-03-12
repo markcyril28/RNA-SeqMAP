@@ -44,6 +44,7 @@ SOFT_POWER_RANGE <- 1:30           # Extended range for optimal fit
 MIN_MODULE_SIZE_DEFAULT <- 50      # STRINGENT: Larger modules only (was 30)
 MIN_MODULE_SIZE_SMALL <- 10        # STRINGENT: Min 10 genes per module (was 5)
 MERGE_CUT_HEIGHT <- 0.15           # STRINGENT: More conservative module merging (was 0.10)
+SAVE_TOM <- as.logical(Sys.getenv("WGCNA_SAVE_TOM", "FALSE"))  # TOM files are N² (~200MB for 5000 genes); disable by default
 NETWORK_TYPE <- "signed"           # "signed" preserves biological interpretation
 DEEP_SPLIT <- 2                    # STRINGENT: Moderate sensitivity (was 3, range 0-4)
 PAM_STAGE <- TRUE                  # PAM for more accurate module assignment
@@ -90,8 +91,9 @@ pick_soft_threshold <- function(data_matrix, output_dir, gene_group) {
                            networkType = NETWORK_TYPE, verbose = 0)
   
   if (GENERATE_WGCNA_FIGURES$soft_threshold_plot) {
-    png(file.path(output_dir, paste0(gene_group, "_soft_threshold.png")), 
+    png(file.path(output_dir, paste0(gene_group, "_soft_threshold.png")),
         width = 1000, height = 500, res = 100)
+    on.exit(try(dev.off(), silent = TRUE), add = TRUE)
     par(mfrow = c(1, 2))
     fit_index <- -sign(sft$fitIndices[,3]) * sft$fitIndices[,2]
     plot(sft$fitIndices[,1], fit_index,
@@ -104,6 +106,7 @@ pick_soft_threshold <- function(data_matrix, output_dir, gene_group) {
          type = "n", main = "Mean Connectivity")
     text(sft$fitIndices[,1], sft$fitIndices[,5], labels = powers, col = "red")
     dev.off()
+    on.exit(NULL)
   }
   
   fit_index <- -sign(sft$fitIndices[,3]) * sft$fitIndices[,2]
@@ -134,8 +137,9 @@ build_network_and_detect_modules <- function(data_matrix, soft_power, output_dir
   pam_stage_val <- if (exists("PAM_STAGE")) PAM_STAGE else TRUE
   
   net <- blockwiseModules(
-    data_matrix, 
+    data_matrix,
     power = soft_power,
+    maxBlockSize = ncol(data_matrix),  # Keep all genes in one block for consistent dendrogram
     networkType = NETWORK_TYPE,
     TOMType = "signed",
     minModuleSize = min_module_size,
@@ -145,7 +149,7 @@ build_network_and_detect_modules <- function(data_matrix, soft_power, output_dir
     pamStage = pam_stage_val,          # PAM for accurate gene assignment
     pamRespectsDendro = TRUE,          # PAM respects dendrogram structure
     numericLabels = TRUE,
-    saveTOMs = TRUE,                   # Save TOM for downstream analysis
+    saveTOMs = SAVE_TOM,
     saveTOMFileBase = file.path(output_dir, paste0(gene_group, "_TOM")),
     verbose = 1                        # Show progress
   )
@@ -168,14 +172,15 @@ build_network_and_detect_modules <- function(data_matrix, soft_power, output_dir
     
     # ===== PNG OUTPUT: MODULE DENDROGRAM =====
     if (OUTPUT_FORMATS$png) {
-      png(file.path(output_dir, paste0(gene_group, "_module_dendrogram.png")), 
+      png(file.path(output_dir, paste0(gene_group, "_module_dendrogram.png")),
           width = 1600, height = 800, res = 100)
-      
+      on.exit(try(dev.off(), silent = TRUE), add = TRUE)
       plotDendroAndColors(net$dendrograms[[1]], color_matrix,
                           dendroLabels = FALSE, hang = 0.03,
                           addGuide = TRUE, guideHang = 0.05,
                           main = paste0(gene_group, " - Module Dendrogram (Query genes in RED)"))
       dev.off()
+      on.exit(NULL)
     }
     
     # ===== HTML OUTPUT: INTERACTIVE MODULE SUMMARY =====
@@ -254,11 +259,13 @@ calculate_module_eigengenes <- function(data_matrix, module_colors, output_dir, 
   if (ncol(MEs) >= 2 && GENERATE_WGCNA_FIGURES$eigengene_adjacency) {
     # ===== PNG OUTPUT: EIGENGENE ADJACENCY =====
     if (OUTPUT_FORMATS$png) {
-      png(file.path(output_dir, paste0(gene_group, "_eigengene_adjacency.png")), 
+      png(file.path(output_dir, paste0(gene_group, "_eigengene_adjacency.png")),
           width = 800, height = 800, res = 100)
+      on.exit(try(dev.off(), silent = TRUE), add = TRUE)
       plotEigengeneNetworks(MEs, "", marDendro = c(0, 4, 1, 2), marHeatmap = c(3, 4, 1, 2),
                             plotDendrograms = TRUE, xLabelsAngle = 90)
       dev.off()
+      on.exit(NULL)
     }
     
     # ===== HTML OUTPUT: INTERACTIVE EIGENGENE HEATMAP =====
@@ -278,10 +285,14 @@ calculate_module_eigengenes <- function(data_matrix, module_colors, output_dir, 
             dendrogram = "both",
             margins = c(100, 100, 50, 50)
           )
-          htmlwidgets::saveWidget(hm, 
-                                  file.path(output_dir, paste0(gene_group, "_eigengene_heatmap.html")),
-                                  selfcontained = TRUE)
-          cat("  Saved interactive eigengene heatmap HTML\n")
+          tryCatch({
+            htmlwidgets::saveWidget(hm,
+                                    file.path(output_dir, paste0(gene_group, "_eigengene_heatmap.html")),
+                                    selfcontained = TRUE)
+            cat("  Saved interactive eigengene heatmap HTML\n")
+          }, error = function(e) {
+            cat("  Warning: Could not save eigengene heatmap HTML:", e$message, "\n")
+          })
         } else {
           # Fallback: simple HTML table
           html_content <- paste0(
@@ -358,13 +369,15 @@ create_correlation_network <- function(data_matrix, query_genes, output_dir, gen
   cat("  Query genes in network:", length(matched), "\n")
   
   # Get top correlated genes for each query gene
-  all_genes <- matched
-  for (qg in matched) {
-    cors <- cor_matrix[qg, ]
+  # Pre-allocate list to avoid O(n²) unique(c()) concatenation
+  top_cors_list <- vector("list", length(matched) + 1L)
+  top_cors_list[[1L]] <- matched
+  for (i in seq_along(matched)) {
+    cors <- cor_matrix[matched[i], ]
     cors <- cors[!names(cors) %in% matched]
-    top_cors <- names(sort(abs(cors), decreasing = TRUE)[1:min(N_NETWORK_GENES, length(cors))])
-    all_genes <- unique(c(all_genes, top_cors))
+    top_cors_list[[i + 1L]] <- names(sort(abs(cors), decreasing = TRUE)[1:min(N_NETWORK_GENES, length(cors))])
   }
+  all_genes <- unique(unlist(top_cors_list, use.names = FALSE))
   
   # Create adjacency for network
   sub_cor <- cor_matrix[all_genes, all_genes]
@@ -387,11 +400,12 @@ create_correlation_network <- function(data_matrix, query_genes, output_dir, gen
   if (OUTPUT_FORMATS$png) {
     png(file.path(output_dir, paste0(gene_group, "_correlation_network.png")),
         width = 1600, height = 1400, res = 120)
-    
+    on.exit(try(dev.off(), silent = TRUE), add = TRUE)
+
     set.seed(GLOBAL_RANDOM_SEED)
     layout <- layout_with_fr(g)
-    
-    plot(g, 
+
+    plot(g,
          layout = layout,
          vertex.color = colors,
          vertex.size = sizes,
@@ -403,17 +417,18 @@ create_correlation_network <- function(data_matrix, query_genes, output_dir, gen
          edge.width = E(g)$weight * 3,
          edge.color = adjustcolor("gray50", alpha.f = 0.5),
          main = paste0(gene_group, " - Correlation Network\n(Query genes in RED/BOLD)"))
-    
-    legend("bottomleft", 
-           legend = c(paste0("Query genes (n=", sum(V(g)$is_query), ")"), 
+
+    legend("bottomleft",
+           legend = c(paste0("Query genes (n=", sum(V(g)$is_query), ")"),
                       paste0("Correlated genes (n=", sum(!V(g)$is_query), ")")),
-           col = c("#B2182B", "#4393C3"), 
-           pch = 19, 
+           col = c("#B2182B", "#4393C3"),
+           pch = 19,
            pt.cex = c(2, 1.2),
            bty = "n",
            cex = 0.9)
-    
+
     dev.off()
+    on.exit(NULL)
   }
   
   # ===== HTML OUTPUT: INTERACTIVE FULL NETWORK =====
@@ -474,10 +489,14 @@ create_correlation_network <- function(data_matrix, query_genes, output_dir, gen
                  forceAtlas2Based = list(gravitationalConstant = -50))
     
     # Save HTML
-    saveWidget(vis_net, 
-               file.path(output_dir, paste0(gene_group, "_correlation_network.html")),
-               selfcontained = TRUE)
-    cat("  Saved interactive HTML:", paste0(gene_group, "_correlation_network.html"), "\n")
+    tryCatch({
+      saveWidget(vis_net,
+                 file.path(output_dir, paste0(gene_group, "_correlation_network.html")),
+                 selfcontained = TRUE)
+      cat("  Saved interactive HTML:", paste0(gene_group, "_correlation_network.html"), "\n")
+    }, error = function(e) {
+      cat("  Warning: Could not save correlation network HTML:", e$message, "\n")
+    })
   }
   
   # ===== QUERY GENE FOCUSED NETWORK =====
@@ -494,10 +513,11 @@ create_correlation_network <- function(data_matrix, query_genes, output_dir, gen
     if (OUTPUT_FORMATS$png) {
       png(file.path(output_dir, paste0(gene_group, "_query_genes_network.png")),
           width = 1200, height = 1000, res = 120)
-      
+      on.exit(try(dev.off(), silent = TRUE), add = TRUE)
+
       set.seed(GLOBAL_RANDOM_SEED)
       layout_q <- layout_with_fr(g_query)
-      
+
       plot(g_query,
            layout = layout_q,
            vertex.color = "#B2182B",
@@ -512,8 +532,9 @@ create_correlation_network <- function(data_matrix, query_genes, output_dir, gen
            edge.label = round(E(g_query)$weight, 2),
            edge.label.cex = 0.7,
            main = paste0(gene_group, " - Query Genes Co-expression\n(Edge weights = correlation)"))
-      
+
       dev.off()
+      on.exit(NULL)
     }
     
     # ===== HTML OUTPUT: INTERACTIVE QUERY GENES NETWORK =====
@@ -565,10 +586,14 @@ create_correlation_network <- function(data_matrix, query_genes, output_dir, gen
                    forceAtlas2Based = list(gravitationalConstant = -100))
       
       # Save HTML
-      saveWidget(vis_query,
-                 file.path(output_dir, paste0(gene_group, "_query_genes_network.html")),
-                 selfcontained = TRUE)
-      cat("  Saved interactive HTML:", paste0(gene_group, "_query_genes_network.html"), "\n")
+      tryCatch({
+        saveWidget(vis_query,
+                   file.path(output_dir, paste0(gene_group, "_query_genes_network.html")),
+                   selfcontained = TRUE)
+        cat("  Saved interactive HTML:", paste0(gene_group, "_query_genes_network.html"), "\n")
+      }, error = function(e) {
+        cat("  Warning: Could not save query genes network HTML:", e$message, "\n")
+      })
     }
   }
   
@@ -709,12 +734,19 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     
     cat("  Genes after variance filtering:", nrow(data_filtered), "\n")
     cat("  Query genes retained:", sum(query_genes_matched %in% rownames(data_filtered)), "\n")
-    
+
+    # Guard: ensure enough genes remain after filtering for meaningful WGCNA
+    if (nrow(data_filtered) < MIN_GENES_WGCNA) {
+      cat("  Skipped: too few genes after filtering (", nrow(data_filtered),
+          " < ", MIN_GENES_WGCNA, ")\n")
+      next
+    }
+
     # ===== STEP 6: Subsample for speed if too many genes =====
     if (nrow(data_filtered) > TOP_VAR_GENES) {
       # Keep top variable genes BUT always include query genes
-      row_means_filt <- rowMeans(data_filtered, na.rm = TRUE)
-      gene_vars_filtered <- (rowSums((data_filtered - row_means_filt)^2, na.rm = TRUE)) / (ncol(data_filtered) - 1)
+      # Reuse pre-computed gene_vars from Step 5 (already on same log2 data)
+      gene_vars_filtered <- gene_vars[rownames(data_filtered)]
       top_var_genes <- names(sort(gene_vars_filtered, decreasing = TRUE)[1:TOP_VAR_GENES])
       
       # Ensure query genes are included
@@ -766,18 +798,24 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     
     # ===== STEP 10: Hub genes =====
     hubs <- identify_hub_genes(gene_info)
-    # Mark query genes in hub list
-    hubs$Is_Query_Gene <- hubs$Gene %in% query_genes_matched
-    data.table::fwrite(hubs, file.path(output_dir, paste0(gene_group, "_hub_genes.tsv")),
-                       sep = "\t", quote = FALSE)
+    if (!is.null(hubs) && nrow(hubs) > 0) {
+      # Mark query genes in hub list
+      hubs$Is_Query_Gene <- hubs$Gene %in% query_genes_matched
+      data.table::fwrite(hubs, file.path(output_dir, paste0(gene_group, "_hub_genes.tsv")),
+                         sep = "\t", quote = FALSE)
+    } else {
+      cat("  Warning: No hub genes identified (all genes may be in grey module)\n")
+    }
     
-    # ===== STEP 11: Compute correlation matrix (once, reuse in Steps 11-13) =====
+    # ===== STEP 11: Compute correlation matrix (once, reuse in Steps 12-13) =====
     cat("  Computing gene-gene correlation matrix...\n")
-    cor_matrix <- gpu_cor(t(data_filtered))
+    # data_matrix == t(data_filtered), so reuse it directly (avoids redundant transpose allocation)
+    cor_matrix <- gpu_cor(data_matrix)
 
     # ===== STEP 12: Correlation network with query genes bold =====
     cat("  Creating correlation network...\n")
-    create_correlation_network(t(data_matrix), query_genes_matched, output_dir, gene_group,
+    # data_filtered == t(data_matrix), so pass directly (avoids redundant transpose allocation)
+    create_correlation_network(data_filtered, query_genes_matched, output_dir, gene_group,
                                cor_matrix = cor_matrix)
 
     # ===== STEP 13: Find genes co-expressed with query genes =====
@@ -800,7 +838,8 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
         )
       }
     }
-    coexpr_results <- do.call(rbind, coexpr_list)
+    coexpr_results <- data.table::rbindlist(coexpr_list, use.names = TRUE, fill = TRUE)
+    if (nrow(coexpr_results) > 0) coexpr_results <- as.data.frame(coexpr_results)
     
     if (!is.null(coexpr_results) && nrow(coexpr_results) > 0) {
       data.table::fwrite(coexpr_results,
@@ -813,19 +852,15 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     raw_results_dir <- file.path(output_dir, "raw_results")
     if (!dir.exists(raw_results_dir)) dir.create(raw_results_dir, recursive = TRUE)
     
-    # 14a: Save full correlation matrix as TSV
+    # 14a: Save full correlation matrix as TSV (single-step df construction)
     cat("    Saving correlation matrix...\n")
-    cor_df <- as.data.frame(cor_matrix)
-    cor_df$Gene <- rownames(cor_matrix)
-    cor_df <- cor_df[, c("Gene", setdiff(names(cor_df), "Gene"))]  # Move Gene to first column
+    cor_df <- data.frame(Gene = rownames(cor_matrix), cor_matrix, check.names = FALSE)
     data.table::fwrite(cor_df, file.path(raw_results_dir, paste0(gene_group, "_correlation_matrix.tsv")),
                        sep = "\t", quote = FALSE)
-    
-    # 14b: Save module eigengenes
+
+    # 14b: Save module eigengenes (single-step df construction)
     cat("    Saving module eigengenes...\n")
-    me_df <- as.data.frame(MEs)
-    me_df$Sample <- rownames(MEs)
-    me_df <- me_df[, c("Sample", setdiff(names(me_df), "Sample"))]
+    me_df <- data.frame(Sample = rownames(MEs), MEs, check.names = FALSE)
     data.table::fwrite(me_df, file.path(raw_results_dir, paste0(gene_group, "_module_eigengenes.tsv")),
                        sep = "\t", quote = FALSE)
     
@@ -858,8 +893,9 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
                        sep = "\t", quote = FALSE)
     
     # 14g: Save data matrix used (expression values)
+    # Reuse data_filtered (genes-as-rows) directly — avoids redundant t(data_matrix) allocation
     cat("    Saving expression matrix...\n")
-    expr_df <- as.data.frame(t(data_matrix))  # Genes as rows
+    expr_df <- as.data.frame(data_filtered)
     expr_df$Gene <- rownames(expr_df)
     expr_df <- expr_df[, c("Gene", setdiff(names(expr_df), "Gene"))]
     data.table::fwrite(expr_df, file.path(raw_results_dir, paste0(gene_group, "_expression_matrix.tsv")),

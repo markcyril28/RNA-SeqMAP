@@ -49,7 +49,7 @@ HIGH_MEMORY_MODE <- AVAILABLE_RAM_GB >= 16
 
 # GPU status variables (initialized later by detect_gpu())
 GPU_AVAILABLE <- FALSE
-GPU_BACKEND <- "cpu"  # "cpu", "cuda", or "torch"
+GPU_BACKEND <- "none"  # "none", "cuda", or "torch"
 
 # ===============================================
 # SECTION 2: DIRECTORY CONSTANTS
@@ -71,8 +71,8 @@ if (GENE_GROUPS_DIR == "") {
   if (nzchar(base_dir_fallback)) {
     GENE_GROUPS_DIR <- file.path(base_dir_fallback, "inputs", "gene_groups_csv")
   } else {
-    # Last-resort: walk up two levels from ANALYSIS_MODULES_DIR to reach project root
-    ANALYSIS_MODULES_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", unset = ".")
+    # Last-resort: walk up three levels from ANALYSIS_MODULES_DIR to reach project root
+    ANALYSIS_MODULES_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", unset = normalizePath(".", mustWork = FALSE))
     GENE_GROUPS_DIR <- file.path(dirname(dirname(dirname(ANALYSIS_MODULES_DIR))), "inputs", "gene_groups_csv")
   }
 }
@@ -84,8 +84,8 @@ if (SRR_CSV_DIR == "") {
   if (nzchar(base_dir_fallback)) {
     SRR_CSV_DIR <- file.path(base_dir_fallback, "inputs", "SRR_csv")
   } else {
-    ANALYSIS_MODULES_DIR_TMP <- Sys.getenv("ANALYSIS_MODULES_DIR", unset = ".")
-    SRR_CSV_DIR <- file.path(dirname(dirname(dirname(ANALYSIS_MODULES_DIR_TMP))), "inputs", "SRR_csv")
+    ANALYSIS_MODULES_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", unset = normalizePath(".", mustWork = FALSE))
+    SRR_CSV_DIR <- file.path(dirname(dirname(dirname(ANALYSIS_MODULES_DIR))), "inputs", "SRR_csv")
   }
 }
 
@@ -212,8 +212,8 @@ get_cuda_version <- function() {
 }
 
 # Detect GPU and compatible packages
-# Note: R torch 0.16.x only supports CUDA 11.6-11.8
-# For CUDA 12.x systems, GPU ops fall back to CPU
+# Note: R torch supports CUDA 11.7-11.8 and 12.1
+# For other CUDA versions, GPU ops fall back to CPU
 detect_gpu <- function() {
   if (!ENABLE_GPU) {
     return(list(available = FALSE, backend = "cpu", message = "GPU disabled by configuration"))
@@ -231,15 +231,16 @@ detect_gpu <- function() {
   
   # Check CUDA version
   cuda_info <- get_cuda_version()
-  cuda_version <- if (!is.null(cuda_info$version)) as.numeric(cuda_info$version) else 0
-  
-  # R torch 0.16.x only supports CUDA 11.6-11.8
-  torch_supported <- cuda_version >= 11.6 && cuda_version < 12.0
-  
+  cuda_version <- if (!is.null(cuda_info$version)) suppressWarnings(as.numeric(cuda_info$version)) else 0
+  if (is.na(cuda_version)) cuda_version <- 0  # Guard against unparseable version strings (e.g., "12.1.1")
+
+  # R torch supports CUDA 11.7, 11.8, and 12.1
+  torch_supported <- (cuda_version >= 11.7 && cuda_version <= 11.8) || (cuda_version >= 12.1 && cuda_version < 12.2)
+
   if (!is.null(cuda_info$version)) {
     message("[GPU] CUDA ", cuda_info$version, " detected (", cuda_info$source, ")")
     if (!torch_supported) {
-      message("[GPU] Note: R torch 0.16.x requires CUDA 11.6-11.8, found ", cuda_info$version)
+      message("[GPU] Note: R torch requires CUDA 11.7, 11.8, or 12.1, found ", cuda_info$version)
       message("[GPU] GPU matrix operations will use CPU. This does not affect pipeline results.")
     }
   }
@@ -277,13 +278,13 @@ detect_gpu <- function() {
 
 # Detect quantification method type from CURRENT_METHOD
 get_method_type <- function(method = CURRENT_METHOD) {
-  if (grepl("HISAT2|StringTie|M1|M2", method, ignore.case = TRUE)) {
+  if (grepl("HISAT2|StringTie|M1_|M2_|^M1$|^M2$", method, ignore.case = TRUE)) {
     return("stringtie")
-  } else if (grepl("Salmon|M4", method, ignore.case = TRUE)) {
+  } else if (grepl("Salmon|M4_|^M4$", method, ignore.case = TRUE)) {
     return("salmon")
-  } else if (grepl("RSEM|M5", method, ignore.case = TRUE)) {
+  } else if (grepl("RSEM|M5_|^M5$", method, ignore.case = TRUE)) {
     return("rsem")
-  } else if (grepl("STAR|M3", method, ignore.case = TRUE)) {
+  } else if (grepl("STAR|M3_|^M3$", method, ignore.case = TRUE)) {
     return("star")
   }
   return("unknown")
@@ -344,6 +345,7 @@ get_norm_schemes <- function(count_type) {
       "raw",                    # No transformation - for DESeq2 input
       "deseq2_normalized",      # Median-of-ratios + log2
       "zscore",                 # Z-score after log2
+      "zscore_row",             # Z-score per-gene (row-wise)
       "zscore_scaled_to_ten",   # Z-score scaled 0-10
       "cpm"                     # Counts Per Million + log2
     ))
@@ -355,6 +357,7 @@ get_norm_schemes <- function(count_type) {
       "count_type_normalized",  # Log2(x+1) - useful for visualization
       "raw",                    # No transformation - for inspection
       "zscore",                 # Z-score after log2 (global)
+      "zscore_row",             # Z-score per-gene (row-wise)
       "zscore_scaled_to_ten"    # Z-score scaled 0-10
     ))
   } else {
@@ -459,6 +462,7 @@ load_sample_labels_from_csv <- function(srr_csv_dir = SRR_CSV_DIR) {
 read_config_file <- function(file_path, default_value, is_boolean = FALSE) {
   if (!file.exists(file_path)) return(default_value)
   value <- trimws(readLines(file_path, warn = FALSE))
+  if (length(value) == 0 || !nzchar(value[1])) return(default_value)
   if (is_boolean) {
     return(tolower(value[1]) == "true")
   } else {
@@ -594,14 +598,14 @@ build_title_base <- function(gene_group, count_type, gene_type, label_type,
 
 validate_and_read_matrix <- function(input_file, min_rows = 2) {
   if (!file.exists(input_file)) {
-    return(list(success = FALSE, reason = "file not found"))
+    return(list(success = FALSE, reason = "file not found", data = NULL, n_genes = 0L))
   }
   matrix_data <- read_count_matrix(input_file)
   if (is.null(matrix_data)) {
-    return(list(success = FALSE, reason = "failed to read"))
+    return(list(success = FALSE, reason = "failed to read", data = NULL, n_genes = 0L))
   }
   if (nrow(matrix_data) < min_rows) {
-    return(list(success = FALSE, reason = paste0("need >=", min_rows, " rows")))
+    return(list(success = FALSE, reason = paste0("need >=", min_rows, " rows"), data = NULL, n_genes = 0L))
   }
   list(success = TRUE, data = matrix_data, n_genes = nrow(matrix_data))
 }

@@ -73,8 +73,9 @@ process_all_combinations <- function(
   })))
   
   if (length(active_count_types) == 0) {
-    cat("  Warning: No valid count types for method", CURRENT_METHOD, 
+    cat("  Warning: No valid count types for method", CURRENT_METHOD,
         "- configured:", paste(COUNT_TYPES, collapse = ","), "\n")
+    return(counters)
   }
   
   # For StringTie, processing_level is not used in path, so use a placeholder
@@ -114,24 +115,25 @@ process_all_combinations <- function(
             # Sequential processing for normalization schemes
             # Filter configured NORM_SCHEMES to only those valid for this count type
             # (e.g., "raw"/"cpm"/"deseq2_normalized" are invalid for pre-normalized TPM/FPKM)
-            active_norm_schemes <- NORM_SCHEMES[sapply(NORM_SCHEMES, function(ns) is_valid_norm_for_count(count_type, ns))]
-            # Pre-compute log2 once for all norm schemes that need it (avoids redundant computation)
+            valid_schemes <- get_norm_schemes(count_type)
+            active_norm_schemes <- NORM_SCHEMES[NORM_SCHEMES %in% valid_schemes]
+            # Pre-apply labels to raw data ONCE (independent of norm_scheme)
+            # Normalization only changes values, not row/column structure,
+            # so we label once and normalize the labeled data directly.
+            raw_labeled <- apply_labels(validation$data, gene_group, gene_type, label_type)
+            # Pre-compute log2 once on labeled data for all norm schemes that need it
             .log2_cache <- NULL
             needs_log2 <- any(active_norm_schemes %in% c("count_type_normalized", "zscore", "zscore_row", "zscore_scaled_to_ten"))
             if (needs_log2) {
-              .log2_cache <- preprocess_for_count_type_normalized(validation$data, count_type)
+              .log2_cache <- preprocess_for_count_type_normalized(raw_labeled, count_type)
             }
             for (norm_scheme in active_norm_schemes) {
-              data_normalized <- apply_normalization(validation$data, norm_scheme, count_type, .log2_cache)
-              
-              if (is.null(data_normalized)) {
+              normalized_labeled <- apply_normalization(raw_labeled, norm_scheme, count_type, .log2_cache)
+
+              if (is.null(normalized_labeled)) {
                 cat("    Failed normalization:", norm_scheme, "\n")
                 next
               }
-              
-              # Apply gene/sample label transformations based on gene_type and label_type
-              raw_labeled <- apply_labels(validation$data, gene_group, gene_type, label_type)
-              normalized_labeled <- apply_labels(data_normalized, gene_group, gene_type, label_type)
               
               callback_result <- processing_callback(
                 gene_group = gene_group,

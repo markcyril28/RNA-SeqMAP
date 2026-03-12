@@ -75,6 +75,7 @@ create_correlation_heatmap <- function(cor_matrix, output_path, title,
     }
     
     png(output_path, width = 1000, height = 900, res = 100)
+    on.exit(try(dev.off(), silent = TRUE), add = TRUE)
     # Strip R's make.unique suffixes (.1, .2) from organ labels for display
     clean_labels <- sub("\\.[0-9]+$", "", rownames(cor_matrix))
     pheatmap(
@@ -94,6 +95,7 @@ create_correlation_heatmap <- function(cor_matrix, output_path, title,
       border_color = NA
     )
     dev.off()
+    on.exit(NULL)
     
     cat("    Generated:", basename(output_path), "\n")
     return(TRUE)
@@ -115,8 +117,10 @@ create_dendrogram <- function(cor_matrix, output_path, title) {
     hc$labels <- sub("\\.[0-9]+$", "", hc$labels)
     
     png(output_path, width = 1000, height = 600, res = 100)
+    on.exit(try(dev.off(), silent = TRUE), add = TRUE)
     plot(hc, main = title, xlab = "", sub = "", hang = -1)
     dev.off()
+    on.exit(NULL)
     
     return(hc)
   }, error = function(e) {

@@ -211,8 +211,10 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
   fig_height <- max(700, 200 + n_genes * 35)
   png(file.path(FIGURES_DIR, paste0("ranking_heatmap_", gene_group, ".png")),
       width = 1600, height = fig_height, res = 150)
+  on.exit(try(dev.off(), silent = TRUE), add = TRUE)
   draw(ht, padding = unit(c(30, 30, 25, 40), "mm"))
   dev.off()
+  on.exit(NULL)
   cat("  Saved: ranking_heatmap_", gene_group, ".png\n", sep = "")
 
   # -----------------------------------------------
@@ -276,8 +278,10 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
 
   png(file.path(FIGURES_DIR, paste0("zscore_heatmap_", gene_group, ".png")),
       width = 1600, height = fig_height, res = 150)
+  on.exit(try(dev.off(), silent = TRUE), add = TRUE)
   draw(ht_z, padding = unit(c(30, 30, 25, 40), "mm"))
   dev.off()
+  on.exit(NULL)
   cat("  Saved: zscore_heatmap_", gene_group, ".png\n", sep = "")
 
   # Save Z-score table
@@ -310,6 +314,7 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
 
   png(file.path(FIGURES_DIR, paste0("ranking_bump_chart_", gene_group, ".png")),
       width = max(1200, 260 * n_methods_plot), height = max(850, 120 + n_genes * 40), res = 150)
+  on.exit(try(dev.off(), silent = TRUE), add = TRUE)
 
   par(mar = c(10, 10, 6, 20), xpd = TRUE)
   plot(1, type = "n",
@@ -343,6 +348,7 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
          bg = "white")
 
   dev.off()
+  on.exit(NULL)
   cat("  Saved: ranking_bump_chart_", gene_group, ".png\n", sep = "")
 }
 

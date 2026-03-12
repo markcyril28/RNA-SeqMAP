@@ -13,12 +13,26 @@
 # Usage: mapfile -t SRR_LIST < <(parse_srr_csv "path/to/file.csv")
 parse_srr_csv() {
     local csv_file="$1"
-    [[ ! -f "$csv_file" ]] && { echo "Warning: CSV not found: $csv_file" >&2; return; }
+    [[ ! -f "$csv_file" ]] && { log_warn "CSV not found: $csv_file" >&2; return 1; }
     
     while IFS=',' read -r srr_id organ notes || [[ -n "$srr_id" ]]; do
         [[ "$srr_id" =~ ^#.*$ || "$srr_id" == "SRR_ID" || -z "$srr_id" ]] && continue
         echo "${srr_id}:${organ}"
     done < "$csv_file"
+}
+
+#===============================================================================
+# ARRAY REBUILD HELPER (bash arrays cannot be exported to subshells)
+#===============================================================================
+
+# Rebuild GENE_GROUPS and ANALYSES arrays from exported string representations.
+# GNU Parallel workers arrive with arrays empty — call this in any parallel entry point.
+# Guard: skip if already rebuilt in this process (saves ~100 redundant splits in large runs).
+_rebuild_exported_arrays() {
+    [[ "${_ARRAYS_REBUILT:-}" == "$$" ]] && return 0
+    [[ -n "${GENE_GROUPS_STR:-}" ]] && IFS=' ' read -ra GENE_GROUPS <<< "$GENE_GROUPS_STR"
+    [[ -n "${ANALYSES_STR:-}" ]]    && IFS=' ' read -ra ANALYSES    <<< "$ANALYSES_STR"
+    _ARRAYS_REBUILT="$$"
 }
 
 #===============================================================================
@@ -96,34 +110,18 @@ get_preprocessing_script() {
 # ANALYSIS CLASSIFICATION
 #===============================================================================
 
-# Analyses that are thread-intensive and must NOT be parallelised across methods.
-# These get full THREADS when running sequentially.
-_SEQUENTIAL_ANALYSES=(
-    "Matrix_Creation"
-    "Differential_Expression"
-    "Coexpression_using_WGCNA"
-    "Gene_Set_Enrichment"
-    "PCA_Dimensionality_Reduction"
-)
-
-# Analyses that are lightweight figure-generation tasks — safe to parallelise.
-_PARALLEL_ANALYSES=(
-    "Basic_Heatmap"
-    "Heatmap_with_CV"
-    "BarGraph"
-    "Sample_Correlation_Clustering"
-    "Tissue_Specificity"
-)
-
 # Check whether an analysis belongs to the parallelisable (figure) set.
+# Thread-intensive analyses (Matrix_Creation, Differential_Expression,
+# Coexpression_using_WGCNA, Gene_Set_Enrichment, PCA_Dimensionality_Reduction)
+# are NOT figure analyses and run sequentially with full THREADS.
 # Note: list is inlined because bash cannot export arrays to GNU Parallel subshells.
+# Uses case for O(1) pattern match instead of O(n) loop.
 # Usage: is_figure_analysis "Basic_Heatmap" && echo yes
 is_figure_analysis() {
-    local a
-    for a in Basic_Heatmap Heatmap_with_CV BarGraph Sample_Correlation_Clustering Tissue_Specificity; do
-        [[ "$1" == "$a" ]] && return 0
-    done
-    return 1
+    case "$1" in
+        Basic_Heatmap|Heatmap_with_CV|BarGraph|Sample_Correlation_Clustering|Tissue_Specificity) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 #===============================================================================
@@ -140,7 +138,7 @@ setup_method_env() {
     # Create the method output directory if it doesn't exist yet (first post-processing run).
     mkdir -p "$method_dir"
 
-    pushd "$method_dir" > /dev/null
+    pushd "$method_dir" > /dev/null || { log_error "Cannot cd to $method_dir"; return 1; }
 
     export CURRENT_METHOD="$method" MASTER_REFERENCE="$master_ref"
     export METHOD_BASE_DIR="$method_dir"
@@ -152,10 +150,8 @@ setup_method_env() {
 
     export GENE_GROUPS_DIR="$BASE_DIR/inputs/gene_groups_csv"
 
-    # Rebuild arrays from exported strings — bash arrays are not exported to subshells,
-    # so GNU Parallel workers arrive with GENE_GROUPS/ANALYSES empty.
-    [[ -n "${GENE_GROUPS_STR:-}" ]] && IFS=' ' read -ra GENE_GROUPS <<< "$GENE_GROUPS_STR"
-    [[ -n "${ANALYSES_STR:-}" ]]    && IFS=' ' read -ra ANALYSES    <<< "$ANALYSES_STR"
+    # Rebuild arrays from exported strings (bash arrays are not exported to subshells)
+    _rebuild_exported_arrays
 
     # Setup temp config files for R scripts (written to the method's post-proc dir)
     printf '%s\n' "${GENE_GROUPS[@]}" > ".gene_groups_temp.txt"
@@ -173,12 +169,12 @@ run_method_preprocessing() {
     local method=$1 master_ref=$2
     local method_dir="$BASE_DIR/3_POST_PROC/$method"
 
-    pushd "$method_dir" > /dev/null
+    pushd "$method_dir" > /dev/null || { log_error "Cannot cd to $method_dir"; return 1; }
 
     export CURRENT_METHOD="$method" MASTER_REFERENCE="$master_ref"
     export METHOD_BASE_DIR="$method_dir"
 
-    [[ -n "${ANALYSES_STR:-}" ]] && IFS=' ' read -ra ANALYSES <<< "$ANALYSES_STR"
+    _rebuild_exported_arrays
 
     # For M3/M4/M5: skip tximport preprocessing when Matrix_Creation is also enabled —
     # the method-specific 3_Matrix_Creation_*.R script supersedes the tximport step.
@@ -211,13 +207,13 @@ run_single_analysis() {
     local method=$1 master_ref=$2 analysis=$3
     local method_dir="$BASE_DIR/3_POST_PROC/$method"
 
-    pushd "$method_dir" > /dev/null
+    pushd "$method_dir" > /dev/null || { log_error "Cannot cd to $method_dir"; return 1; }
 
     export CURRENT_METHOD="$method" MASTER_REFERENCE="$master_ref"
     export METHOD_BASE_DIR="$method_dir"
 
     # Rebuild arrays in case we are inside a GNU Parallel subshell
-    [[ -n "${GENE_GROUPS_STR:-}" ]] && IFS=' ' read -ra GENE_GROUPS <<< "$GENE_GROUPS_STR"
+    _rebuild_exported_arrays
 
     # Skip legacy preprocessing analysis names
     if [[ "$analysis" =~ ^(Tximport_Salmon|Tximport_RSEM|Tximport_STAR|Stringtie_Matrix)$ ]]; then
@@ -272,7 +268,7 @@ run_method_analysis() {
     setup_method_env "$method" "$master_ref"
     run_method_preprocessing "$method" "$master_ref"
 
-    [[ -n "${ANALYSES_STR:-}" ]] && IFS=' ' read -ra ANALYSES <<< "$ANALYSES_STR"
+    _rebuild_exported_arrays
 
     for analysis in "${ANALYSES[@]}"; do
         [[ -z "$analysis" ]] && continue
@@ -294,6 +290,7 @@ export_utils_for_parallel() {
     # Export error/warning regex patterns used by capture_stderr_errors
     export _ERROR_PATTERN _WARN_PATTERN 2>/dev/null || true
     # Export pipeline functions
+    export -f _rebuild_exported_arrays
     export -f run_method_analysis run_single_analysis setup_method_env run_method_preprocessing
     export -f is_figure_analysis get_analysis_script get_matrix_creation_script get_preprocessing_script parse_srr_csv
 }

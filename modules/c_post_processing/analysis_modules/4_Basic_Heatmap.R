@@ -57,9 +57,9 @@ generate_heatmap_violet <- function(data_matrix, output_path, title,
         col_means <- colMeans(data_matrix, na.rm = TRUE)
         data_matrix <- data_matrix[, order(col_means, decreasing = TRUE), drop = FALSE]
       } else {
-        # Genes_as_Rows: sort columns (samples) so high expression is RIGHT
-        col_means <- colMeans(data_matrix, na.rm = TRUE)
-        data_matrix <- data_matrix[, order(col_means, decreasing = FALSE), drop = FALSE]
+        # Genes_as_Rows: sort rows (genes) so high expression is at the top
+        row_means <- rowMeans(data_matrix, na.rm = TRUE)
+        data_matrix <- data_matrix[order(row_means, decreasing = TRUE), , drop = FALSE]
       }
     }
     
@@ -179,8 +179,10 @@ generate_heatmap_violet <- function(data_matrix, output_path, title,
     
     # Save with auto-adjusted dimensions
     png(output_path, width = img_width, height = img_height, res = 150)
+    on.exit(try(dev.off(), silent = TRUE), add = TRUE)
     draw(ht, heatmap_legend_side = LEGEND_POSITION)
     dev.off()
+    on.exit(NULL)  # clear handler after successful close
     
     # Export raw values as TSV alongside the PNG
     if (exists("EXPORT_RAW_VALUES") && EXPORT_RAW_VALUES) {

@@ -39,25 +39,30 @@ fits_in_gpu_vram <- function(nrow, ncol, safety_factor = 0.7) {
 # GPU-accelerated correlation matrix computation
 # WGCNA cor() is the bottleneck for large datasets
 gpu_cor <- function(x, method = "pearson") {
-  # Check if matrix fits in GPU VRAM
-  if (!GPU_AVAILABLE || nrow(x) < 100 || !fits_in_gpu_vram(nrow(x), ncol(x))) {
-    if (GPU_AVAILABLE && !fits_in_gpu_vram(nrow(x), ncol(x))) {
+  # GPU path only supports Pearson; fall back to CPU for Spearman/Kendall
+  if (!GPU_AVAILABLE || nrow(x) < 100 || !fits_in_gpu_vram(nrow(x), ncol(x)) || method != "pearson") {
+    if (GPU_AVAILABLE && method != "pearson") {
+      message("[GPU] ", method, " correlation not supported on GPU, using CPU")
+    } else if (GPU_AVAILABLE && !fits_in_gpu_vram(nrow(x), ncol(x))) {
       message("[GPU] Matrix too large for ", GPU_VRAM_GB, "GB VRAM, using CPU")
     }
-    # Use CPU for small matrices, large matrices, or when GPU unavailable
+    # Use CPU for small matrices, large matrices, non-Pearson, or when GPU unavailable
     return(cor(x, method = method, use = "pairwise.complete.obs"))
   }
-  
+
   tryCatch({
     if (GPU_BACKEND == "torch") {
       # Use torch for GPU column-column correlation (matching R's cor())
       x_tensor <- torch::torch_tensor(as.matrix(x), device = "cuda")
+      n <- x_tensor$size(0)
+      if (n < 2) stop("Need at least 2 rows for correlation")
       # Center columns: mean(dim=0) averages across rows for each column
       x_centered <- x_tensor - x_tensor$mean(dim = 0, keepdim = TRUE)
       # Column-column covariance: t(X_c) %*% X_c / (nrow - 1)
-      cov_matrix <- torch::torch_mm(x_centered$t(), x_centered) / (x_tensor$size(0) - 1)
-      # Compute standard deviations of columns
+      cov_matrix <- torch::torch_mm(x_centered$t(), x_centered) / (n - 1)
+      # Compute standard deviations of columns (clamp to avoid division by zero for constant columns)
       std_dev <- torch::torch_sqrt(torch::torch_diag(cov_matrix))
+      std_dev <- torch::torch_clamp(std_dev, min = 1e-12)
       # Compute correlation
       cor_matrix <- cov_matrix / torch::torch_outer(std_dev, std_dev)
       result <- as.matrix(cor_matrix$cpu())
@@ -100,7 +105,7 @@ gpu_prcomp <- function(x, center = TRUE, scale. = FALSE, rank. = NULL) {
         x_mat <- sweep(x_mat, 2, col_means, "-")
       }
       if (scale.) {
-        col_sds <- apply(x_mat, 2, sd, na.rm = TRUE)
+        col_sds <- matrixStats::colSds(x_mat, na.rm = TRUE)
         col_sds[col_sds == 0] <- 1
         x_mat <- sweep(x_mat, 2, col_sds, "/")
       }
@@ -208,15 +213,20 @@ read_count_matrix <- function(file_path) {
     data <- data.table::fread(file_path, header = TRUE, sep = "\t",
                               na.strings = c("", "NA", "null"),
                               data.table = FALSE)
+    # Normalize duplicate column names: fread uses "_1" suffixes but downstream
+    # code (apply_labels, replicate averaging) expects ".1" from make.unique()
+    if (any(duplicated(colnames(data)))) {
+      colnames(data) <- make.unique(colnames(data))
+    }
     if (any(duplicated(data[, 1]))) {
       data[, 1] <- make.unique(as.character(data[, 1]), sep = "_")
     }
     rownames(data) <- data[, 1]
     data <- data[, -1, drop = FALSE]
-    for (i in seq_len(ncol(data))) {
-      if (!is.numeric(data[, i])) {
-        data[, i] <- suppressWarnings(as.numeric(as.character(data[, i])))
-      }
+    # Vectorized type coercion: identify non-numeric columns in one pass, convert in bulk
+    non_num <- which(!vapply(data, is.numeric, logical(1)))
+    if (length(non_num) > 0) {
+      data[non_num] <- lapply(data[non_num], function(x) suppressWarnings(as.numeric(as.character(x))))
     }
     data_matrix <- as.matrix(data)
     data_matrix[is.na(data_matrix)] <- 0
@@ -293,47 +303,53 @@ match_gene_ids <- function(gene_list, data_rownames) {
   base_ids <- sub("\\.[0-9]+\\.[0-9]+$", "", data_rownames)
   base_ids <- sub("\\.[0-9]+$", "", base_ids)
 
-  # Build lookup: base_id -> data_rownames (vectorized)
+  # Build lookup: base_id -> data_rownames indices (vectorized, O(n) via split)
   # Use environment as hash map for O(1) lookups
   base_to_rows <- new.env(hash = TRUE, parent = emptyenv(), size = length(data_rownames))
-  for (i in seq_along(data_rownames)) {
-    key <- base_ids[i]
-    existing <- base_to_rows[[key]]
-    if (is.null(existing)) {
-      base_to_rows[[key]] <- data_rownames[i]
-    } else {
-      base_to_rows[[key]] <- c(existing, data_rownames[i])
-    }
+  # split() + seq_along avoids O(n²) c() concatenation that occurs with incremental appends
+  idx_groups <- split(seq_along(data_rownames), base_ids)
+  for (nm in names(idx_groups)) {
+    base_to_rows[[nm]] <- idx_groups[[nm]]
+  }
+  # Resolve indices to row names (deferred to avoid repeated string concatenation)
+  .resolve_rows <- function(key) {
+    idx <- base_to_rows[[key]]
+    if (is.null(idx)) return(NULL)
+    data_rownames[idx]
   }
   rowname_set <- new.env(hash = TRUE, parent = emptyenv(), size = length(data_rownames))
   for (rn in data_rownames) rowname_set[[rn]] <- TRUE
 
   # Vectorized: exact matches first
   exact_mask <- gene_list %in% data_rownames
-  matched <- gene_list[exact_mask]
+  matched_list <- list(gene_list[exact_mask])
 
   # Non-exact: try forward match (gene_list ID is base -> find suffixed data rows)
+  # Pre-allocate list to avoid O(n²) c() concatenation
   non_exact <- gene_list[!exact_mask]
   if (length(non_exact) > 0) {
-    for (gene in non_exact) {
-      hits <- base_to_rows[[gene]]
+    ne_results <- vector("list", length(non_exact))
+    for (i in seq_along(non_exact)) {
+      gene <- non_exact[i]
+      hits <- .resolve_rows(gene)
       if (!is.null(hits)) {
-        matched <- c(matched, hits)
+        ne_results[[i]] <- hits
       } else {
         # Reverse: strip suffix from gene_list ID to match base-level row IDs
         gene_base <- sub("\\.[0-9]+$", "", gene)
         if (gene_base != gene) {
-          hits2 <- base_to_rows[[gene_base]]
+          hits2 <- .resolve_rows(gene_base)
           if (!is.null(hits2)) {
-            matched <- c(matched, hits2)
+            ne_results[[i]] <- hits2
           } else if (!is.null(rowname_set[[gene_base]])) {
-            matched <- c(matched, gene_base)
+            ne_results[[i]] <- gene_base
           }
         }
       }
     }
+    matched_list <- c(matched_list, ne_results)
   }
-  unique(matched)
+  unique(unlist(matched_list, use.names = FALSE))
 }
 
 # ===============================================
@@ -547,21 +563,35 @@ convert_to_organ_labels <- function(counts_matrix) {
 # GENE NAME CONVERSION
 # ===============================================
 
+# Cache for gene_groups_csv directory listing (avoids repeated list.files() calls)
+.gene_groups_csv_cache <- new.env(hash = TRUE, parent = emptyenv())
+
+.find_gene_group_csv <- function(gene_group, gene_groups_dir) {
+  # Check top-level first (fast path)
+  csv_file <- file.path(gene_groups_dir, paste0(gene_group, ".csv"))
+  if (file.exists(csv_file)) return(csv_file)
+
+  # Build/reuse cached directory listing (one list.files call per gene_groups_dir)
+  cache_key <- gene_groups_dir
+  if (is.null(.gene_groups_csv_cache[[cache_key]])) {
+    all_files <- list.files(gene_groups_dir, pattern = "\\.csv$",
+                            recursive = TRUE, full.names = TRUE)
+    file_map <- setNames(all_files, tools::file_path_sans_ext(basename(all_files)))
+    .gene_groups_csv_cache[[cache_key]] <- file_map
+  }
+  file_map <- .gene_groups_csv_cache[[cache_key]]
+  if (gene_group %in% names(file_map)) return(file_map[[gene_group]])
+  return(csv_file)  # return original (non-existent) path for downstream file.exists check
+}
+
 # Load gene name mapping from gene_groups CSV files or reference gene_info.csv
 # Supported CSV formats:
 #   - Gene_ID,Shortened_Name,...
-#   - Gene,Shortened_Name,...  
+#   - Gene,Shortened_Name,...
 #   - Gene_ID,Name,... (for reference gene_info.csv files)
 load_gene_name_mapping <- function(gene_group, gene_groups_dir = GENE_GROUPS_DIR) {
-  # First check gene_groups_csv directory
-  csv_file <- file.path(gene_groups_dir, paste0(gene_group, ".csv"))
-  
-  # Search subdirectories if not found at top level
-  if (!file.exists(csv_file)) {
-    hits <- list.files(gene_groups_dir, pattern = paste0("^", gene_group, "\\.csv$"),
-                       recursive = TRUE, full.names = TRUE)
-    if (length(hits) > 0) csv_file <- hits[1]
-  }
+  # Use cached directory listing for fast CSV lookup
+  csv_file <- .find_gene_group_csv(gene_group, gene_groups_dir)
   
   # If not found, check if it's a reference with a gene_info.csv
   if (!file.exists(csv_file)) {
@@ -615,30 +645,30 @@ convert_to_shortened_names <- function(counts_matrix, gene_group) {
   if (is.null(mapping)) return(counts_matrix)
   
   current_rownames <- rownames(counts_matrix)
-  new_rownames <- mapping[current_rownames]
-  
-  # For rows that didn't match, try stripping transcript suffix (.X.XX)
-  # This handles RSEM/Salmon transcript IDs like "SMEL4.1_06g023900.1.01" or "SMEL4.1_06g023900.1"
-  # when the mapping uses gene IDs like "SMEL4.1_06g023900"
-  unmatched_idx <- is.na(new_rownames)
-  if (any(unmatched_idx)) {
-    # First try removing trailing .X.XX suffix (e.g., .1.01 for RSEM)
-    base_ids <- sub("\\.[0-9]+\\.[0-9]+$", "", current_rownames[unmatched_idx])
-    new_rownames[unmatched_idx] <- mapping[base_ids]
 
-    # For still unmatched, try removing single .X suffix (e.g., .1 for Salmon)
-    still_unmatched_after_first <- is.na(new_rownames) & unmatched_idx
-    if (any(still_unmatched_after_first)) {
-      base_ids_single <- sub("\\.[0-9]+$", "", current_rownames[still_unmatched_after_first])
-      new_rownames[still_unmatched_after_first] <- mapping[base_ids_single]
-    }
+  # Vectorized multi-level suffix stripping: compute all variants at once,
+  # then cascade matches (exact → strip .X.XX → strip .X → reverse lookup)
+  base_double <- sub("\\.[0-9]+\\.[0-9]+$", "", current_rownames)
+  base_single <- sub("\\.[0-9]+$", "", base_double)
+
+  # Cascade: first match wins (avoids repeated subset+reassign passes)
+  new_rownames <- mapping[current_rownames]
+  na_mask <- is.na(new_rownames)
+  if (any(na_mask)) {
+    hits2 <- mapping[base_double[na_mask]]
+    new_rownames[na_mask] <- hits2
+    na_mask <- is.na(new_rownames)
+  }
+  if (any(na_mask)) {
+    hits3 <- mapping[base_single[na_mask]]
+    new_rownames[na_mask] <- hits3
+    na_mask <- is.na(new_rownames)
   }
 
   # Reverse lookup: row ID is shorter than mapping key (e.g., gene-level "SMEL5_06g022750"
   # when mapping has transcript-level "SMEL5_06g022750.1" as key).
   # Build a stripped-key mapping and try matching.
-  still_unmatched <- is.na(new_rownames)
-  if (any(still_unmatched)) {
+  if (any(na_mask)) {
     mapping_keys <- names(mapping)
     stripped_keys <- sub("\\.[0-9]+$", "", mapping_keys)
     # Only use entries where stripping actually changed the key (avoids false matches)
@@ -647,14 +677,14 @@ convert_to_shortened_names <- function(counts_matrix, gene_group) {
       reverse_mapping <- setNames(mapping[changed], stripped_keys[changed])
       # Remove duplicates (keep first occurrence)
       reverse_mapping <- reverse_mapping[!duplicated(names(reverse_mapping))]
-      reverse_hits <- reverse_mapping[current_rownames[still_unmatched]]
-      new_rownames[still_unmatched] <- reverse_hits
+      reverse_hits <- reverse_mapping[current_rownames[na_mask]]
+      new_rownames[na_mask] <- reverse_hits
     }
   }
 
   # Keep original name if still no mapping found
-  still_unmatched <- is.na(new_rownames)
-  new_rownames[still_unmatched] <- current_rownames[still_unmatched]
+  na_mask <- is.na(new_rownames)
+  new_rownames[na_mask] <- current_rownames[na_mask]
   
   result <- counts_matrix
   rownames(result) <- new_rownames
@@ -682,15 +712,19 @@ apply_labels <- function(counts_matrix, gene_group, gene_type, label_type) {
       ordered_organs <- ordered_organs[!is.na(ordered_organs)]
       # Match against base organ names (stripped of .1/.2 suffixes) so that
       # duplicates like "Flower_Buds.1" correctly match "Flower_Buds".
-      matched_indices <- integer(0)
+      # Pre-allocate result vector instead of O(n²) c() concatenation
+      matched_indices <- integer(length(ordered_organs))
       used <- logical(ncol(result))
+      n_matched <- 0L
       for (organ in ordered_organs) {
         candidates <- which(base_cols == organ & !used)
         if (length(candidates) > 0) {
-          matched_indices <- c(matched_indices, candidates[1])
+          n_matched <- n_matched + 1L
+          matched_indices[n_matched] <- candidates[1]
           used[candidates[1]] <- TRUE
         }
       }
+      matched_indices <- matched_indices[seq_len(n_matched)]
       # Columns not matched by the expected order (keep at end)
       unmatched_indices <- which(!used)
       ordered_indices <- c(matched_indices, unmatched_indices)
@@ -772,4 +806,3 @@ get_cv_color_scale <- function(n_breaks = 100) {
   colorRampPalette(c("#4A148C", "#7B1FA2", "#9C27B0", "#AB47BC",
                      "#BA68C8", "#CE93D8", "#E1BEE7", "#F3E5F5"))(n_breaks)
 }
-#c("#dab3ddff","#d9afe0ff","#c57fd1ff","#ac44beff","#8E24AA","#6A1B9A","#4A148C","#2F1B69")

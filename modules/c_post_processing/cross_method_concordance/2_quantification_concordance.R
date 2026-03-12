@@ -143,8 +143,10 @@ ht <- Heatmap(median_spearman,
 
 png(file.path(FIGURES_DIR, "method_concordance_heatmap_spearman.png"),
     width = 1600, height = 1300, res = 150)
+on.exit(try(dev.off(), silent = TRUE), add = TRUE)
 draw(ht, padding = unit(c(30, 30, 25, 40), "mm"))
 dev.off()
+on.exit(NULL)
 cat("  Saved: method_concordance_heatmap_spearman.png\n")
 
 # -----------------------------------------------
