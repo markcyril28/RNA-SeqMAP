@@ -3,7 +3,7 @@
 # MODULES LOADER - SINGLE ENTRY POINT
 # ==============================================================================
 # Loads all HeatSeq pipeline modules in correct dependency order
-# Usage: source "modules/modules.sh"
+# Usage: source "modules/modules_loader.sh"
 #
 # Structure:
 #   logging/           - Logging utilities
