@@ -213,12 +213,12 @@ for (level_name in names(processing_levels)) {
     txi <- tximport(files, type = "salmon",
                     txIn = TRUE, txOut = FALSE,
                     tx2gene = tx2gene,
-                    ignoreTxVersion = TRUE, ignoreAfterBar = FALSE)
+                    ignoreTxVersion = FALSE, ignoreAfterBar = FALSE)
   } else {
     # Isoform-level: no tx2gene needed
     cat("  Importing at transcript level...\n")
     txi <- tximport(files, type = "salmon", txIn = TRUE, txOut = TRUE,
-                   ignoreTxVersion = TRUE, ignoreAfterBar = FALSE)
+                   ignoreTxVersion = FALSE, ignoreAfterBar = FALSE)
   }
 
   entity_type <- if (level_config$tx_out) "transcripts" else "genes"

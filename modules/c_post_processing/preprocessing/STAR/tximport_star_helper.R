@@ -98,7 +98,7 @@ cat("Loaded tx2gene:", nrow(tx2gene), "entries\n\n")
 # ---------------------------------------------------------------------------
 cat("Running tximport...\n")
 txi <- tryCatch(
-  tximport(files, type = "salmon", tx2gene = tx2gene, ignoreTxVersion = TRUE),
+  tximport(files, type = "salmon", tx2gene = tx2gene, ignoreTxVersion = FALSE),
   error = function(e) {
     stop("tximport failed: ", conditionMessage(e))
   }

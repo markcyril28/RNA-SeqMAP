@@ -63,7 +63,7 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
                                col.names = c("TXNAME", "GENEID"), stringsAsFactors = FALSE)
         txi_gene <- tryCatch(
           tximport(setNames(file.path(quant_dir, sample_ids, "quant.sf"), sample_ids),
-                   type = "salmon", tx2gene = tx2gene, ignoreTxVersion = TRUE),
+                   type = "salmon", tx2gene = tx2gene, ignoreTxVersion = FALSE),
           error = function(e) NULL)
         if (!is.null(txi_gene)) {
           results$gene_level     <- txi_gene$counts

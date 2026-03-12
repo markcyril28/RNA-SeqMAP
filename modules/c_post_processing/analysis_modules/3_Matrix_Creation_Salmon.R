@@ -39,10 +39,10 @@ import_salmon <- function(quant_dir, sample_ids, tx2gene = NULL) {
 
   if (!is.null(tx2gene)) {
     tximport(files, type = "salmon", txIn = TRUE, txOut = FALSE,
-             tx2gene = tx2gene, ignoreTxVersion = TRUE, ignoreAfterBar = FALSE)
+             tx2gene = tx2gene, ignoreTxVersion = FALSE, ignoreAfterBar = FALSE)
   } else {
     tximport(files, type = "salmon", txIn = TRUE, txOut = TRUE,
-             ignoreTxVersion = TRUE, ignoreAfterBar = FALSE)
+             ignoreTxVersion = FALSE, ignoreAfterBar = FALSE)
   }
 }
 
@@ -77,11 +77,6 @@ for (.cand in .candidates) {
                      colClasses = c("character", "character"))
   colnames(.t2g) <- c("GENEID", "TXNAME")
   .t2g$GENEID <- trimws(.t2g$GENEID); .t2g$TXNAME <- trimws(.t2g$TXNAME)
-  # Pre-strip version suffixes (e.g. ".1") so tx2gene IDs match quant.sf IDs.
-  # tximport's ignoreTxVersion strips versions from quant.sf but may not fully
-  # apply to tx2gene in all versions, causing "None of the transcripts" errors.
-  .t2g$TXNAME <- sub("\\.[0-9]+$", "", .t2g$TXNAME)
-  .t2g$GENEID <- sub("\\.[0-9]+$", "", .t2g$GENEID)
   .t2g[, c("TXNAME", "GENEID")]
 } else {
   cat("  Warning: tx2gene mapping not found for M4 — gene-level import will be transcript-level\n")

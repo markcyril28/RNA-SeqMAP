@@ -93,55 +93,94 @@ get_preprocessing_script() {
 }
 
 #===============================================================================
+# ANALYSIS CLASSIFICATION
+#===============================================================================
+
+# Analyses that are thread-intensive and must NOT be parallelised across methods.
+# These get full THREADS when running sequentially.
+_SEQUENTIAL_ANALYSES=(
+    "Matrix_Creation"
+    "Differential_Expression"
+    "Coexpression_using_WGCNA"
+    "Gene_Set_Enrichment"
+    "PCA_Dimensionality_Reduction"
+)
+
+# Analyses that are lightweight figure-generation tasks — safe to parallelise.
+_PARALLEL_ANALYSES=(
+    "Basic_Heatmap"
+    "Heatmap_with_CV"
+    "BarGraph"
+    "Sample_Correlation_Clustering"
+    "Tissue_Specificity"
+)
+
+# Check whether an analysis belongs to the parallelisable (figure) set.
+# Usage: is_figure_analysis "Basic_Heatmap" && echo yes
+is_figure_analysis() {
+    local a
+    for a in "${_PARALLEL_ANALYSES[@]}"; do
+        [[ "$1" == "$a" ]] && return 0
+    done
+    return 1
+}
+
+#===============================================================================
 # METHOD ANALYSIS RUNNER
 #===============================================================================
 
-# Run analysis for a single method
-# Usage: run_method_analysis "method_name" "master_reference"
-run_method_analysis() {
+# Prepare the method directory, temp config files, and run preprocessing.
+# Called once per method before any analysis phase.
+# Usage: setup_method_env "method_name" "master_reference"
+setup_method_env() {
     local method=$1 master_ref=$2
     local method_dir="$BASE_DIR/3_POST_PROC/$method"
-    
+
     # Create the method output directory if it doesn't exist yet (first post-processing run).
-    # The alignment pipeline normally creates this; creating it here allows post-processing
-    # to run independently (e.g., when tximport is the first step that creates content).
     mkdir -p "$method_dir"
 
-    log_step "Processing Method: $method"
     pushd "$method_dir" > /dev/null
-    
+
     export CURRENT_METHOD="$method" MASTER_REFERENCE="$master_ref"
     export METHOD_BASE_DIR="$method_dir"
 
     # Export method-specific quant directory so R preprocessing scripts use the exact path
-    # rather than reconstructing it from MASTER_REFERENCE (which may differ from fasta_tag).
     if [[ "$method" == "M4_Salmon_Saf" ]]; then
         export SALMON_QUANT_ROOT="$BASE_DIR/2_ALIGNMENT_RESULTs/M4_Salmon_Saf/Salmon_Quant/$master_ref"
     fi
 
-    # Export GENE_GROUPS_DIR as absolute path for R scripts
     export GENE_GROUPS_DIR="$BASE_DIR/inputs/gene_groups_csv"
-    
-    # Rebuild arrays from exported strings first — bash arrays are not exported to subshells,
-    # so GNU Parallel workers arrive with GENE_GROUPS/ANALYSES empty.  This must happen
-    # BEFORE writing .gene_groups_temp.txt so R scripts receive the correct gene groups.
+
+    # Rebuild arrays from exported strings — bash arrays are not exported to subshells,
+    # so GNU Parallel workers arrive with GENE_GROUPS/ANALYSES empty.
     [[ -n "${GENE_GROUPS_STR:-}" ]] && IFS=' ' read -ra GENE_GROUPS <<< "$GENE_GROUPS_STR"
-    [[ -n "${ANALYSES_STR:-}" ]]    && IFS=' ' read -ra ANALYSES  <<< "$ANALYSES_STR"
+    [[ -n "${ANALYSES_STR:-}" ]]    && IFS=' ' read -ra ANALYSES    <<< "$ANALYSES_STR"
 
     # Setup temp config files for R scripts (written to the method's post-proc dir)
-    local modules_dir="."
+    printf '%s\n' "${GENE_GROUPS[@]}" > ".gene_groups_temp.txt"
+    echo "$master_ref"                > ".master_reference_temp.txt"
+    echo "${OVERWRITE_EXISTING:-FALSE}" > ".overwrite_temp.txt"
 
-    printf '%s\n' "${GENE_GROUPS[@]}" > "$modules_dir/.gene_groups_temp.txt"
-    echo "$master_ref" > "$modules_dir/.master_reference_temp.txt"
-    echo "${OVERWRITE_EXISTING:-FALSE}" > "$modules_dir/.overwrite_temp.txt"
-    
-    # Re-export SRR_COMBINED_LIST_STR for R scripts (ensures it's available in subprocesses)
     export SRR_COMBINED_LIST_STR="${SRR_COMBINED_LIST_STR:-}"
-    
-    # Run method-specific preprocessing if needed.
+
+    popd > /dev/null
+}
+
+# Run preprocessing (tximport / prepDE / StringTie) for a single method.
+# Usage: run_method_preprocessing "method_name" "master_reference"
+run_method_preprocessing() {
+    local method=$1 master_ref=$2
+    local method_dir="$BASE_DIR/3_POST_PROC/$method"
+
+    pushd "$method_dir" > /dev/null
+
+    export CURRENT_METHOD="$method" MASTER_REFERENCE="$master_ref"
+    export METHOD_BASE_DIR="$method_dir"
+
+    [[ -n "${ANALYSES_STR:-}" ]] && IFS=' ' read -ra ANALYSES <<< "$ANALYSES_STR"
+
     # For M3/M4/M5: skip tximport preprocessing when Matrix_Creation is also enabled —
-    # the method-specific 3_Matrix_Creation_*.R script performs the same import and
-    # supersedes the tximport preprocessing step.
+    # the method-specific 3_Matrix_Creation_*.R script supersedes the tximport step.
     local skip_preprocess=false
     if [[ "$method" =~ ^(M3_STAR_Align|M4_Salmon_Saf|M5_RSEM_Bowtie2)$ ]]; then
         printf '%s\n' "${ANALYSES[@]}" | grep -q "^Matrix_Creation$" && skip_preprocess=true
@@ -154,61 +193,91 @@ run_method_analysis() {
     elif [[ -n "$preprocess_path" && -f "$preprocess_path" ]]; then
         log_info "Running preprocessing: $(basename "$preprocess_path")"
         if [[ "$preprocess_path" == *.R ]]; then
-            run_with_error_capture Rscript "$preprocess_path" || log_error "Failed: preprocessing"
+            run_with_error_capture Rscript "$preprocess_path" || log_error "Failed: preprocessing ($method)"
         else
-            run_with_error_capture bash "$preprocess_path" || log_error "Failed: preprocessing"
+            run_with_error_capture bash "$preprocess_path" || log_error "Failed: preprocessing ($method)"
         fi
     elif [[ -n "$preprocess_path" ]]; then
         log_warn "Preprocessing script not found: $preprocess_path"
     fi
-    
-    # Run each enabled analysis
+
+    popd > /dev/null
+}
+
+# Resolve and run a single analysis script inside the method directory.
+# Usage: run_single_analysis "method_name" "master_reference" "analysis_name"
+run_single_analysis() {
+    local method=$1 master_ref=$2 analysis=$3
+    local method_dir="$BASE_DIR/3_POST_PROC/$method"
+
+    pushd "$method_dir" > /dev/null
+
+    export CURRENT_METHOD="$method" MASTER_REFERENCE="$master_ref"
+    export METHOD_BASE_DIR="$method_dir"
+
+    # Rebuild arrays in case we are inside a GNU Parallel subshell
+    [[ -n "${GENE_GROUPS_STR:-}" ]] && IFS=' ' read -ra GENE_GROUPS <<< "$GENE_GROUPS_STR"
+
+    # Skip legacy preprocessing analysis names
+    if [[ "$analysis" =~ ^(Tximport_Salmon|Tximport_RSEM|Tximport_STAR|Stringtie_Matrix)$ ]]; then
+        popd > /dev/null
+        return 0
+    fi
+
+    # For Matrix_Creation, use a method-specific script when available
+    local script
+    if [[ "$analysis" == "Matrix_Creation" ]]; then
+        script=$(get_matrix_creation_script "$method")
+        if [[ -z "$script" ]]; then
+            log_info "Matrix_Creation not applicable for $method — skipping"
+            popd > /dev/null
+            return 0
+        fi
+    else
+        script=$(get_analysis_script "$analysis")
+    fi
+
+    # Resolve script path: check utilities dir, then analysis_modules dir
+    local script_path=""
+    local _util_dir="${UTILITIES_DIR:-$BASE_DIR/modules/c_post_processing/utilities}"
+    local _mods_dir="${ANALYSIS_MODULES_DIR:-$BASE_DIR/modules/c_post_processing/analysis_modules}"
+    if [[ -f "$_util_dir/$script" ]]; then
+        script_path="$_util_dir/$script"
+    elif [[ -f "$_mods_dir/$script" ]]; then
+        script_path="$_mods_dir/$script"
+    fi
+
+    if [[ -n "$script_path" && -f "$script_path" ]]; then
+        log_info "Running: $analysis ($method)"
+        if [[ "$script_path" == *.sh ]]; then
+            run_with_error_capture bash "$script_path" || log_error "Failed: $analysis ($method)"
+        else
+            run_with_error_capture Rscript "$script_path" || log_error "Failed: $analysis ($method)"
+        fi
+    else
+        log_warn "Script not found for: $analysis ($method)"
+    fi
+
+    popd > /dev/null
+}
+
+# Legacy wrapper — runs ALL analyses for a single method sequentially.
+# Kept for backward compatibility; the main script now uses the phased approach.
+# Usage: run_method_analysis "method_name" "master_reference"
+run_method_analysis() {
+    local method=$1 master_ref=$2
+
+    log_step "Processing Method: $method"
+    setup_method_env "$method" "$master_ref"
+    run_method_preprocessing "$method" "$master_ref"
+
+    [[ -n "${ANALYSES_STR:-}" ]] && IFS=' ' read -ra ANALYSES <<< "$ANALYSES_STR"
+
     for analysis in "${ANALYSES[@]}"; do
         [[ -z "$analysis" ]] && continue
-        
-        # Skip preprocessing analyses entirely - they run via get_preprocessing_script()
-        if [[ "$analysis" == "Tximport_Salmon" || "$analysis" == "Tximport_RSEM" || \
-              "$analysis" == "Tximport_STAR" || "$analysis" == "Stringtie_Matrix" ]]; then
-            continue
-        fi
-        
-        # For Matrix_Creation, use a method-specific script when available
-        local script
-        if [[ "$analysis" == "Matrix_Creation" ]]; then
-            script=$(get_matrix_creation_script "$method")
-            if [[ -z "$script" ]]; then
-                log_info "Matrix_Creation not applicable for $method — skipping"
-                continue
-            fi
-        else
-            script=$(get_analysis_script "$analysis")
-        fi
-
-        # Check for script in utilities directory first (for shell scripts like stringtie_matrix_builder.sh)
-        local script_path=""
-        local _util_dir="${UTILITIES_DIR:-$BASE_DIR/modules/c_post_processing/utilities}"
-        local _mods_dir="${ANALYSIS_MODULES_DIR:-$BASE_DIR/modules/c_post_processing/analysis_modules}"
-        if [[ -f "$_util_dir/$script" ]]; then
-            script_path="$_util_dir/$script"
-        elif [[ -f "$_mods_dir/$script" ]]; then
-            script_path="$_mods_dir/$script"
-        elif [[ -f "$modules_dir/${script%.R}.R" ]]; then
-            script_path="$modules_dir/${script%.R}.R"
-        fi
-        
-        if [[ -n "$script_path" && -f "$script_path" ]]; then
-            log_info "Running: $analysis"
-            if [[ "$script_path" == *.sh ]]; then
-                run_with_error_capture bash "$script_path" || log_error "Failed: $analysis"
-            else
-                run_with_error_capture Rscript "$script_path" || log_error "Failed: $analysis"
-            fi
-        else
-            log_warn "Script not found for: $analysis"
-        fi
+        run_single_analysis "$method" "$master_ref" "$analysis"
     done
-    
-    popd > /dev/null
+
     log_info "Method $method complete"
 }
 
@@ -224,5 +293,6 @@ export_utils_for_parallel() {
     # Export error/warning regex patterns used by capture_stderr_errors
     export _ERROR_PATTERN _WARN_PATTERN 2>/dev/null || true
     # Export pipeline functions
-    export -f run_method_analysis get_analysis_script get_matrix_creation_script get_preprocessing_script parse_srr_csv
+    export -f run_method_analysis run_single_analysis setup_method_env run_method_preprocessing
+    export -f is_figure_analysis get_analysis_script get_matrix_creation_script get_preprocessing_script parse_srr_csv
 }
