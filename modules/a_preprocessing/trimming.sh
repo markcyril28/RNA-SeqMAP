@@ -27,6 +27,14 @@ MINLEN="${MINLEN:-36}"
 SW_SIZE="${SW_SIZE:-4}"
 SW_QUAL="${SW_QUAL:-20}"
 
+# Cache pigz availability once at module load (avoids repeated command -v spawns per SRR)
+if command -v pigz &>/dev/null; then
+	_TRIMMING_HAS_PIGZ="true"
+else
+	_TRIMMING_HAS_PIGZ="false"
+fi
+export _TRIMMING_HAS_PIGZ
+
 # ==============================================================================
 # PRIMARY: TrimGalore → Trimmomatic HEADCROP → optional TAILCROP
 # ==============================================================================
@@ -51,19 +59,31 @@ _trim_single_srr() {
 	get_trim_params "$SRR"
 	
 	log_info "Trimming $SRR with TrimGalore..."
-	run_with_space_time_log trim_galore --cores "$THREADS_PER_JOB" \
+	run_with_space_time_log trim_galore --cores "${THREADS_PER_JOB:-2}" \
 		--paired "$raw1" "$raw2" --output_dir "$trim_dir"
 	
 	# Trimmomatic HEADCROP with profile-based parameters
 	log_info "Applying HEADCROP:${HEADCROP_BASES} for $SRR..."
 	local tg_r1="$trim_dir/${SRR}_1_val_1.fq"
 	local tg_r2="$trim_dir/${SRR}_2_val_2.fq"
-	[[ -f "${tg_r1}.gz" ]] && gunzip "${tg_r1}.gz"
-	[[ -f "${tg_r2}.gz" ]] && gunzip "${tg_r2}.gz"
-	
+	# Decompress R1 and R2 concurrently with pigz (multi-threaded) if available
+	local _decompress_cmd="gunzip"
+	[[ "$_TRIMMING_HAS_PIGZ" == "true" ]] && _decompress_cmd="pigz -d -p ${THREADS_PER_JOB:-4}"
+	if [[ -f "${tg_r1}.gz" && -f "${tg_r2}.gz" ]]; then
+		$_decompress_cmd "${tg_r1}.gz" &
+		local _pid1=$!
+		$_decompress_cmd "${tg_r2}.gz" &
+		local _pid2=$!
+		wait $_pid1 $_pid2
+	elif [[ -f "${tg_r1}.gz" ]]; then
+		$_decompress_cmd "${tg_r1}.gz"
+	elif [[ -f "${tg_r2}.gz" ]]; then
+		$_decompress_cmd "${tg_r2}.gz"
+	fi
+
 	local tmp_r1="$trim_dir/${SRR}_1_headcrop.fq"
 	local tmp_r2="$trim_dir/${SRR}_2_headcrop.fq"
-	run_with_space_time_log trimmomatic PE -threads "$THREADS_PER_JOB" \
+	run_with_space_time_log trimmomatic PE -threads "${THREADS_PER_JOB:-2}" \
 		"$tg_r1" "$tg_r2" "$tmp_r1" /dev/null "$tmp_r2" /dev/null \
 		HEADCROP:${HEADCROP_BASES}
 	mv "$tmp_r1" "$tg_r1"
@@ -172,8 +192,11 @@ download_and_trim_srrs() {
 			run_with_space_time_log prefetch "$SRR" --output-directory "$raw_dir"
 			run_with_space_time_log fasterq-dump --split-files --threads "$THREADS" \
 				"$raw_dir/$SRR/$SRR.sra" -O "$raw_dir"
-			[[ -f "$raw_dir/${SRR}_1.fastq" ]] && gzip "$raw_dir/${SRR}_1.fastq"
-			[[ -f "$raw_dir/${SRR}_2.fastq" ]] && gzip "$raw_dir/${SRR}_2.fastq"
+			local _ccmd="gzip"
+			[[ "$_TRIMMING_HAS_PIGZ" == "true" ]] && _ccmd="pigz -p ${THREADS:-4}"
+			[[ -f "$raw_dir/${SRR}_1.fastq" ]] && $_ccmd "$raw_dir/${SRR}_1.fastq" &
+			[[ -f "$raw_dir/${SRR}_2.fastq" ]] && $_ccmd "$raw_dir/${SRR}_2.fastq" &
+			wait
 			find_raw_fastq "$SRR"
 		fi
 
@@ -206,10 +229,13 @@ download_and_trim_srrs_parallel() {
 	export TRIM_PROFILE_DEFAULT DELETE_RAW_SRR_AFTER_DOWNLOAD_and_TRIMMING
 	
 	# Serialize SRR_TRIM_PROFILE_MAP to a string for export (associative arrays can't be exported)
-	local serialized_profiles=""
+	# Build indexed array then join once with IFS (avoids O(n²) string concatenation)
+	local -a _prof_parts=()
 	for key in "${!SRR_TRIM_PROFILE_MAP[@]}"; do
-		serialized_profiles+="${key}=${SRR_TRIM_PROFILE_MAP[$key]};"
+		_prof_parts+=("${key}=${SRR_TRIM_PROFILE_MAP[$key]}")
 	done
+	local serialized_profiles
+	serialized_profiles="$(IFS=';'; printf '%s;' "${_prof_parts[*]}")"
 	export SERIALIZED_TRIM_PROFILES="$serialized_profiles"
 	
 	export -f timestamp log log_info log_warn log_error run_with_space_time_log run_with_error_capture
@@ -235,24 +261,36 @@ download_and_trim_srrs_parallel() {
 		if [[ -z "$raw1" ]]; then
 			prefetch "$SRR" --output-directory "$raw_dir" || return 1
 			fasterq-dump --split-files --threads "${THREADS_PER_JOB:-4}" "$raw_dir/$SRR/$SRR.sra" -O "$raw_dir" || return 1
-			[[ -f "$raw_dir/${SRR}_1.fastq" ]] && gzip "$raw_dir/${SRR}_1.fastq"
-			[[ -f "$raw_dir/${SRR}_2.fastq" ]] && gzip "$raw_dir/${SRR}_2.fastq"
+			local _ccmd="gzip"
+			[[ "$_TRIMMING_HAS_PIGZ" == "true" ]] && _ccmd="pigz -p ${THREADS_PER_JOB:-4}"
+			[[ -f "$raw_dir/${SRR}_1.fastq" ]] && $_ccmd "$raw_dir/${SRR}_1.fastq" &
+			[[ -f "$raw_dir/${SRR}_2.fastq" ]] && $_ccmd "$raw_dir/${SRR}_2.fastq" &
+			wait
 			find_raw_fastq "$SRR"
 		fi
 
 		[[ -z "$raw1" ]] && { log_warn "No raw for $SRR"; return 1; }
-		
+
 		trim_galore --cores "${THREADS_PER_JOB:-2}" --paired "$raw1" "$raw2" --output_dir "$trim_dir"
 		local tg_r1="$trim_dir/${SRR}_1_val_1.fq"
 		local tg_r2="$trim_dir/${SRR}_2_val_2.fq"
-		[[ -f "${tg_r1}.gz" ]] && gunzip "${tg_r1}.gz"
-		[[ -f "${tg_r2}.gz" ]] && gunzip "${tg_r2}.gz"
+		# Decompress concurrently with pigz if available
+		local _dcmd="gunzip"
+		[[ "$_TRIMMING_HAS_PIGZ" == "true" ]] && _dcmd="pigz -d -p ${THREADS_PER_JOB:-2}"
+		if [[ -f "${tg_r1}.gz" && -f "${tg_r2}.gz" ]]; then
+			$_dcmd "${tg_r1}.gz" & local _p1=$!
+			$_dcmd "${tg_r2}.gz" & local _p2=$!
+			wait $_p1 $_p2
+		else
+			[[ -f "${tg_r1}.gz" ]] && $_dcmd "${tg_r1}.gz"
+			[[ -f "${tg_r2}.gz" ]] && $_dcmd "${tg_r2}.gz"
+		fi
 		
 		# Deserialize trim profiles and get HEADCROP for this SRR
 		local profile="$TRIM_PROFILE_DEFAULT"
 		while IFS='=' read -r key val; do
 			[[ "$key" == "$SRR" ]] && { profile="$val"; break; }
-		done < <(echo "$SERIALIZED_TRIM_PROFILES" | tr ';' '\n')
+		done <<< "${SERIALIZED_TRIM_PROFILES//;/$'\n'}"
 		
 		local HEADCROP_BASES TAILCROP_BASES MINLEN SW_SIZE SW_QUAL
 		IFS=':' read -r HEADCROP_BASES TAILCROP_BASES MINLEN SW_SIZE SW_QUAL <<< "$profile"
@@ -306,10 +344,13 @@ trim_srrs_trimmomatic_parallel() {
 	export TRIM_PROFILE_DEFAULT DELETE_RAW_SRR_AFTER_DOWNLOAD_and_TRIMMING
 	
 	# Serialize SRR_TRIM_PROFILE_MAP to a string for export (associative arrays can't be exported)
-	local serialized_profiles=""
+	# Build indexed array then join once with IFS (avoids O(n²) string concatenation)
+	local -a _prof_parts=()
 	for key in "${!SRR_TRIM_PROFILE_MAP[@]}"; do
-		serialized_profiles+="${key}=${SRR_TRIM_PROFILE_MAP[$key]};"
+		_prof_parts+=("${key}=${SRR_TRIM_PROFILE_MAP[$key]}")
 	done
+	local serialized_profiles
+	serialized_profiles="$(IFS=';'; printf '%s;' "${_prof_parts[*]}")"
 	export SERIALIZED_TRIM_PROFILES="$serialized_profiles"
 	
 	export -f timestamp log log_info log_warn log_error run_with_space_time_log run_with_error_capture
@@ -341,7 +382,7 @@ trim_srrs_trimmomatic_parallel() {
 		local profile="$TRIM_PROFILE_DEFAULT"
 		while IFS='=' read -r key val; do
 			[[ "$key" == "$SRR" ]] && { profile="$val"; break; }
-		done < <(echo "$SERIALIZED_TRIM_PROFILES" | tr ';' '\n')
+		done <<< "${SERIALIZED_TRIM_PROFILES//;/$'\n'}"
 		
 		IFS=':' read -r HEADCROP_BASES TAILCROP_BASES MINLEN SW_SIZE SW_QUAL <<< "$profile"
 		
