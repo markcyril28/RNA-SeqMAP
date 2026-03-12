@@ -260,10 +260,11 @@ merge_group_counts() {
     # Replaces 3 separate tail|cut pipelines per sample (was 3×N process spawns, now 1×N).
     # Write to $tmpdir (not alongside input) so cleanup is guaranteed on error.
     for srr in "${processed_srrs[@]}"; do
-        awk -F'\t' -v gc="$GENENAME_COL" -v outdir="$tmpdir" -v srr="$srr" 'NR > 1 {
-            print $gc "\t" $7 > outdir "/" srr ".cov"
-            print $gc "\t" $8 > outdir "/" srr ".fpkm"
-            print $gc "\t" $9 > outdir "/" srr ".tpm"
+        awk -F'\t' -v gc="$GENENAME_COL" -v cov="$COVERAGE_COL" -v fpkm="$FPKM_COL" -v tpm="$TPM_COL" \
+            -v outdir="$tmpdir" -v srr="$srr" 'NR > 1 {
+            print $gc "\t" $cov > outdir "/" srr ".cov"
+            print $gc "\t" $fpkm > outdir "/" srr ".fpkm"
+            print $gc "\t" $tpm > outdir "/" srr ".tpm"
         }' "${srr_to_file[$srr]}"
     done
 
@@ -288,6 +289,16 @@ merge_group_counts() {
             continue
         fi
 
+        # Build list of SRRs that actually have extracted files for this count type
+        # (must match sample_files order so header columns align with matrix body)
+        local -a matched_srrs=()
+        for srr in "${processed_srrs[@]}"; do
+            local extracted="$tmpdir/${srr}.${ext}"
+            if [[ -f "$extracted" ]]; then
+                matched_srrs+=("$srr")
+            fi
+        done
+
         # NOTE: Filename uses "geneName" (camelCase) while the TSV header column is "GeneName" (PascalCase).
         # build_input_path() in 0_shared_config.R maps gene_type=="Shortened_Name" -> "geneName" to match this convention.
         local output_geneName_SRR_tsv="$OUT_DIR/$group_name/${group_name}_${count_type}_counts_geneName_SRR${MASTER_SUFFIX}.tsv"
@@ -303,10 +314,10 @@ merge_group_counts() {
             > "$matrix_body" \
             || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: matrix_builder.py failed for $group_name"; rm -rf "$tmpdir"; return 1; }
 
-        # SRR header + body
+        # SRR header + body (use matched_srrs to align with matrix body columns)
         {
             printf "GeneName"
-            for srr in "${processed_srrs[@]}"; do printf "\t%s" "$srr"; done
+            for srr in "${matched_srrs[@]}"; do printf "\t%s" "$srr"; done
             printf "\n"
             cat "$matrix_body"
         } > "$output_geneName_SRR_tsv"
@@ -314,7 +325,7 @@ merge_group_counts() {
         # Organ header + body
         {
             printf "GeneName"
-            for srr in "${processed_srrs[@]}"; do printf "\t%s" "${SRR_TO_ORGAN[$srr]:-Unknown}"; done
+            for srr in "${matched_srrs[@]}"; do printf "\t%s" "${SRR_TO_ORGAN[$srr]:-Unknown}"; done
             printf "\n"
             cat "$matrix_body"
         } > "$output_geneName_Organ_tsv"
