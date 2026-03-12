@@ -94,7 +94,7 @@ ANALYSES=(
     #"Differential_Expression"   # Supported for M3 (tximport counts)
     #"PCA_Dimensionality_Reduction"
     #"Sample_Correlation_Clustering"
-    #"Tissue_Specificity"       # Not applicable — genome-based counts
+    #"Tissue_Specificity"       # Supported for M3 (uses TPM from tximport)
     #"Coexpression_using_WGCNA"
     #"Gene_Set_Enrichment"
 )

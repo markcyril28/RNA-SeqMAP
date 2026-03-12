@@ -91,7 +91,7 @@ ANALYSES=(
     #"Differential_Expression"   # Supported for M1 (prepDE integer counts)
     #"PCA_Dimensionality_Reduction"
     #"Sample_Correlation_Clustering"
-    #"Tissue_Specificity"       # Not applicable — genome-based counts
+    #"Tissue_Specificity"       # Uses StringTie TPM (applicable for M1)
     #"Coexpression_using_WGCNA"
     #"Gene_Set_Enrichment"
 )
