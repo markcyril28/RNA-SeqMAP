@@ -9,21 +9,28 @@ set -o pipefail   # -e/-u omitted intentionally (sourced functions use boolean r
 # SYSTEM RESOURCES
 # ==============================================================================
 
-THREADS=96
+THREADS=12
 ENABLE_GPU="FALSE"
 ENABLE_GNU_PARALLEL="TRUE"
-DESIRED_CPU_PER_JOB=8
+DESIRED_CPU_PER_JOB=2
 AVAILABLE_RAM_GB=64
 GPU_VRAM_GB=8
+
+# ==============================================================================
+# LOGGING AND OUTPUT
+# ==============================================================================
+
+CLEAR_LOGS="FALSE"
+CLEAR_OUTPUT_FOLDER="FALSE"
 
 
 PIPELINE_CONFIGS=(
     # ── Full — Eggplant_V4.1 ──
-    #"config/3_post_proc_configs/HPC_full_M1_Eggplant_V4.1.sh"      # M1 HISAT2 RefGuided   Eggplant_V4.1 genome
-    #"config/3_post_proc_configs/HPC_full_M2_Eggplant_V4.1.sh"      # M2 HISAT2 DeNovo      Eggplant_V4.1 transcript
-    #"config/3_post_proc_configs/HPC_full_M3_Eggplant_V4.1.sh"      # M3 STAR Align         Eggplant_V4.1 genome
-    #"config/3_post_proc_configs/HPC_full_M4_Eggplant_V4.1.sh"      # M4 Salmon SAF         Eggplant_V4.1 transcript
-    #"config/3_post_proc_configs/HPC_full_M5_Eggplant_V4.1.sh"      # M5 RSEM Bowtie2       Eggplant_V4.1 transcript
+    "config/3_post_proc_configs/HPC_full_M1_Eggplant_V4.1.sh"      # M1 HISAT2 RefGuided   Eggplant_V4.1 genome
+    "config/3_post_proc_configs/HPC_full_M2_Eggplant_V4.1.sh"      # M2 HISAT2 DeNovo      Eggplant_V4.1 transcript
+    "config/3_post_proc_configs/HPC_full_M3_Eggplant_V4.1.sh"      # M3 STAR Align         Eggplant_V4.1 genome
+    "config/3_post_proc_configs/HPC_full_M4_Eggplant_V4.1.sh"      # M4 Salmon SAF         Eggplant_V4.1 transcript
+    "config/3_post_proc_configs/HPC_full_M5_Eggplant_V4.1.sh"      # M5 RSEM Bowtie2       Eggplant_V4.1 transcript
 
     # ── Full — GPE001970 ──
     "config/3_post_proc_configs/HPC_full_M1_GPE001970.sh"           # M1 HISAT2 RefGuided   GPE001970 genome
