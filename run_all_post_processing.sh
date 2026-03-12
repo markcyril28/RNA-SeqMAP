@@ -22,7 +22,7 @@ GPU_VRAM_GB=8
 
 CLEAR_LOGS="TRUE"
 CLEAR_OUTPUT_FOLDER="TRUE"
-\
+
 PIPELINE_CONFIGS=(
     # ── Full — Eggplant_V4.1 ──
     "config/3_post_proc_configs/HPC_full_M1_Eggplant_V4.1.sh"      # M1 HISAT2 RefGuided   Eggplant_V4.1 genome
