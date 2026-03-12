@@ -99,12 +99,12 @@ if (METHOD == "rsem") {
     txi <- tximport(files, type = "rsem", txIn = FALSE, txOut = FALSE)
 } else if (METHOD == "salmon") {
     # Salmon always quantifies at transcript level, so txIn must be TRUE.
-    # With txOut=FALSE, tximport summarizes to gene level using tx2gene.
-    # When no tx2gene is provided, output remains at transcript level.
+    # txOut=TRUE keeps output at transcript level (no gene-level summarization).
+    # To summarize to gene level, provide a tx2gene mapping and set txOut=FALSE.
     txi <- tximport(files, type = "salmon", txIn = TRUE, txOut = TRUE)
 }
 
-cat("  Imported", nrow(txi$counts), "genes\n")
+cat("  Imported", nrow(txi$counts), "features\n")
 cat("  Across", ncol(txi$counts), "samples\n\n")
 
 # Create DESeq2 dataset

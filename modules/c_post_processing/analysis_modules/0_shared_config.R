@@ -25,7 +25,7 @@ CURRENT_METHOD <- Sys.getenv("CURRENT_METHOD", unset = "M5_RSEM_Bowtie2")
 CURRENT_DATASET <- Sys.getenv("CURRENT_DATASET", unset = "")
 
 # Master reference genome/transcriptome
-MASTER_REFERENCE <- Sys.getenv("MASTER_REFERENCE", unset = "Eggplant_V4.1_transcripts.function")
+MASTER_REFERENCE <- Sys.getenv("MASTER_REFERENCE", unset = "Eggplant_V4.1")
 
 # GPU acceleration flag (isTRUE guards against NA from empty/malformed env var)
 ENABLE_GPU <- isTRUE(as.logical(Sys.getenv("ENABLE_GPU", unset = "FALSE")))
@@ -110,7 +110,7 @@ OUTPUT_SUBDIRS <- list(
 # Count types - AUTO-SELECTED based on method:
 #   - StringTie (M1/M2 HISAT2): tpm, fpkm, coverage
 #   - Salmon (M4): tpm, NumReads (length-corrected, bias-corrected)
-#   - RSEM (M5): tpm, expected_count, fpkm
+#   - RSEM (M5): tpm, expected_count (fpkm excluded from tximport pipeline)
 # For DESeq2: use expected_count/NumReads (raw integer counts)
 #   NOTE: StringTie coverage is a per-base abundance metric, NOT raw fragment counts.
 #         M1 DESeq2 uses prepDE.py integer counts (gene_count_matrix.csv), not coverage.
