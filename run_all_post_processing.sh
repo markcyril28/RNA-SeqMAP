@@ -9,11 +9,11 @@ set -o pipefail   # -e/-u omitted intentionally (sourced functions use boolean r
 # SYSTEM RESOURCES
 # ==============================================================================
 
-THREADS=12
+THREADS=$(nproc)
 ENABLE_GPU="FALSE"
 ENABLE_GNU_PARALLEL="TRUE"
 DESIRED_CPU_PER_JOB=1
-AVAILABLE_RAM_GB=64
+AVAILABLE_RAM_GB=24
 GPU_VRAM_GB=8
 
 # ==============================================================================
@@ -22,8 +22,7 @@ GPU_VRAM_GB=8
 
 CLEAR_LOGS="TRUE"
 CLEAR_OUTPUT_FOLDER="TRUE"
-
-
+\
 PIPELINE_CONFIGS=(
     # ── Full — Eggplant_V4.1 ──
     "config/3_post_proc_configs/HPC_full_M1_Eggplant_V4.1.sh"      # M1 HISAT2 RefGuided   Eggplant_V4.1 genome
@@ -101,7 +100,7 @@ SOFTWARE_CATALOG_DIR="$BASE_DIR/3_POST_PROC/logs/software_catalogs"
 GPU_LOG_DIR="$BASE_DIR/3_POST_PROC/logs/gpu_log"
 export LOG_DIR TIME_DIR SPACE_DIR SPACE_TIME_DIR ERROR_WARN_DIR SOFTWARE_CATALOG_DIR GPU_LOG_DIR
 
-setup_logging "FALSE"
+setup_logging "$CLEAR_LOGS"
 export LOG_FILE TIME_FILE SPACE_FILE SPACE_TIME_FILE ERROR_WARN_FILE SOFTWARE_FILE GPU_LOG_FILE
 
 catalog_all_software
