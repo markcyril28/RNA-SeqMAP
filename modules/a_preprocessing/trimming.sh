@@ -13,6 +13,7 @@ export TRIMMING_SOURCED="true"
 
 # Source dependencies
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_TRIMMING_SCRIPT_DIR="$SCRIPT_DIR"
 source "$SCRIPT_DIR/shared_utils_preproc.sh"
 
 # ==============================================================================
@@ -155,7 +156,7 @@ download_and_trim_srrs() {
 	[[ ${#SRR_LIST[@]} -eq 0 ]] && { log_error "No SRR IDs provided"; return 1; }
 	
 	# Source download functions
-	source "$SCRIPT_DIR/download.sh"
+	source "$_TRIMMING_SCRIPT_DIR/download.sh"
 	
 	for SRR in "${SRR_LIST[@]}"; do
 		local raw_dir="$RAW_DIR_ROOT/$SRR"
