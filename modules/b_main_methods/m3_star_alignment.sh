@@ -30,32 +30,29 @@ STAR_READ_LENGTH="${STAR_READ_LENGTH:-100}"
 # Set to "false" to keep 2-pass genome, unsorted BAM, etc. for debugging
 STAR_DELETE_TRANSIENT="${STAR_DELETE_TRANSIENT:-true}"
 
-# Calculate safe per-thread memory for samtools sort.
-# samtools sort -m VALUE is per-thread (not total), so total RAM = VALUE x (threads + 1).
-# This function queries available system RAM and divides by active sorting threads,
-# reserving headroom for STAR and other processes.
-# Usage: _samtools_sort_mem <num_threads> [parallel_jobs]
-_samtools_sort_mem() {
-	local sort_threads="${1:-4}"
-	local parallel_jobs="${2:-1}"
-	# Total memory slots = (sort_threads + 1 main) x concurrent jobs
-	local total_slots=$(( (sort_threads + 1) * parallel_jobs ))
-	[[ $total_slots -lt 1 ]] && total_slots=1
+# Use shared pigz detection from shared_utils_method.sh; set STAR-specific aliases
+_PIGZ_DC="${_SHARED_GZIP_DC:-gzip -dc}"
+_STAR_READ_CMD="$_PIGZ_DC"
 
+# _samtools_sort_mem() is now defined in shared_utils_method.sh (shared across M1-M5)
+
+# Calculate total RAM budget (bytes) for STAR's internal BAM sorting.
+# Used with --limitBAMsortRAM when --outSAMtype BAM SortedByCoordinate.
+# Reserves 30% of available RAM for STAR alignment + OS, gives the rest to sorting.
+# Usage: _star_sort_ram [parallel_jobs]
+_star_sort_ram() {
+	local parallel_jobs="${1:-1}"
 	local avail_mb
-	avail_mb=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null) \
-		|| avail_mb=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1/1048576}') \
-		|| avail_mb=8192  # fallback: 8GB
+	avail_mb=$(_get_available_ram_mb)
 
-	# Reserve 25% for STAR, OS, and other processes
-	local usable_mb=$(( avail_mb * 75 / 100 ))
-	local per_thread_mb=$(( usable_mb / total_slots ))
+	# 70% of available for sorting, split across concurrent jobs
+	local per_job_mb=$(( avail_mb * 70 / 100 / parallel_jobs ))
+	# Floor at 2GB, cap at 32GB per job
+	[[ $per_job_mb -lt 2048 ]] && per_job_mb=2048
+	[[ $per_job_mb -gt 32768 ]] && per_job_mb=32768
 
-	# Clamp between 256MB and 4GB per thread
-	[[ $per_thread_mb -lt 256 ]] && per_thread_mb=256
-	[[ $per_thread_mb -gt 4096 ]] && per_thread_mb=4096
-
-	echo "${per_thread_mb}M"
+	# STAR wants bytes
+	echo $(( per_job_mb * 1048576 ))
 }
 
 # REPRODUCIBILITY NOTE: Salmon's EM algorithm convergence is thread-schedule dependent.
@@ -70,8 +67,8 @@ _samtools_sort_mem() {
 # e.g. STAR_TRANSCRIPTOME_FASTA="inputs/fasta/reference_genomes/GPE001970_transcripts.fa"
 # Auto-detect: looks for <genome_basename>_transcripts.fa; falls back to --FASTA if absent.
 
-# STAR temp directory: "system"=/tmp, "local"=output dir, "cwd"=current dir, "none"=STAR default
-STAR_TMP_MODE="${STAR_TMP_MODE:-cwd}"
+# STAR temp directory: always uses the output directory per sample
+# (${star_genome_dir}/_STARtmp_${SRR}) to keep all I/O on the same filesystem.
 
 # ==============================================================================
 # HELPER FUNCTIONS (called by the pipeline)
@@ -86,7 +83,7 @@ _star_detect_read_length() {
 	[[ -z "$trimmed1" || ! -f "$trimmed1" ]] && return
 	local _seq
 	if [[ "$trimmed1" == *.gz ]]; then
-		_seq=$(zcat -f "$trimmed1" 2>/dev/null | sed -n '2p')
+		_seq=$(${_PIGZ_DC:-zcat -f} "$trimmed1" 2>/dev/null | sed -n '2p')
 	else
 		_seq=$(sed -n '2p' "$trimmed1" 2>/dev/null)
 	fi
@@ -128,6 +125,7 @@ _star_check_alignment_rates() {
 		local uniq_pct multi_pct short_pct mismatch_pct other_pct input_reads
 		local _metrics
 		_metrics=$(awk -F'|' '
+			BEGIN {ir=""; uq=""; ml="0"; sh="0"; mm="0"; ot="0"}
 			/Number of input reads/           {gsub(/[[:space:]]/, "", $2); ir=$2}
 			/Uniquely mapped reads %/         {gsub(/[[:space:]%]/, "", $2); uq=$2}
 			/% of reads mapped to multiple/   {gsub(/[[:space:]%]/, "", $2); ml=$2}
@@ -147,30 +145,34 @@ _star_check_alignment_rates() {
 		unmapped_mismatch+=("${mismatch_pct:-0}")
 		unmapped_other+=("${other_pct:-0}")
 
-		# Per-sample checks
+		# Per-sample checks (truncate to integer for fast bash arithmetic — no awk spawns)
 		# 1. Low unique mapping rate (<50% is very concerning, <70% is a warning)
-		if awk "BEGIN{exit !($uniq_pct < 50)}" 2>/dev/null; then
+		local _uq_int=${uniq_pct%.*}
+		if (( _uq_int < 50 )); then
 			log_warn "[STAR QC] $SRR: Uniquely mapped only ${uniq_pct}% — VERY LOW (check sample quality, adapter contamination, or genome mismatch)"
 			((warn_count++)) || true
-		elif awk "BEGIN{exit !($uniq_pct < 70)}" 2>/dev/null; then
+		elif (( _uq_int < 70 )); then
 			log_warn "[STAR QC] $SRR: Uniquely mapped ${uniq_pct}% — below 70% threshold"
 			((warn_count++)) || true
 		fi
 
 		# 2. High multi-mapping (>20%) may indicate rRNA contamination or repetitive sequences
-		if awk "BEGIN{exit !(${multi_pct:-0} > 20)}" 2>/dev/null; then
+		local _mp_int=${multi_pct:-0}; _mp_int=${_mp_int%.*}
+		if (( _mp_int > 20 )); then
 			log_warn "[STAR QC] $SRR: Multi-mapped ${multi_pct}% — high rate may indicate rRNA contamination or repetitive element enrichment"
 			((warn_count++)) || true
 		fi
 
 		# 3. High unmapped-too-short (>15%) suggests adapter contamination or degraded RNA
-		if awk "BEGIN{exit !(${short_pct:-0} > 15)}" 2>/dev/null; then
+		local _sp_int=${short_pct:-0}; _sp_int=${_sp_int%.*}
+		if (( _sp_int > 15 )); then
 			log_warn "[STAR QC] $SRR: Unmapped (too short) ${short_pct}% — check adapter trimming or RNA degradation"
 			((warn_count++)) || true
 		fi
 
 		# 4. High unmapped-too-many-mismatches (>5%) suggests genome version mismatch
-		if awk "BEGIN{exit !(${mismatch_pct:-0} > 5)}" 2>/dev/null; then
+		local _mm_int=${mismatch_pct:-0}; _mm_int=${_mm_int%.*}
+		if (( _mm_int > 5 )); then
 			log_warn "[STAR QC] $SRR: Unmapped (mismatches) ${mismatch_pct}% — may indicate genome/species mismatch"
 			((warn_count++)) || true
 		fi
@@ -179,22 +181,25 @@ _star_check_alignment_rates() {
 	# Cohort-level outlier detection: flag samples >2 SD below mean unique mapping rate
 	local n=${#unique_rates[@]}
 	if [[ $n -ge 3 ]]; then
-		# Single AWK pass for mean, sd, threshold (replaces 2N+3 AWK spawns)
-		local _stats
-		_stats=$(printf '%s\n' "${unique_rates[@]}" | awk '{s+=$1; ss+=$1*$1} END{
-			m=s/NR; v=ss/NR - m*m; sd=(v>0)?sqrt(v):0
-			printf "%.2f %.2f %.2f", m, sd, m-2*sd
+		# Single AWK pass: compute stats AND find outliers (1 process instead of 2)
+		local _stats_and_outliers
+		_stats_and_outliers=$(printf '%s\n' "${unique_rates[@]}" | awk '{
+			vals[NR-1]=$1; s+=$1; ss+=$1*$1
+		} END {
+			m=s/NR; v=ss/NR - m*m; sd=(v>0)?sqrt(v):0; thr=m-2*sd
+			printf "%.2f %.2f %.2f", m, sd, thr
+			for (i=0; i<NR; i++) if (vals[i]+0 < thr+0) printf " %d", i
 		}')
-		local mean sd threshold
-		read -r mean sd threshold <<< "$_stats"
+		local mean sd threshold _outlier_rest
+		read -r mean sd threshold _outlier_rest <<< "$_stats_and_outliers"
 
 		log_info "[STAR QC] Cohort alignment stats: mean=${mean}%, SD=${sd}%, outlier threshold=${threshold}%"
 
-		for ((i=0; i<n; i++)); do
-			if awk "BEGIN{exit !(${unique_rates[$i]} < $threshold)}" 2>/dev/null; then
-				log_warn "[STAR QC] OUTLIER: ${sample_names[$i]} (${unique_rates[$i]}%) is >2 SD below cohort mean (${mean}%)"
-				((warn_count++)) || true
-			fi
+		# Extract outlier indices (captured by _outlier_rest from read above)
+		local _oi
+		for _oi in $_outlier_rest; do
+			log_warn "[STAR QC] OUTLIER: ${sample_names[$_oi]} (${unique_rates[$_oi]}%) is >2 SD below cohort mean (${mean}%)"
+			((warn_count++)) || true
 		done
 	fi
 
@@ -225,7 +230,7 @@ _star_check_alignment_rates() {
 
 star_alignment_pipeline() {
 	# Resolve GTF at runtime so the config's gtf_file is available
-	STAR_GTF_FILE="${STAR_GTF_FILE:-$gtf_file}"
+	STAR_GTF_FILE="${STAR_GTF_FILE:-${gtf_file:-}}"
 
 	local fasta="" transcriptome_fasta="" rnaseq_list=() tissue_tag=""
 
@@ -319,8 +324,8 @@ star_alignment_pipeline() {
 	fi
 
 	# If still relative, prepend PROJECT_ROOT
-	[[ "$abs_star_index_root" != /* ]] && abs_star_index_root="${PROJECT_ROOT}/${abs_star_index_root}"
-	[[ "$abs_star_align_root" != /* ]] && abs_star_align_root="${PROJECT_ROOT}/${abs_star_align_root}"
+	[[ "$abs_star_index_root" != /* ]] && abs_star_index_root="${PROJECT_ROOT:-$(pwd)}/${abs_star_index_root}"
+	[[ "$abs_star_align_root" != /* ]] && abs_star_align_root="${PROJECT_ROOT:-$(pwd)}/${abs_star_align_root}"
 
 	# Clean up any double slashes
 	abs_star_index_root="${abs_star_index_root//\/\//\/}"
@@ -439,8 +444,8 @@ star_alignment_pipeline() {
 		local genome_sa_index=14
 		local genome_chr_bin=18
 		local genome_bp num_seqs
-		genome_bp=$(awk '!/^>/{total+=length($0)} END{printf "%d", total+0}' "$fasta" 2>/dev/null)
-		num_seqs=$(grep -c '^>' "$fasta" 2>/dev/null || echo "1")
+		# Single awk pass extracts both metrics (replaces awk + grep — 1 process instead of 2)
+		eval "$(awk '/^>/{n++} !/^>/{bp+=length($0)} END{printf "genome_bp=%d num_seqs=%d", bp+0, (n>0?n:1)}' "$fasta" 2>/dev/null)"
 		if [[ -n "$genome_bp" && "$genome_bp" -gt 0 ]]; then
 			genome_sa_index=$(awk "BEGIN{v=int(log($genome_bp)/log(2)/2-1); print (v<14)?v:14}")
 			[[ "$genome_sa_index" -lt 1 ]] && genome_sa_index=1
@@ -485,6 +490,13 @@ star_alignment_pipeline() {
 	local threads_per_job=$((THREADS / parallel_jobs))
 	[[ $threads_per_job -lt 1 ]] && threads_per_job=1
 
+	# Calculate --limitBAMsortRAM for STAR's internal coordinate sorting.
+	# STAR sorts in-process when --outSAMtype BAM SortedByCoordinate, avoiding
+	# a separate samtools sort step (saves one full BAM read+write pass).
+	local _star_sort_ram_bytes
+	_star_sort_ram_bytes=$(_star_sort_ram "$parallel_jobs")
+	export _star_sort_ram_bytes
+
 	if command -v parallel >/dev/null 2>&1 && [[ "$parallel_jobs" -gt 1 ]] && [[ "${USE_GNU_PARALLEL:-TRUE}" != "FALSE" ]]; then
 		log_step "[PARALLEL] STAR alignment: ${#rnaseq_list[@]} samples, $parallel_jobs jobs x $threads_per_job threads"
 		log_warn "[PARALLEL] STAR is memory-intensive (~30GB/instance). Ensure sufficient RAM for $parallel_jobs concurrent jobs."
@@ -494,6 +506,7 @@ star_alignment_pipeline() {
 		export star_index_dir star_genome_dir
 		export STAR_DELETE_TRANSIENT PROJECT_ROOT
 		export effective_genome_load
+		export _STAR_READ_CMD _star_sort_ram_bytes
 		# Serialize array args for parallel workers (bash can't export arrays)
 		export _star_strand_args_str="${star_strand_args[*]}"
 		export _star_sj_filter_args_str="${star_sj_filter_args[*]}"
@@ -532,9 +545,8 @@ star_alignment_pipeline() {
 
 			local out_prefix="${star_genome_dir}/${SRR}_"
 			out_prefix="${out_prefix//\/\//\/}"
-			local unsorted_bam="${out_prefix}Aligned.out.bam"
 
-			_parallel_log STAR "$SRR" INFO "Aligning with $threads_per_job threads"
+			_parallel_log STAR "$SRR" INFO "Aligning with $threads_per_job threads (STAR internal sort, limitBAMsortRAM=${_star_sort_ram_bytes})"
 			_parallel_log STAR "$SRR" INFO "--- BEGIN STAR OUTPUT ---"
 
 			# Deserialize array args from exported strings
@@ -544,10 +556,11 @@ star_alignment_pipeline() {
 			STAR --runMode alignReads \
 				--genomeDir "$star_index_dir" \
 				--readFilesIn "${star_reads_args[@]}" \
-				--readFilesCommand "zcat -f" \
+				--readFilesCommand "$_STAR_READ_CMD" \
 				--outFileNamePrefix "$out_prefix" \
 				--outTmpDir "$star_tmp_dir" \
-				--outSAMtype BAM Unsorted \
+				--outSAMtype BAM SortedByCoordinate \
+				--limitBAMsortRAM "$_star_sort_ram_bytes" \
 				${_par_strand_args[@]:+"${_par_strand_args[@]}"} \
 				--outSAMattributes NH HI AS NM MD \
 				--outSAMunmapped Within \
@@ -559,24 +572,10 @@ star_alignment_pipeline() {
 
 			_parallel_log STAR "$SRR" INFO "--- END STAR OUTPUT ---"
 
-			if [[ ! -f "$unsorted_bam" ]]; then
-				_parallel_log STAR "$SRR" ERROR "Unsorted BAM not created"
+			if [[ ! -f "$bam_output" ]]; then
+				_parallel_log STAR "$SRR" ERROR "Sorted BAM not created by STAR"
 				return 1
 			fi
-
-			local unsorted_size
-			unsorted_size=$(stat -c%s "$unsorted_bam" 2>/dev/null || stat -f%z "$unsorted_bam" 2>/dev/null || echo "0")
-			if [[ "$unsorted_size" -lt 1000 ]]; then
-				_parallel_log STAR "$SRR" ERROR "Unsorted BAM is empty/corrupt (${unsorted_size} bytes)"
-				return 1
-			fi
-
-			local _sort_mem
-			_sort_mem=$(_samtools_sort_mem "$threads_per_job" "$parallel_jobs")
-			_parallel_log STAR "$SRR" INFO "Sorting BAM with samtools (-@ $threads_per_job -m $_sort_mem)"
-			samtools sort -@ "$threads_per_job" -m "$_sort_mem" -o "$bam_output" "$unsorted_bam" 2>&1 | sed 's/^/\t/'
-			local sort_exit=${PIPESTATUS[0]}
-			[[ $sort_exit -ne 0 ]] && { _parallel_log STAR "$SRR" ERROR "samtools sort failed"; return 1; }
 
 			local final_bam_size
 			final_bam_size=$(stat -c%s "$bam_output" 2>/dev/null || stat -f%z "$bam_output" 2>/dev/null || echo "0")
@@ -585,7 +584,6 @@ star_alignment_pipeline() {
 				return 1
 			fi
 
-			rm -f "$unsorted_bam"
 			samtools index -@ "$threads_per_job" "$bam_output" 2>&1 || true
 
 			# Clean up transient files
@@ -599,7 +597,7 @@ star_alignment_pipeline() {
 			_parallel_log STAR "$SRR" INFO "Completed successfully"
 			return 0
 		}
-		export -f _m3_star_parallel_worker _samtools_sort_mem
+		export -f _m3_star_parallel_worker _samtools_sort_mem _star_sort_ram
 
 		printf '%s\n' "${rnaseq_list[@]}" | parallel \
 			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
@@ -609,6 +607,7 @@ star_alignment_pipeline() {
 			--env STAR_DELETE_TRANSIENT --env PROJECT_ROOT \
 			--env OVERWRITE_MODE --env effective_genome_load \
 			--env _star_strand_args_str --env _star_sj_filter_args_str \
+			--env _STAR_READ_CMD --env _star_sort_ram_bytes \
 			-j "$parallel_jobs" \
 			--halt soon,fail=1 \
 			--joblog "$star_genome_dir/parallel_star_align.log" \
@@ -618,7 +617,9 @@ star_alignment_pipeline() {
 		log_info "[PARALLEL] STAR alignment complete (exit=$par_exit)"
 		[[ $par_exit -ne 0 ]] && log_warn "[PARALLEL] Some jobs failed - check $star_genome_dir/parallel_star_align.log"
 	else
-		# Sequential fallback
+		# Sequential fallback — recompute RAM budget for a single concurrent job
+		# (the initial _star_sort_ram was computed for parallel_jobs instances)
+		_star_sort_ram_bytes=$(_star_sort_ram 1)
 		for SRR in "${rnaseq_list[@]}"; do
 			local bam_output="$star_genome_dir/${SRR}_Aligned.sortedByCoord.out.bam"
 
@@ -705,17 +706,20 @@ star_alignment_pipeline() {
 				fi
 			fi
 
-			# Run STAR alignment - output UNSORTED BAM first, then sort with samtools
-			local unsorted_bam="${out_prefix}Aligned.out.bam"
+			# Run STAR alignment - use internal coordinate sorting (SortedByCoordinate)
+			# to avoid a separate samtools sort pass (saves one full BAM read+write cycle).
+			# This matches the parallel mode and saves ~15-25 min per sample.
+			log_info "[STAR] Aligning with STAR internal sort (limitBAMsortRAM=${_star_sort_ram_bytes})"
 
 			run_with_space_time_log --input "$TRIM_DIR_ROOT/$SRR" --output "$star_genome_dir" \
 				STAR --runMode alignReads \
 					--genomeDir "$star_index_dir" \
 					--readFilesIn "${star_reads_args[@]}" \
-					--readFilesCommand "zcat -f" \
+					--readFilesCommand "$_STAR_READ_CMD" \
 					--outFileNamePrefix "$out_prefix" \
 					--outTmpDir "$star_tmp_dir" \
-					--outSAMtype BAM Unsorted \
+					--outSAMtype BAM SortedByCoordinate \
+					--limitBAMsortRAM "$_star_sort_ram_bytes" \
 					${star_strand_args[@]:+"${star_strand_args[@]}"} \
 					--outSAMattributes NH HI AS NM MD \
 					--outSAMunmapped Within \
@@ -724,48 +728,25 @@ star_alignment_pipeline() {
 					--genomeLoad "$effective_genome_load" \
 					--runThreadN "$THREADS"
 
-			# Check if unsorted BAM was created
-			if [[ ! -f "$unsorted_bam" ]]; then
-				log_error "[STAR] FATAL: Unsorted BAM file not created for $SRR"
+			# Check if sorted BAM was created
+			if [[ ! -f "$bam_output" ]]; then
+				log_error "[STAR] FATAL: Sorted BAM file not created for $SRR"
 				log_error "[STAR] Check STAR log: ${out_prefix}Log.out"
-				# Show last 30 lines of STAR log
 				log_error "[STAR] Last 30 lines of STAR log:"
 				tail -30 "${out_prefix}Log.out" 2>/dev/null | while IFS= read -r line; do log_error "  $line"; done
 				return 1
 			fi
 
-			local unsorted_size
-			unsorted_size=$(stat -c%s "$unsorted_bam" 2>/dev/null || stat -f%z "$unsorted_bam" 2>/dev/null || echo "0")
-			if [[ "$unsorted_size" -lt 1000 ]]; then
-				log_error "[STAR] FATAL: Unsorted BAM is empty/corrupt for $SRR (${unsorted_size} bytes)"
-				log_error "[STAR] Last 30 lines of STAR log:"
-				tail -30 "${out_prefix}Log.out" 2>/dev/null | while IFS= read -r line; do log_error "  $line"; done
-				return 1
-			fi
-
-			# Sort BAM with samtools
-			local _sort_mem
-			_sort_mem=$(_samtools_sort_mem "$THREADS" 1)
-			log_info "[STAR] Sorting BAM with samtools (-@ $THREADS -m $_sort_mem)..."
-
-			if ! samtools sort -@ "$THREADS" -m "$_sort_mem" -o "$bam_output" "$unsorted_bam" 2>&1; then
-				log_error "[STAR] FATAL: samtools sort failed for $SRR"
-				return 1
-			fi
-
-			# Verify sorted BAM
 			local final_bam_size
 			final_bam_size=$(stat -c%s "$bam_output" 2>/dev/null || stat -f%z "$bam_output" 2>/dev/null || echo "0")
 			if [[ "$final_bam_size" -lt 1000 ]]; then
-				log_error "[STAR] FATAL: Sorted BAM file is empty/corrupt for $SRR (${final_bam_size} bytes)"
+				log_error "[STAR] FATAL: Sorted BAM is empty/corrupt for $SRR (${final_bam_size} bytes)"
+				log_error "[STAR] Last 30 lines of STAR log:"
+				tail -30 "${out_prefix}Log.out" 2>/dev/null | while IFS= read -r line; do log_error "  $line"; done
 				return 1
 			fi
 
 			log_info "[STAR] BAM sorted successfully: $final_bam_size bytes"
-
-			# Remove unsorted BAM to save space
-			rm -f "$unsorted_bam"
-			log_info "[STAR] Removed unsorted BAM to save space"
 
 			# Index the BAM
 			log_info "[STAR] Indexing BAM..."
@@ -778,16 +759,12 @@ star_alignment_pipeline() {
 			if [[ "${STAR_DELETE_TRANSIENT:-true}" == "true" ]]; then
 				log_info "[STAR] Cleaning up transient files for $SRR..."
 
-				# Remove 2-pass intermediate directories (can be several GB each)
-				rm -rf "${star_genome_dir}/${SRR}__STARgenome" 2>/dev/null || true
-				rm -rf "${star_genome_dir}/${SRR}__STARpass1" 2>/dev/null || true
-
-				# Remove any leftover temp directories
-				rm -rf "${star_genome_dir}/${SRR}_STARtmp" 2>/dev/null || true
-				rm -rf "${star_genome_dir}/_STARtmp_${SRR}" 2>/dev/null || true
-
-				# Remove progress log (Log.out and Log.final.out are kept for diagnostics)
-				rm -f "${star_genome_dir}/${SRR}_Log.progress.out" 2>/dev/null || true
+				# Remove 2-pass intermediate dirs, leftover temp dirs, and progress log in one call
+				rm -rf "${star_genome_dir}/${SRR}__STARgenome" \
+					"${star_genome_dir}/${SRR}__STARpass1" \
+					"${star_genome_dir}/${SRR}_STARtmp" \
+					"${star_genome_dir}/_STARtmp_${SRR}" \
+					"${star_genome_dir}/${SRR}_Log.progress.out" 2>/dev/null || true
 
 				log_info "[STAR] Transient files cleaned up for $SRR"
 			fi
@@ -830,12 +807,16 @@ star_alignment_pipeline() {
 	fi
 
 	# Validate transcriptome FASTA IDs match GTF transcript IDs (prevents tximport failures)
-	if [[ -f "${STAR_GTF_FILE:-}" && -f "$transcriptome_fasta" ]]; then
+	# Cache result per index directory to skip expensive GTF/FASTA parsing on re-runs
+	local _tx_validation_cache="$salmon_idx/.tx_id_validated"
+	if [[ -f "$_tx_validation_cache" ]]; then
+		log_info "[SALMON] Transcript ID validation: using cached result"
+	elif [[ -f "${STAR_GTF_FILE:-}" && -f "$transcriptome_fasta" ]]; then
 		local _fasta_ids _gtf_ids _overlap _fasta_count
-		_fasta_ids=$(grep '^>' "$transcriptome_fasta" | head -20 | sed 's/^>//; s/ .*//' | sed 's/\.[0-9]*$//')
-		_fasta_count=$(echo "$_fasta_ids" | wc -l)
-		_gtf_ids=$(awk '$3=="transcript" { for(i=9;i<=NF;i++) if($i=="transcript_id") { gsub(/[";]/,"",$(i+1)); print $(i+1) } }' "$STAR_GTF_FILE" | sed 's/\.[0-9]*$//' | sort -u)
-		_overlap=$(echo "$_fasta_ids" | grep -cFxf <(echo "$_gtf_ids") || true)
+		_fasta_ids=$(grep '^>' "$transcriptome_fasta" | head -20 | sed 's/^>//; s/ .*//; s/\.[0-9]*$//')
+		_fasta_count=$(printf '%s\n' "$_fasta_ids" | wc -l)
+		_gtf_ids=$(awk '$3=="transcript" { for(i=9;i<=NF;i++) if($i=="transcript_id") { id=$(i+1); gsub(/[";]/,"",id); sub(/\.[0-9]*$/,"",id); print id } }' "$STAR_GTF_FILE" | sort -u)
+		_overlap=$(printf '%s\n' "$_fasta_ids" | grep -cFxf <(printf '%s\n' "$_gtf_ids") || true)
 		if [[ "$_overlap" -eq 0 && "$_fasta_count" -gt 0 ]]; then
 			log_warn "[SALMON] Transcript ID mismatch: transcriptome FASTA IDs do not match GTF transcript_id attributes"
 			log_warn "[SALMON]   FASTA example: $(echo "$_fasta_ids" | head -3 | tr '\n' ', ')"
@@ -844,6 +825,7 @@ star_alignment_pipeline() {
 			log_warn "[SALMON]   Fix: use a transcriptome FASTA derived from the same annotation as the GTF,"
 			log_warn "[SALMON]   or set STAR_TRANSCRIPTOME_FASTA to a FASTA whose IDs match: ${STAR_GTF_FILE}"
 		fi
+		touch "$_tx_validation_cache"
 	fi
 
 	# Quantify samples

@@ -36,8 +36,8 @@ compare_methods_summary() {
 	# Method 1: HISAT2 Reference-Guided
 	local m1_matrix="$STRINGTIE_HISAT2_REF_GUIDED_ROOT/deseq2_input/gene_count_matrix.csv"
 	if [[ -f "$m1_matrix" ]]; then
-		local m1_genes=$(tail -n +2 "$m1_matrix" | wc -l)
-		local m1_samples=$(head -n1 "$m1_matrix" | tr ',' '\n' | tail -n +2 | wc -l)
+		local m1_genes m1_samples
+		read -r m1_genes m1_samples < <(awk -F',' 'NR==1{s=NF-1} END{printf "%d %d", NR-1, s}' "$m1_matrix")
 		log_info "✅ Method 1 (HISAT2 Ref-Guided): $m1_genes genes, $m1_samples samples"
 		log_info "   Status: BEST for publication (true read counts via prepDE.py)"
 	fi
@@ -53,8 +53,8 @@ compare_methods_summary() {
 	# Output filename follows the tximport naming convention set by tximport_star_helper.R
 	local m3_matrix="$STAR_MATRIX_ROOT/gene_level/${fasta_tag}_NumReads_Gene_ID_from_${fasta_tag}_gene_level.tsv"
 	if [[ -f "$m3_matrix" ]]; then
-		local m3_genes=$(tail -n +2 "$m3_matrix" | wc -l)
-		local m3_samples=$(head -n1 "$m3_matrix" | tr '\t' '\n' | tail -n +2 | wc -l)
+		local m3_genes m3_samples
+		read -r m3_genes m3_samples < <(awk -F'\t' 'NR==1{s=NF-1} END{printf "%d %d", NR-1, s}' "$m3_matrix")
 		log_info "✅ Method 3 (STAR): $m3_genes genes, $m3_samples samples"
 		log_info "   Status: Splice-aware alignment with Salmon quantification"
 	fi
