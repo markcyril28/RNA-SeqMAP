@@ -283,11 +283,11 @@ read_gene_list_from_file <- function(gene_list_file) {
 }
 
 truncate_labels <- function(labels, max_length = 25) {
-  sapply(as.character(labels), function(x) {
-    if (is.na(x) || is.null(x)) return("")
-    if (nchar(x) > max_length) paste0(substr(x, 1, max_length - 3), "...")
-    else x
-  }, USE.NAMES = FALSE)
+  labels <- as.character(labels)
+  labels[is.na(labels)] <- ""
+  too_long <- nchar(labels) > max_length
+  labels[too_long] <- paste0(substr(labels[too_long], 1, max_length - 3), "...")
+  labels
 }
 
 # ===============================================
@@ -712,19 +712,29 @@ apply_labels <- function(counts_matrix, gene_group, gene_type, label_type) {
       ordered_organs <- ordered_organs[!is.na(ordered_organs)]
       # Match against base organ names (stripped of .1/.2 suffixes) so that
       # duplicates like "Flower_Buds.1" correctly match "Flower_Buds".
-      # Pre-allocate result vector instead of O(n²) c() concatenation
+      # Vectorized approach: for each ordered_organ, find its first unused column match.
+      # When organs repeat, we need sequential consumption (first match, then second, etc.)
+      # Group column indices by base organ name for O(1) lookup per organ.
+      col_groups <- split(seq_along(base_cols), base_cols)
+      # Track consumption position within each group
+      group_pos <- integer(length(col_groups))
+      names(group_pos) <- names(col_groups)
       matched_indices <- integer(length(ordered_organs))
-      used <- logical(ncol(result))
       n_matched <- 0L
       for (organ in ordered_organs) {
-        candidates <- which(base_cols == organ & !used)
-        if (length(candidates) > 0) {
-          n_matched <- n_matched + 1L
-          matched_indices[n_matched] <- candidates[1]
-          used[candidates[1]] <- TRUE
+        if (!is.null(col_groups[[organ]])) {
+          pos <- group_pos[[organ]] + 1L
+          indices <- col_groups[[organ]]
+          if (pos <= length(indices)) {
+            n_matched <- n_matched + 1L
+            matched_indices[n_matched] <- indices[pos]
+            group_pos[[organ]] <- pos
+          }
         }
       }
       matched_indices <- matched_indices[seq_len(n_matched)]
+      used <- logical(ncol(result))
+      used[matched_indices] <- TRUE
       # Columns not matched by the expected order (keep at end)
       unmatched_indices <- which(!used)
       ordered_indices <- c(matched_indices, unmatched_indices)
@@ -781,9 +791,19 @@ map_tissue_to_group <- function(tissue_name) {
   return("Other")
 }
 
-# Vectorized version for sapply
+# Vectorized version using grepl on entire vector (avoids per-element sapply overhead)
 get_tissue_groups <- function(tissue_names) {
-  sapply(tissue_names, map_tissue_to_group, USE.NAMES = FALSE)
+  result <- rep("Other", length(tissue_names))
+  # Later matches override earlier ones, so check in reverse priority
+  mask_seedling     <- grepl("Radicle|Cotyledon", tissue_names, ignore.case = TRUE)
+  mask_fruit        <- grepl("Fruit|peduncle", tissue_names, ignore.case = TRUE)
+  mask_reproductive <- grepl("Flower|Bud|Pistil|Stamen", tissue_names, ignore.case = TRUE)
+  mask_vegetative   <- grepl("Root|Stem|Leaf|Leaves|Senescent", tissue_names, ignore.case = TRUE)
+  result[mask_seedling]     <- "Seedling"
+  result[mask_fruit]        <- "Fruit"
+  result[mask_reproductive] <- "Reproductive"
+  result[mask_vegetative]   <- "Vegetative"
+  result
 }
 
 # ===============================================
