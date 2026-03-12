@@ -117,7 +117,8 @@ hisat2_de_novo_pipeline() {
 					log_warn "[STRANDNESS] Detection alignment failed — running unstranded"
 					rm -f "$_det_bam"
 				elif [[ -z "$_det_wi_flag" ]]; then
-					samtools index -@ "$THREADS" "$_det_bam" 2>/dev/null
+					local _idx_t=$THREADS; (( _idx_t > 4 )) && _idx_t=4
+				samtools index -@ "$_idx_t" "$_det_bam" 2>/dev/null
 				fi
 			fi
 
@@ -291,7 +292,8 @@ hisat2_de_novo_pipeline() {
 
 				# Only run separate index if --write-index was not used
 				if [[ -z "$_sort_wi_flag" ]]; then
-					run_with_space_time_log samtools index -@ "${THREADS}" "$bam" \
+					local _idx_t=$THREADS; (( _idx_t > 4 )) && _idx_t=4
+				run_with_space_time_log samtools index -@ "$_idx_t" "$bam" \
 						|| { log_error "[SAMTOOLS] index failed for $SRR"; rm -f "$bam"; ((_seq_failures++)) || true; continue; }
 				fi
 			fi

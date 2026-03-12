@@ -85,27 +85,45 @@ _rsem_detect_strandedness() {
 	local salmon_idx="$tmp_dir/salmon_idx"
 	local salmon_quant="$tmp_dir/salmon_quant"
 
-	# Build a lightweight Salmon index (using the same transcriptome FASTA)
+	# Build a lightweight Salmon index (smaller k-mer for speed)
 	local _detect_threads=$(( ${THREADS:-8} / 4 ))
 	[[ $_detect_threads -lt 2 ]] && _detect_threads=2
-	salmon index -t "$fasta" -i "$salmon_idx" --threads "$_detect_threads" -k 23 2>"$tmp_dir/salmon_index.log" || {
+	salmon index -t "$fasta" -i "$salmon_idx" --threads "$_detect_threads" -k 23 --keepDuplicates 2>"$tmp_dir/salmon_index.log" || {
 		log_warn "[STRANDEDNESS] Salmon index failed — falling back to 'none'"
 		rm -rf "$tmp_dir"
 		RSEM_STRANDEDNESS="none"
 		return 0
 	}
 
-	# Quantify with --libType A (auto-detect) using a read subset (--numBootstraps 0, --validateMappings off for speed)
-	local salmon_exit
+	# Subsample reads for faster strandness detection (~200k reads is sufficient)
+	# This avoids mapping the entire FASTQ just to detect library type
+	local _sub1="$tmp_dir/sub_R1.fq.gz" _sub2=""
+	local _subsample_lines=800000  # 200k reads × 4 lines per FASTQ record
+	if [[ "$trimmed1" == *.gz ]]; then
+		${_SHARED_GZIP_DC:-gzip -dc} "$trimmed1" | head -n $_subsample_lines | gzip -1 > "$_sub1"
+	else
+		head -n $_subsample_lines "$trimmed1" | gzip -1 > "$_sub1"
+	fi
 	if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
+		_sub2="$tmp_dir/sub_R2.fq.gz"
+		if [[ "$trimmed2" == *.gz ]]; then
+			${_SHARED_GZIP_DC:-gzip -dc} "$trimmed2" | head -n $_subsample_lines | gzip -1 > "$_sub2"
+		else
+			head -n $_subsample_lines "$trimmed2" | gzip -1 > "$_sub2"
+		fi
+	fi
+
+	# Quantify with --libType A (auto-detect) using subsampled reads + --skipQuant for speed
+	local salmon_exit
+	if [[ -n "$_sub2" && -f "$_sub2" ]]; then
 		salmon quant -i "$salmon_idx" -l A \
-			-1 "$trimmed1" -2 "$trimmed2" \
+			-1 "$_sub1" -2 "$_sub2" \
 			-o "$salmon_quant" --threads "$_detect_threads" \
 			--skipQuant 2>"$tmp_dir/salmon_quant.log"
 		salmon_exit=$?
 	else
 		salmon quant -i "$salmon_idx" -l A \
-			-r "$trimmed1" \
+			-r "$_sub1" \
 			-o "$salmon_quant" --threads "$_detect_threads" \
 			--skipQuant 2>"$tmp_dir/salmon_quant.log"
 		salmon_exit=$?
@@ -127,26 +145,16 @@ _rsem_detect_strandedness() {
 		return 0
 	fi
 
-	# Single Python call: extract library type AND fragment stats (replaces 2 python3 spawns)
+	# Extract library type and fragment stats with awk (avoids Python interpreter startup ~0.3s)
 	local inferred_type num_compat
-	eval "$(python3 -c "
-import json
-with open('$lib_format') as f:
-    d = json.load(f)
-fmt = d.get('expected_format', 'U')
-print(f'inferred_type={fmt}')
-lines = []
-for k in ['compatible_fragment_ratio', 'num_compatible_fragments', 'num_assigned_fragments']:
-    if k in d: lines.append(f'  {k}: {d[k]}')
-for k in sorted(d.keys()):
-    if 'strand' in k.lower() or k.startswith('read'): lines.append(f'  {k}: {d[k]}')
-# Shell-safe: newlines encoded for eval
-if lines:
-    import shlex
-    print('num_compat=' + shlex.quote(chr(10).join(lines)))
-else:
-    print('num_compat=')
-" 2>/dev/null)"
+	inferred_type=$(awk -F'"' '/"expected_format"/ {print $4}' "$lib_format")
+	[[ -z "$inferred_type" ]] && inferred_type="U"
+	num_compat=$(awk -F'[":, ]+' '
+		/compatible_fragment_ratio|num_compatible_fragments|num_assigned_fragments|strand|^.*"read/ {
+			gsub(/[{}]/, ""); gsub(/^[ \t]+|[ \t]+$/, "")
+			if (NF >= 2) print "  " $2 ": " $3
+		}
+	' "$lib_format" 2>/dev/null)
 
 	# Map Salmon library type codes to RSEM strandedness
 	# Salmon paired-end: IU=unstranded, ISF=forward(sense), ISR=reverse(antisense)

@@ -518,7 +518,11 @@ hisat2_ref_guided_pipeline() {
 				fi
 
 				# Only run separate index if --write-index was not used
-				[[ -z "$_sort_wi_flag" ]] && run_with_space_time_log samtools index -@ "${THREADS}" "$bam"
+				# Cap index threads at 4 — samtools index is I/O-bound
+				if [[ -z "$_sort_wi_flag" ]]; then
+					local _idx_t=$THREADS; (( _idx_t > 4 )) && _idx_t=4
+					run_with_space_time_log samtools index -@ "$_idx_t" "$bam"
+				fi
 
 				# Infer strandness once on the first sample
 				if [[ -z "$strandness" && -z "${_m1_strand_inferred:-}" ]]; then
