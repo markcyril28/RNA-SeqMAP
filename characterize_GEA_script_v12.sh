@@ -261,15 +261,17 @@ for config_file in "${CONFIG_FILES[@]}"; do
 			_remainder="${_pair#*|}"
 			_fasta="${_remainder%%|*}"
 			STAR_TRANSCRIPTOME_FASTA="${_remainder#*|}"
+			# If no third field existed, strip fell back to the full string — reset to empty
+			[[ "$STAR_TRANSCRIPTOME_FASTA" == "$_fasta" ]] && STAR_TRANSCRIPTOME_FASTA=""
 			export gtf_file STAR_TRANSCRIPTOME_FASTA
-			local _rc=0
+			_rc=0
 			run_all --FASTA "$_fasta" --RNASEQ_LIST "${SRR_COMBINED_LIST[@]}" || _rc=$?
 			total_failures=$((total_failures + _rc))
 		done
 		unset _pair _remainder _fasta gtf_file STAR_TRANSCRIPTOME_FASTA
 	elif [[ ${#ALL_FASTA_FILES[@]} -gt 0 ]]; then
 		for fasta_input in "${ALL_FASTA_FILES[@]}"; do
-			local _rc=0
+			_rc=0
 			run_all --FASTA "$fasta_input" --RNASEQ_LIST "${SRR_COMBINED_LIST[@]}" || _rc=$?
 			total_failures=$((total_failures + _rc))
 		done
