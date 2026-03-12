@@ -116,10 +116,11 @@ _PARALLEL_ANALYSES=(
 )
 
 # Check whether an analysis belongs to the parallelisable (figure) set.
+# Note: list is inlined because bash cannot export arrays to GNU Parallel subshells.
 # Usage: is_figure_analysis "Basic_Heatmap" && echo yes
 is_figure_analysis() {
     local a
-    for a in "${_PARALLEL_ANALYSES[@]}"; do
+    for a in Basic_Heatmap Heatmap_with_CV BarGraph Sample_Correlation_Clustering Tissue_Specificity; do
         [[ "$1" == "$a" ]] && return 0
     done
     return 1
@@ -289,7 +290,7 @@ export_utils_for_parallel() {
     # Export logging functions (from logging_utils.sh)
     export -f log log_info log_warn log_error log_step timestamp
     # Export error capture (from logging_utils.sh)
-    export -f run_with_error_capture capture_stderr_errors 2>/dev/null || true
+    export -f run_with_error_capture capture_stderr_errors strip_ansi_stream 2>/dev/null || true
     # Export error/warning regex patterns used by capture_stderr_errors
     export _ERROR_PATTERN _WARN_PATTERN 2>/dev/null || true
     # Export pipeline functions
