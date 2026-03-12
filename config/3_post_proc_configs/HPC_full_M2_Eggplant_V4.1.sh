@@ -84,13 +84,4 @@ ANALYSES=(
     # ---- Visualisation ----
     "Basic_Heatmap"
     "Heatmap_with_CV"
-    #"BarGraph"
-
-    # ---- Statistics ----
-    #"Differential_Expression"   # NOT supported for M2
-    #"PCA_Dimensionality_Reduction"
-    #"Sample_Correlation_Clustering"
-    #"Tissue_Specificity"        # Applicable — transcript-level TPM from StringTie
-    #"Coexpression_using_WGCNA"
-    #"Gene_Set_Enrichment"
 )

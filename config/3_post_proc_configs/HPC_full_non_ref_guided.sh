@@ -103,11 +103,4 @@ ANALYSES=(
 
     "Basic_Heatmap"
     "Heatmap_with_CV"
-    #"BarGraph"
-    #"Differential_Expression"
-    #"Gene_Set_Enrichment"
-    "PCA_Dimensionality_Reduction"
-    "Sample_Correlation_Clustering"
-    "Tissue_Specificity"
-    #"Coexpression_using_WGCNA"
 )
