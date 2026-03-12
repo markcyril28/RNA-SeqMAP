@@ -179,11 +179,11 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
   row_ha <- rowAnnotation(
     Stability = anno_simple(ifelse(flagged, "Unstable", "Stable"),
                             col = c(Unstable = "#EF8A62", Stable = "#81C784"),
-                            width = unit(0.8, "cm")),
+                            width = unit(1, "cm")),
     Rank_Range = anno_barplot(rank_range,
                               gp = gpar(fill = ifelse(flagged, "#EF8A62", "#81C784")),
-                              width = unit(2, "cm")),
-    annotation_name_gp = gpar(fontsize = 8)
+                              width = unit(2.5, "cm")),
+    annotation_name_gp = gpar(fontsize = 9)
   )
 
   ht <- Heatmap(display_rank_mat,
@@ -193,26 +193,106 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
     cluster_columns = FALSE,
     cell_fun = function(j, i, x, y, width, height, fill) {
       grid.text(display_rank_mat[i, j], x, y,
-                gp = gpar(fontsize = if (n_genes > 15) 7 else 9, fontface = "bold"))
+                gp = gpar(fontsize = if (n_genes > 15) 9 else 11, fontface = "bold"))
     },
-    row_names_gp = gpar(fontsize = if (n_genes > 15) 7 else 9),
-    column_names_gp = gpar(fontsize = 9),
+    row_names_gp = gpar(fontsize = if (n_genes > 15) 9 else 11),
+    row_names_max_width = unit(8, "cm"),
+    column_names_gp = gpar(fontsize = 12),
     column_names_rot = 45,
     column_title = paste0("Expression Ranking Across Methods: ", gene_group),
-    column_title_gp = gpar(fontsize = 11, fontface = "bold"),
+    column_title_gp = gpar(fontsize = 14, fontface = "bold"),
     right_annotation = row_ha,
     heatmap_legend_param = list(
       title = "Rank\n(1=highest)",
-      legend_height = unit(3, "cm")
+      legend_height = unit(4, "cm")
     )
   )
 
-  fig_height <- max(400, 80 + n_genes * 22)
+  fig_height <- max(700, 200 + n_genes * 35)
   png(file.path(FIGURES_DIR, paste0("ranking_heatmap_", gene_group, ".png")),
-      width = 900, height = fig_height, res = 150)
-  draw(ht, padding = unit(c(10, 15, 10, 20), "mm"))
+      width = 1600, height = fig_height, res = 150)
+  draw(ht, padding = unit(c(30, 30, 25, 40), "mm"))
   dev.off()
   cat("  Saved: ranking_heatmap_", gene_group, ".png\n", sep = "")
+
+  # -----------------------------------------------
+  # Z-score scaled (0–10) heatmap for gene group
+  # -----------------------------------------------
+  # Normalizes each gene's expression across methods to a common 0–10 scale
+  # so all genes are directly comparable regardless of absolute expression.
+
+  cat("  Generating Z-score scaled heatmap...\n")
+
+  log2_mean_tpm <- log2(mean_tpm_matrix + 1)
+  zscore_grp <- t(scale(t(log2_mean_tpm)))
+  zscore_grp[is.nan(zscore_grp)] <- 0
+  grp_row_mins <- apply(zscore_grp, 1, min, na.rm = TRUE)
+  grp_row_maxs <- apply(zscore_grp, 1, max, na.rm = TRUE)
+  grp_row_range <- grp_row_maxs - grp_row_mins
+  zscore_grp_scaled <- (zscore_grp - grp_row_mins) / ifelse(grp_row_range == 0, 1, grp_row_range) * 10
+  zscore_grp_scaled[grp_row_range == 0, ] <- 5.0
+
+  # Use display names and same row order as ranking heatmap (by median rank)
+  display_zscore_mat <- zscore_grp_scaled
+  rownames(display_zscore_mat) <- display_names
+  display_zscore_mat <- display_zscore_mat[order(median_rank), , drop = FALSE]
+  ordered_rank_range <- rank_range[order(median_rank)]
+  ordered_flagged <- flagged[order(median_rank)]
+
+  col_fun_z <- colorRamp2(c(0, 5, 10), c("#2166AC", "#F7F7F7", "#B2182B"))
+
+  cell_fun_z <- function(j, i, x, y, width, height, fill) {
+    grid.text(sprintf("%.1f", display_zscore_mat[i, j]), x, y,
+              gp = gpar(fontsize = if (n_genes > 15) 9 else 11, fontface = "bold"))
+  }
+
+  row_ha_z <- rowAnnotation(
+    Rank_Range = anno_barplot(ordered_rank_range,
+                              gp = gpar(fill = ifelse(ordered_flagged, "#EF8A62", "#81C784")),
+                              width = unit(2.5, "cm")),
+    annotation_name_gp = gpar(fontsize = 9)
+  )
+
+  ht_z <- Heatmap(display_zscore_mat,
+    name = "Z-Score\n(0-10)",
+    col = col_fun_z,
+    cell_fun = cell_fun_z,
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    row_names_gp = gpar(fontsize = if (n_genes > 15) 9 else 11),
+    row_names_max_width = unit(8, "cm"),
+    column_names_gp = gpar(fontsize = 12),
+    column_names_rot = 45,
+    column_title = paste0("Cross-Method Expression (Z-Score 0\u201310): ", gene_group),
+    column_title_gp = gpar(fontsize = 14, fontface = "bold"),
+    right_annotation = row_ha_z,
+    heatmap_legend_param = list(
+      title = "Z-Score\n(0-10)",
+      at = c(0, 2.5, 5, 7.5, 10),
+      labels = c("0 (low)", "2.5", "5 (avg)", "7.5", "10 (high)"),
+      legend_height = unit(4, "cm")
+    )
+  )
+
+  png(file.path(FIGURES_DIR, paste0("zscore_heatmap_", gene_group, ".png")),
+      width = 1600, height = fig_height, res = 150)
+  draw(ht_z, padding = unit(c(30, 30, 25, 40), "mm"))
+  dev.off()
+  cat("  Saved: zscore_heatmap_", gene_group, ".png\n", sep = "")
+
+  # Save Z-score table
+  zscore_grp_df <- data.frame(
+    Gene_ID = matched_genes[order(median_rank)],
+    Shortened_Name = display_names[order(median_rank)],
+    zscore_grp_scaled[order(median_rank), , drop = FALSE],
+    Mean_TPM = round(rowMeans(mean_tpm_matrix)[order(median_rank)], 2),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+  write.csv(zscore_grp_df,
+            file.path(TABLES_DIR, paste0("zscore_expression_", gene_group, ".csv")),
+            row.names = FALSE)
+  cat("  Saved: zscore_expression_", gene_group, ".csv\n", sep = "")
 
   # -----------------------------------------------
   # Bump chart (ranking across methods)
@@ -229,18 +309,19 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
                                      "#FF9800", "#F44336", "#795548"))(n_genes)
 
   png(file.path(FIGURES_DIR, paste0("ranking_bump_chart_", gene_group, ".png")),
-      width = max(600, 150 * n_methods_plot), height = max(500, 50 + n_genes * 25), res = 150)
+      width = max(1200, 260 * n_methods_plot), height = max(850, 120 + n_genes * 40), res = 150)
 
-  par(mar = c(5, 8, 3, 12), xpd = TRUE)
+  par(mar = c(10, 10, 6, 20), xpd = TRUE)
   plot(1, type = "n",
        xlim = c(0.5, n_methods_plot + 0.5),
        ylim = c(n_genes + 0.5, 0.5),
        xlab = "", ylab = "Rank (1 = highest)",
        xaxt = "n", yaxt = "n",
-       main = paste0("Expression Ranking Stability: ", gene_group))
+       main = paste0("Expression Ranking Stability: ", gene_group),
+       cex.main = 1.3, cex.lab = 1.2)
 
-  axis(1, at = seq_len(n_methods_plot), labels = method_labels, las = 2, cex.axis = 0.8)
-  axis(2, at = seq_len(n_genes), las = 1, cex.axis = 0.7)
+  axis(1, at = seq_len(n_methods_plot), labels = method_labels, las = 2, cex.axis = 1.0)
+  axis(2, at = seq_len(n_genes), las = 1, cex.axis = 0.9)
 
   for (i in seq_len(n_genes)) {
     ranks <- rank_matrix[i, ]
@@ -257,7 +338,7 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
   legend("right", inset = c(-0.35, 0),
          legend = display_names,
          col = gene_colors, lwd = 2, pch = 16,
-         cex = if (n_genes > 12) 0.55 else 0.7,
+         cex = if (n_genes > 12) 0.75 else 0.95,
          ncol = if (n_genes > 20) 2 else 1,
          bg = "white")
 

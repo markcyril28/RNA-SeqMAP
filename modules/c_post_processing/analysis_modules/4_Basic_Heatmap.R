@@ -220,7 +220,7 @@ process_basic_heatmap <- function(gene_group, gene_group_output_dir, processing_
   
   norm_display <- get_norm_display_name(norm_scheme)
   
-  for (orient in get_orientation_options()) {
+  for (orient in get_orientation_options(gene_group)) {
     for (sorting in get_sorting_options()) {
       
       version_dir <- file.path(

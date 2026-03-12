@@ -131,13 +131,12 @@ cat("\n--- Generating concordance heatmaps ---\n")
 plot_concordance_heatmap <- function(cor_mat, cor_type, output_file) {
   col_fun <- colorRamp2(
     seq(min(cor_mat, na.rm = TRUE), 1, length.out = 100),
-    colorRampPalette(c("#2166AC", "#67A9CF", "#D1E5F0", "#F7F7F7",
-                       "#FDDBC7", "#EF8A62", "#B2182B"))(100)
+    colorRampPalette(c("#FFFFFF", "#D1E5F0", "#67A9CF", "#2166AC"))(100)
   )
 
-  # Annotation with cell values
+  # Annotation with cell values — use 2 decimal places to avoid overlap
   cell_fun <- function(j, i, x, y, width, height, fill) {
-    grid.text(sprintf("%.3f", cor_mat[i, j]), x, y, gp = gpar(fontsize = 11, fontface = "bold"))
+    grid.text(sprintf("%.2f", cor_mat[i, j]), x, y, gp = gpar(fontsize = 12, fontface = "bold"))
   }
 
   ht <- Heatmap(cor_mat,
@@ -148,19 +147,21 @@ plot_concordance_heatmap <- function(cor_mat, cor_type, output_file) {
     cluster_columns = TRUE,
     show_row_dend = TRUE,
     show_column_dend = TRUE,
-    row_names_gp = gpar(fontsize = 10),
-    column_names_gp = gpar(fontsize = 10),
+    row_names_gp = gpar(fontsize = 13),
+    column_names_gp = gpar(fontsize = 13),
     column_names_rot = 45,
     column_title = paste0("Cross-Method Concordance (Median ", cor_type, " Correlation)"),
-    column_title_gp = gpar(fontsize = 13, fontface = "bold"),
+    column_title_gp = gpar(fontsize = 16, fontface = "bold"),
     heatmap_legend_param = list(
       title = paste("Median\n", cor_type),
-      legend_height = unit(4, "cm")
-    )
+      legend_height = unit(5, "cm")
+    ),
+    width = unit(14, "cm"),
+    height = unit(14, "cm")
   )
 
-  png(output_file, width = 700, height = 600, res = 150)
-  draw(ht, padding = unit(c(10, 10, 10, 20), "mm"))
+  png(output_file, width = 1600, height = 1300, res = 150)
+  draw(ht, padding = unit(c(30, 30, 25, 40), "mm"))
   dev.off()
   cat("  Saved:", output_file, "\n")
 }
@@ -177,19 +178,20 @@ plot_concordance_heatmap(median_pearson, "Pearson",
 cat("--- Generating per-sample correlation boxplot ---\n")
 
 png(file.path(FIGURES_DIR, "per_sample_correlation_boxplot.png"),
-    width = max(900, 100 * ncol(spearman_per_sample)), height = 600, res = 150)
+    width = max(1800, 220 * ncol(spearman_per_sample)), height = 1200, res = 150)
 
-par(mar = c(10, 4, 3, 1))
+par(mar = c(18, 7, 6, 4))
 boxplot(spearman_per_sample,
-        las = 2, cex.axis = 0.7,
+        las = 2, cex.axis = 1.0,
         main = "Spearman Correlation per Sample (All Method Pairs)",
-        ylab = "Spearman rho",
+        cex.main = 1.4,
+        ylab = "Spearman rho", cex.lab = 1.2,
         col = colorRampPalette(c("#CE93D8", "#4A148C"))(ncol(spearman_per_sample)),
         outline = TRUE, notch = FALSE)
 abline(h = 0.9, lty = 2, col = "red")
 abline(h = 0.95, lty = 3, col = "darkgreen")
 legend("bottomleft", legend = c("rho=0.90", "rho=0.95"), lty = c(2, 3),
-       col = c("red", "darkgreen"), cex = 0.7, bg = "white")
+       col = c("red", "darkgreen"), cex = 1.0, bg = "white")
 
 dev.off()
 cat("  Saved: per_sample_correlation_boxplot.png\n")
@@ -267,29 +269,101 @@ if (n_discordant > 0) {
     cluster_rows = TRUE,
     cluster_columns = FALSE,
     show_row_names = top_n <= 50,
-    row_names_gp = gpar(fontsize = if (top_n > 30) 6 else 8),
-    column_names_gp = gpar(fontsize = 10),
+    row_names_gp = gpar(fontsize = if (top_n > 30) 8 else 10),
+    row_names_max_width = unit(8, "cm"),
+    column_names_gp = gpar(fontsize = 13),
     column_names_rot = 45,
     column_title = paste0("Top ", top_n, " Discordant Genes Across Methods"),
-    column_title_gp = gpar(fontsize = 12, fontface = "bold"),
+    column_title_gp = gpar(fontsize = 15, fontface = "bold"),
     right_annotation = rowAnnotation(
       CV = anno_barplot(gene_cv[top_discordant],
                         gp = gpar(fill = "#EF8A62"),
-                        width = unit(2, "cm")),
-      annotation_name_gp = gpar(fontsize = 9)
+                        width = unit(3, "cm")),
+      annotation_name_gp = gpar(fontsize = 10)
     ),
     heatmap_legend_param = list(
       title = "Mean\nlog2(TPM+1)",
-      legend_height = unit(4, "cm")
+      legend_height = unit(5, "cm")
     )
   )
 
-  fig_height <- max(600, 100 + top_n * 15)
+  fig_height <- max(1000, 200 + top_n * 28)
   png(file.path(FIGURES_DIR, "discordant_genes_heatmap.png"),
-      width = 800, height = fig_height, res = 150)
-  draw(ht, padding = unit(c(10, 10, 10, 20), "mm"))
+      width = 1600, height = fig_height, res = 150)
+  draw(ht, padding = unit(c(30, 25, 25, 40), "mm"))
   dev.off()
   cat("  Saved: discordant_genes_heatmap.png\n")
+
+  # -----------------------------------------------
+  # 2.6b Z-score scaled (0–10) heatmap for discordant genes
+  # -----------------------------------------------
+  # Normalizes each gene across methods so all genes share a common 0–10 scale,
+  # making it easy to compare method agreement regardless of absolute expression.
+
+  cat("--- Generating Z-score scaled heatmap for discordant genes ---\n")
+
+  zscore_mat <- t(scale(t(disc_mat)))
+  zscore_mat[is.nan(zscore_mat)] <- 0  # zero-SD genes (identical across methods)
+  row_mins <- apply(zscore_mat, 1, min, na.rm = TRUE)
+  row_maxs <- apply(zscore_mat, 1, max, na.rm = TRUE)
+  row_range <- row_maxs - row_mins
+  zscore_scaled <- (zscore_mat - row_mins) / ifelse(row_range == 0, 1, row_range) * 10
+  # Zero-SD genes get flat 5.0 (midpoint)
+  zscore_scaled[row_range == 0, ] <- 5.0
+
+  col_fun_z <- colorRamp2(
+    c(0, 5, 10),
+    c("#2166AC", "#F7F7F7", "#B2182B")
+  )
+
+  cell_fun_z <- function(j, i, x, y, width, height, fill) {
+    grid.text(sprintf("%.1f", zscore_scaled[i, j]), x, y,
+              gp = gpar(fontsize = if (top_n > 30) 7 else 9, fontface = "bold"))
+  }
+
+  ht_z <- Heatmap(zscore_scaled,
+    name = "Z-Score\n(0-10)",
+    col = col_fun_z,
+    cell_fun = cell_fun_z,
+    cluster_rows = TRUE,
+    cluster_columns = FALSE,
+    show_row_names = top_n <= 50,
+    row_names_gp = gpar(fontsize = if (top_n > 30) 8 else 10),
+    row_names_max_width = unit(8, "cm"),
+    column_names_gp = gpar(fontsize = 13),
+    column_names_rot = 45,
+    column_title = paste0("Top ", top_n, " Discordant Genes \u2014 Z-Score Scaled (0\u201310)"),
+    column_title_gp = gpar(fontsize = 15, fontface = "bold"),
+    right_annotation = rowAnnotation(
+      CV = anno_barplot(gene_cv[top_discordant],
+                        gp = gpar(fill = "#EF8A62"),
+                        width = unit(3, "cm")),
+      annotation_name_gp = gpar(fontsize = 10)
+    ),
+    heatmap_legend_param = list(
+      title = "Z-Score\n(0-10)",
+      at = c(0, 2.5, 5, 7.5, 10),
+      labels = c("0 (low)", "2.5", "5 (avg)", "7.5", "10 (high)"),
+      legend_height = unit(5, "cm")
+    )
+  )
+
+  png(file.path(FIGURES_DIR, "discordant_genes_zscore_heatmap.png"),
+      width = 1600, height = fig_height, res = 150)
+  draw(ht_z, padding = unit(c(30, 25, 25, 40), "mm"))
+  dev.off()
+  cat("  Saved: discordant_genes_zscore_heatmap.png\n")
+
+  # Save Z-score table
+  zscore_df <- data.frame(
+    Gene_ID = rownames(zscore_scaled),
+    CV_across_methods = round(gene_cv[top_discordant], 4),
+    zscore_scaled,
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+  write.csv(zscore_df, file.path(TABLES_DIR, "discordant_genes_zscore.csv"), row.names = FALSE)
+  cat("  Saved: discordant_genes_zscore.csv\n")
 }
 
 # -----------------------------------------------
@@ -304,8 +378,8 @@ ncols_plot <- min(n_pairs, 5)
 nrows_plot <- ceiling(n_pairs / ncols_plot)
 
 png(file.path(FIGURES_DIR, "pairwise_scatter_plots.png"),
-    width = 350 * ncols_plot, height = 350 * nrows_plot, res = 150)
-par(mfrow = c(nrows_plot, ncols_plot), mar = c(4, 4, 2.5, 1), cex = 0.7)
+    width = 600 * ncols_plot, height = 600 * nrows_plot, res = 150)
+par(mfrow = c(nrows_plot, ncols_plot), mar = c(6, 6, 5, 3), oma = c(2, 2, 2, 2), cex = 0.9)
 
 for (i in seq_along(method_pairs)) {
   m1 <- method_pairs[[i]][1]
@@ -318,9 +392,10 @@ for (i in seq_along(method_pairs)) {
   cols <- ifelse(x + y > 0, adjustcolor("#7B1FA2", alpha.f = 0.15), "grey80")
 
   plot(x, y,
-       pch = 16, cex = 0.3, col = cols,
+       pch = 16, cex = 0.4, col = cols,
        xlab = get_short_name(m1),
        ylab = get_short_name(m2),
+       cex.lab = 1.1, cex.main = 1.1,
        main = paste0("r=", round(cor(x, y, method = "pearson"), 3),
                       " | rho=", round(cor(x, y, method = "spearman"), 3)))
   abline(0, 1, col = "red", lty = 2)
