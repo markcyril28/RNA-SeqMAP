@@ -584,7 +584,10 @@ star_alignment_pipeline() {
 				return 1
 			fi
 
-			samtools index -@ "$threads_per_job" "$bam_output" 2>&1 || true
+			# Index threads: cap at 4 — samtools index is I/O-bound, extra threads add overhead
+			local _idx_threads=$threads_per_job
+			(( _idx_threads > 4 )) && _idx_threads=4
+			samtools index -@ "$_idx_threads" "$bam_output" 2>&1 || true
 
 			# Clean up transient files
 			rm -rf "$star_tmp_dir" 2>/dev/null || true
@@ -748,9 +751,11 @@ star_alignment_pipeline() {
 
 			log_info "[STAR] BAM sorted successfully: $final_bam_size bytes"
 
-			# Index the BAM
+			# Index the BAM (cap threads at 4 — samtools index is I/O-bound)
 			log_info "[STAR] Indexing BAM..."
-			samtools index -@ "$THREADS" "$bam_output" 2>&1 || log_warn "[STAR] BAM indexing failed (non-fatal)"
+			local _idx_threads=$THREADS
+			(( _idx_threads > 4 )) && _idx_threads=4
+			samtools index -@ "$_idx_threads" "$bam_output" 2>&1 || log_warn "[STAR] BAM indexing failed (non-fatal)"
 
 			# Clean up temp directories after successful alignment
 			rm -rf "$star_tmp_dir" "${PROJECT_ROOT}/_STARtmp" 2>/dev/null || true
