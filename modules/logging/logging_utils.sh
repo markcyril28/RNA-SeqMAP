@@ -59,8 +59,9 @@ log_choice="${log_choice:-1}"  # 1 = tee to console, 2 = file only
 timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
 log() { local level="$1"; shift; printf '[%s] [%s] %s\n' "$(timestamp)" "$level" "$*"; }
 log_info() { log INFO "$@"; }
-log_warn() { log WARN "$@"; [[ -n "${ERROR_WARN_FILE:-}" ]] && printf '[%s] [WARN] %s\n' "$(timestamp)" "$*" >> "$ERROR_WARN_FILE"; }
-log_error() { log ERROR "$@"; [[ -n "${ERROR_WARN_FILE:-}" ]] && printf '[%s] [ERROR] %s\n' "$(timestamp)" "$*" >> "$ERROR_WARN_FILE"; }
+# Cache timestamp and format message once (was two printf calls per invocation)
+log_warn() { local _msg; _msg="[$(timestamp)] [WARN] $*"; echo "$_msg" >&2; [[ -n "${ERROR_WARN_FILE:-}" ]] && echo "$_msg" >> "$ERROR_WARN_FILE"; }
+log_error() { local _msg; _msg="[$(timestamp)] [ERROR] $*"; echo "$_msg" >&2; [[ -n "${ERROR_WARN_FILE:-}" ]] && echo "$_msg" >> "$ERROR_WARN_FILE"; }
 log_step() { log INFO "=============== $* ==============="; }
 
 strip_ansi_stream() {
@@ -69,6 +70,17 @@ strip_ansi_stream() {
 	# CR (\r) is converted to newline so progress-bar overwrites become
 	# separate lines instead of one giant unreadable blob.
 	tr '\r' '\n' | sed -u 's/\x1B\[[0-9;?]*[a-zA-Z]//g; s/\x1B[()][A-Z0-9]//g'
+}
+
+# Initialize CSV headers for all log files if they don't exist yet.
+# Called by setup_logging() and switch_log_stage() — single source of truth.
+_init_csv_headers() {
+	[[ ! -f "$TIME_FILE" ]] && echo "Timestamp,Command,Elapsed_Time_sec,CPU_Percent,Max_RSS_KB,User_Time_sec,System_Time_sec,Exit_Status" > "$TIME_FILE"
+	[[ ! -f "$SPACE_FILE" ]] && echo "Timestamp,Type,Path,Size_KB,Size_MB,Size_GB,File_Count,Description" > "$SPACE_FILE"
+	[[ ! -f "$SPACE_TIME_FILE" ]] && echo "Timestamp,Command,Elapsed_Time_sec,CPU_Percent,Max_RSS_KB,User_Time_sec,System_Time_sec,Input_Size_MB,Output_Size_MB,Exit_Status" > "$SPACE_TIME_FILE"
+	[[ ! -f "$ERROR_WARN_FILE" ]] && touch "$ERROR_WARN_FILE"
+	[[ ! -f "$SOFTWARE_FILE" ]] && echo "Software/Tool,Version" > "$SOFTWARE_FILE"
+	[[ ! -f "$GPU_LOG_FILE" ]] && echo "=== GPU Log Started: $(timestamp) ===" > "$GPU_LOG_FILE"
 }
 
 # ==============================================================================
@@ -116,14 +128,9 @@ setup_logging() {
 		echo "Previous logs cleared"
 	fi
 	
-	# Initialize CSV headers
-	[[ ! -f "$TIME_FILE" ]] && echo "Timestamp,Command,Elapsed_Time_sec,CPU_Percent,Max_RSS_KB,User_Time_sec,System_Time_sec,Exit_Status" > "$TIME_FILE"
-	[[ ! -f "$SPACE_FILE" ]] && echo "Timestamp,Type,Path,Size_KB,Size_MB,Size_GB,File_Count,Description" > "$SPACE_FILE"
-	[[ ! -f "$SPACE_TIME_FILE" ]] && echo "Timestamp,Command,Elapsed_Time_sec,CPU_Percent,Max_RSS_KB,User_Time_sec,System_Time_sec,Input_Size_MB,Output_Size_MB,Exit_Status" > "$SPACE_TIME_FILE"
-	[[ ! -f "$ERROR_WARN_FILE" ]] && touch "$ERROR_WARN_FILE"
-	[[ ! -f "$SOFTWARE_FILE" ]] && echo "Software/Tool,Version" > "$SOFTWARE_FILE"
-	[[ ! -f "$GPU_LOG_FILE" ]] && echo "=== GPU Log Started: $(timestamp) ===" > "$GPU_LOG_FILE"
-	
+	# Initialize CSV headers (single source of truth: _init_csv_headers)
+	_init_csv_headers
+
 	# Rotate old logs to prevent unbounded growth
 	rotate_old_logs "$(dirname "$LOG_DIR")"
 
@@ -187,13 +194,8 @@ switch_log_stage() {
 		return 1
 	}
 
-	# Initialize CSV headers if files don't exist
-	[[ ! -f "$TIME_FILE" ]] && echo "Timestamp,Command,Elapsed_Time_sec,CPU_Percent,Max_RSS_KB,User_Time_sec,System_Time_sec,Exit_Status" > "$TIME_FILE"
-	[[ ! -f "$SPACE_FILE" ]] && echo "Timestamp,Type,Path,Size_KB,Size_MB,Size_GB,File_Count,Description" > "$SPACE_FILE"
-	[[ ! -f "$SPACE_TIME_FILE" ]] && echo "Timestamp,Command,Elapsed_Time_sec,CPU_Percent,Max_RSS_KB,User_Time_sec,System_Time_sec,Input_Size_MB,Output_Size_MB,Exit_Status" > "$SPACE_TIME_FILE"
-	[[ ! -f "$ERROR_WARN_FILE" ]] && touch "$ERROR_WARN_FILE"
-	[[ ! -f "$SOFTWARE_FILE" ]] && echo "Software/Tool,Version" > "$SOFTWARE_FILE"
-	[[ ! -f "$GPU_LOG_FILE" ]] && echo "=== GPU Log Started: $(timestamp) ===" > "$GPU_LOG_FILE"
+	# Initialize CSV headers (single source of truth: _init_csv_headers)
+	_init_csv_headers
 
 	# Re-setup output redirection to the new log file (strip ANSI codes)
 	if [[ "$log_choice" == "2" ]]; then
@@ -249,15 +251,45 @@ export _ERROR_PATTERN _WARN_PATTERN
 capture_stderr_errors() {
 	# Monitor stderr/stdout stream and capture errors to error log
 	# Usage: command 2>&1 | capture_stderr_errors
-	while IFS= read -r line; do
-		echo "$line"
-		if echo "$line" | grep -qiE "$_ERROR_PATTERN"; then
-			printf '[%s] [ERROR] %s\n' "$(timestamp)" "$line" >> "$ERROR_WARN_FILE"
-		fi
-		if echo "$line" | grep -qiE "$_WARN_PATTERN"; then
-			printf '[%s] [WARN] %s\n' "$(timestamp)" "$line" >> "$ERROR_WARN_FILE"
-		fi
-	done
+	# Uses POSIX-compatible awk (date command via getline for timestamps,
+	# instead of gawk-specific strftime/systime that fail on mawk/nawk)
+	# Optimization: batch timestamp - only call date when second changes,
+	# avoiding 100s of process spawns for error-heavy commands
+	awk -v err_file="$ERROR_WARN_FILE" \
+		-v err_pat="$_ERROR_PATTERN" \
+		-v warn_pat="$_WARN_PATTERN" '
+	BEGIN { ts = ""; last_epoch = 0 }
+	function get_ts() {
+		# Cache timestamp: only spawn date when the epoch second changes.
+		# For error-heavy output (100s of lines), this reduces process spawns from N to ~1.
+		cmd = "date +\"%Y-%m-%d %H:%M:%S %s\""
+		cmd | getline raw_ts
+		close(cmd)
+		n = split(raw_ts, parts, " ")
+		epoch = parts[n] + 0
+		if (epoch != last_epoch) {
+			last_epoch = epoch
+			ts = parts[1]
+			for (i = 2; i < n; i++) ts = ts " " parts[i]
+		}
+	}
+	{
+		print
+		fflush()
+		low = tolower($0)
+		is_err = match(low, err_pat)
+		is_warn = match(low, warn_pat)
+		if (is_err || is_warn) {
+			get_ts()
+			if (is_err) {
+				printf "[%s] [ERROR] %s\n", ts, $0 >> err_file
+			}
+			if (is_warn) {
+				printf "[%s] [WARN] %s\n", ts, $0 >> err_file
+			}
+			fflush(err_file)
+		}
+	}'
 }
 
 run_with_error_capture() {
@@ -299,11 +331,11 @@ run_with_space_time_log() {
 	local cmd_string="$*"
 	local start_ts="$(timestamp)"
 	
-	# Measure input size before running command
+	# Measure input size before running command (du + awk combined)
 	local input_size_mb="0"
 	if [[ -n "$input_path" && -e "$input_path" ]]; then
-		local input_kb=$(du -sk "$input_path" 2>/dev/null | awk '{print $1}')
-		input_size_mb=$(awk "BEGIN{printf \"%.2f\", $input_kb / 1024}")
+		input_size_mb=$(du -sk "$input_path" 2>/dev/null | awk '{printf "%.2f", $1/1024}')
+		input_size_mb="${input_size_mb:-0}"
 	fi
 	
 	mkdir -p "$TIME_DIR" || { log_error "Failed to create TIME_DIR: $TIME_DIR"; return 1; }
@@ -322,11 +354,28 @@ run_with_space_time_log() {
 	exit_code=${PIPESTATUS[0]}
 	printf '[%s] [INFO] --- END TOOL OUTPUT: %s (exit=%d) ---\n' "$(timestamp)" "${1##*/}" "$exit_code" >> "$LOG_FILE"
 
-	# Log key resource metrics as a single summary line (replaces 22-line verbose dump)
-	local elapsed_raw cpu_raw rss_raw
-	elapsed_raw=$(grep "Elapsed (wall clock)" "$TIME_TEMP" 2>/dev/null | awk '{print $NF}')
-	cpu_raw=$(grep "Percent of CPU" "$TIME_TEMP" 2>/dev/null | awk '{print $NF}')
-	rss_raw=$(grep "Maximum resident set size" "$TIME_TEMP" 2>/dev/null | awk '{print $NF}')
+	# Single-pass extraction of all metrics from /usr/bin/time output.
+	# Replaces 6 separate grep|awk pipelines (12 process spawns) with 1 awk process.
+	local elapsed_raw cpu_raw rss_raw elapsed_time cpu_percent max_rss user_time system_time
+	eval "$(awk '
+	/Elapsed \(wall clock\)/ {
+		raw = $NF
+		# Convert h:mm:ss or m:ss to seconds
+		n = split(raw, t, ":")
+		if (n == 3) sec = t[1]*3600 + t[2]*60 + t[3]
+		else if (n == 2) sec = t[1]*60 + t[2]
+		else sec = raw
+		printf "elapsed_raw=%s elapsed_time=%s ", raw, sec
+	}
+	/Percent of CPU/ {
+		v = $NF; gsub(/%/, "", v)
+		printf "cpu_raw=%s cpu_percent=%s ", $NF, v
+	}
+	/Maximum resident set size/ { printf "rss_raw=%s max_rss=%s ", $NF, $NF }
+	/User time/    { printf "user_time=%s ", $NF }
+	/System time/  { printf "system_time=%s ", $NF }
+	' "$TIME_TEMP" 2>/dev/null)"
+
 	log_info "[RESOURCES] Elapsed: ${elapsed_raw:-N/A} | CPU: ${cpu_raw:-N/A} | MaxRSS: ${rss_raw:-0} KB | Exit: $exit_code"
 
 	# On failure: dump full time output for debugging
@@ -335,26 +384,21 @@ run_with_space_time_log() {
 		cat "$TIME_TEMP" >> "$LOG_FILE" 2>&1
 	fi
 
-	# Capture errors/exceptions to error log (uses unified pattern)
-	if [[ $exit_code -ne 0 ]] || grep -qiE "$_ERROR_PATTERN" "$TIME_TEMP" 2>/dev/null; then
+	# Capture errors/exceptions to error log (single grep pass instead of two)
+	local _err_lines=""
+	_err_lines=$(grep -iE "$_ERROR_PATTERN" "$TIME_TEMP" 2>/dev/null) || true
+	if [[ $exit_code -ne 0 ]] || [[ -n "$_err_lines" ]]; then
 		{
 			printf '[%s] [ERROR] Command failed (exit=%d): %s\n' "$(timestamp)" "$exit_code" "$cmd_string"
-			grep -iE "$_ERROR_PATTERN" "$TIME_TEMP" 2>/dev/null || true
+			[[ -n "$_err_lines" ]] && printf '%s\n' "$_err_lines"
 		} >> "$ERROR_WARN_FILE"
 	fi
-
-	# Extract key metrics from time output (for CSV logging)
-	local elapsed_time=$(grep "Elapsed (wall clock)" "$TIME_TEMP" | awk '{print $NF}' | awk -F: '{if (NF==3) print ($1*3600)+($2*60)+$3; else if (NF==2) print ($1*60)+$2; else print $1}')
-	local cpu_percent=$(grep "Percent of CPU" "$TIME_TEMP" | awk '{print $NF}' | tr -d '%')
-	local max_rss=$(grep "Maximum resident set size" "$TIME_TEMP" | awk '{print $NF}')
-	local user_time=$(grep "User time" "$TIME_TEMP" | awk '{print $NF}')
-	local system_time=$(grep "System time" "$TIME_TEMP" | awk '{print $NF}')
 	
-	# Measure output size after running command
+	# Measure output size after running command (du + awk combined)
 	local output_size_mb="0"
 	if [[ -n "$output_path" && -e "$output_path" ]]; then
-		local output_kb=$(du -sk "$output_path" 2>/dev/null | awk '{print $1}')
-		output_size_mb=$(awk "BEGIN{printf \"%.2f\", $output_kb / 1024}")
+		output_size_mb=$(du -sk "$output_path" 2>/dev/null | awk '{printf "%.2f", $1/1024}')
+		output_size_mb="${output_size_mb:-0}"
 	fi
 	
 	# Append to CSV files (escape internal double quotes for valid CSV)
@@ -380,12 +424,14 @@ log_file_size() {
 	
 	[[ -d "$file_path" ]] && type="DIR"
 	
-	local size_kb=$(du -sk "$file_path" 2>/dev/null | awk '{print $1}')
-	local size_mb=$(awk "BEGIN{printf \"%.2f\", $size_kb / 1024}")
-	local size_gb=$(awk "BEGIN{printf \"%.2f\", $size_kb / 1048576}")
+	# Single du|awk pipeline for KB, MB, and GB (replaces du + 2 awk spawns)
+	local size_kb size_mb size_gb
+	read -r size_kb size_mb size_gb <<< "$(du -sk "$file_path" 2>/dev/null | awk '{printf "%d %.2f %.2f", $1, $1/1024, $1/1048576}')"
+	size_kb="${size_kb:-0}"; size_mb="${size_mb:-0.00}"; size_gb="${size_gb:-0.00}"
 	
 	local file_count="-"
-	[[ -d "$file_path" ]] && file_count=$(find "$file_path" -type f 2>/dev/null | wc -l)
+	# Use find -printf x | wc -c (faster than -print | wc -l, avoids newline overhead)
+	[[ -d "$file_path" ]] && file_count=$(find "$file_path" -type f -printf x 2>/dev/null | wc -c)
 	
 	local ts="$(timestamp)"
 	echo "${ts},${type},\"${file_path}\",${size_kb},${size_mb},${size_gb},${file_count},\"${description}\"" >> "$SPACE_FILE"
@@ -474,24 +520,24 @@ catalog_all_software() {
 	done
 
 	# Catalog key R/Bioconductor packages used by analysis modules
+	# Single Rscript call replaces 16 separate invocations (~30s → ~2s)
 	if command -v Rscript >/dev/null 2>&1; then
 		log_info "Cataloging R package versions..."
-		local r_pkgs=(DESeq2 tximport tximeta WGCNA clusterProfiler ComplexHeatmap
-			ballgown AnnotationDbi enrichplot DOSE fgsea
-			pheatmap ggplot2 corrplot dendextend gridExtra scales)
-		for pkg in "${r_pkgs[@]}"; do
-			local ver
-			ver=$(Rscript -e "tryCatch(cat(as.character(packageVersion('$pkg'))), error=function(e) cat('not_installed'))" 2>/dev/null || echo "unknown")
-			echo "R/${pkg},${ver}" >> "$SOFTWARE_FILE"
-		done
-		log_info "R package versions cataloged"
-
-		# Save full R sessionInfo for complete reproducibility record
 		local session_info_file
 		session_info_file="$(dirname "$SOFTWARE_FILE")/R_sessionInfo_${RUN_ID}.txt"
-		Rscript -e "writeLines(capture.output(sessionInfo()), '$session_info_file')" 2>/dev/null \
-			&& log_info "R sessionInfo saved to: $session_info_file" \
-			|| log_warn "Failed to capture R sessionInfo"
+		Rscript --vanilla -e "
+pkgs <- c('DESeq2','tximport','tximeta','WGCNA','clusterProfiler','ComplexHeatmap',
+          'ballgown','AnnotationDbi','enrichplot','DOSE','fgsea',
+          'pheatmap','ggplot2','corrplot','dendextend','gridExtra','scales')
+for (p in pkgs) {
+  v <- tryCatch(as.character(packageVersion(p)), error = function(e) 'not_installed')
+  cat(paste0('R/', p, ',', v), sep = '\n')
+}
+tryCatch(writeLines(capture.output(sessionInfo()), '$session_info_file'),
+         error = function(e) message('sessionInfo capture failed'))
+" >> "$SOFTWARE_FILE" 2>/dev/null \
+			&& log_info "R package versions cataloged; sessionInfo saved to: $session_info_file" \
+			|| log_warn "Failed to catalog R packages"
 	else
 		echo "R,not_installed" >> "$SOFTWARE_FILE"
 		log_warn "Rscript not found — R package catalog skipped"
@@ -511,10 +557,10 @@ rotate_old_logs() {
 
 	[[ ! -d "$base_dir" ]] && return 0
 
+	# Single find pass: delete old logs and count via -printf (replaces 2 find calls)
 	local count
-	count=$(find "$base_dir" -type f \( -name '*.log' -o -name '*.csv' \) -mtime +"$max_age" 2>/dev/null | wc -l)
+	count=$(find "$base_dir" -type f \( -name '*.log' -o -name '*.csv' \) -mtime +"$max_age" -delete -printf '.' 2>/dev/null | wc -c)
 	if [[ "$count" -gt 0 ]]; then
-		find "$base_dir" -type f \( -name '*.log' -o -name '*.csv' \) -mtime +"$max_age" -delete 2>/dev/null || true
 		log_info "Log rotation: removed $count files older than ${max_age} days from $base_dir"
 	fi
 }

@@ -115,7 +115,7 @@ _log_system_info() {
 check_root() {
 	if [[ $EUID -eq 0 ]]; then
 		log_error "This script should not be run as root"
-		exit 1
+		return 1
 	fi
 }
 
@@ -133,15 +133,20 @@ detect_distro() {
 
 detect_gpu_type() {
 	GPU_VENDOR=""
-	# Check via lspci first (native Linux)
-	if lspci 2>/dev/null | grep -qi "nvidia"; then
-		GPU_VENDOR="nvidia"
-	elif lspci 2>/dev/null | grep -qi "amd.*radeon\|amd.*vega\|amd.*navi"; then
-		GPU_VENDOR="amd"
-	elif lspci 2>/dev/null | grep -qi "intel.*graphics\|intel.*iris"; then
-		GPU_VENDOR="intel"
+	# Single lspci call, check output for all vendors (was 3 separate calls)
+	local _lspci_out
+	_lspci_out=$(lspci 2>/dev/null) || true
+	if [[ -n "$_lspci_out" ]]; then
+		if echo "$_lspci_out" | grep -qi "nvidia"; then
+			GPU_VENDOR="nvidia"
+		elif echo "$_lspci_out" | grep -qi "amd.*radeon\|amd.*vega\|amd.*navi"; then
+			GPU_VENDOR="amd"
+		elif echo "$_lspci_out" | grep -qi "intel.*graphics\|intel.*iris"; then
+			GPU_VENDOR="intel"
+		fi
+	fi
 	# WSL2 fallback: check for nvidia-smi directly (GPU not visible via lspci in WSL2)
-	elif command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
+	if [[ -z "$GPU_VENDOR" ]] && command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
 		GPU_VENDOR="nvidia"
 		log_info "WSL2 detected - using nvidia-smi for GPU detection"
 	fi
@@ -194,24 +199,38 @@ detect_gpu() {
 	GPU_AVAILABLE="false"
 	GPU_COUNT=0
 	CUDA_READY="false"
-	
-	# Check for NVIDIA GPU via nvidia-smi
+
+	# Single nvidia-smi invocation: query-gpu for metrics, parse CUDA from header
 	if command -v nvidia-smi &>/dev/null; then
-		local gpu_info
-		gpu_info=$(nvidia-smi --query-gpu=count,memory.total --format=csv,noheader,nounits 2>/dev/null)
-		if [[ -n "$gpu_info" ]]; then
+		local _smi_full
+		_smi_full=$(nvidia-smi 2>/dev/null)
+		if [[ -n "$_smi_full" ]]; then
+			# Extract CUDA version from the header line (e.g., "CUDA Version: 12.1")
+			CUDA_VERSION=$(echo "$_smi_full" | grep -oP 'CUDA Version: \K[0-9.]+' | head -1)
+
+			# Extract GPU count and memory from the structured table (avoids second nvidia-smi call)
+			# Parse directly from the full output: MiB lines in the format "| ... 12345MiB / 24576MiB |"
 			GPU_AVAILABLE="true"
-			GPU_COUNT=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l)
-			GPU_MEMORY_MB=$(echo "$gpu_info" | head -1 | cut -d',' -f2 | tr -d ' ')
-			CUDA_VERSION=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K[0-9.]+' | head -1)
-			
+			GPU_COUNT=$(echo "$_smi_full" | grep -cP '^\|.*MiB / \d+MiB' 2>/dev/null) || GPU_COUNT=0
+			GPU_MEMORY_MB=$(echo "$_smi_full" | grep -oP '\d+(?=MiB \|)' | tail -1) || GPU_MEMORY_MB=0
+
+			# Fallback: if parsing failed, use query-gpu (still just one extra call, not default path)
+			if [[ "$GPU_COUNT" -eq 0 || "$GPU_MEMORY_MB" -eq 0 ]] 2>/dev/null; then
+				local _query_info
+				_query_info=$(nvidia-smi --query-gpu=count,memory.total,name,driver_version --format=csv,noheader,nounits 2>/dev/null)
+				if [[ -n "$_query_info" ]]; then
+					GPU_COUNT=$(echo "$_query_info" | wc -l)
+					GPU_MEMORY_MB=$(echo "$_query_info" | head -1 | cut -d',' -f2 | tr -d ' ')
+				fi
+			fi
+
 			# Check if CUDA toolkit is ready
 			if command -v nvcc &>/dev/null; then
 				CUDA_READY="true"
 			fi
 		fi
 	fi
-	
+
 	export GPU_AVAILABLE GPU_COUNT GPU_MEMORY_MB CUDA_VERSION CUDA_READY
 }
 
@@ -592,16 +611,17 @@ verify_installation() {
 		fi
 	fi
 	
-	$success
+	[[ "$success" == "true" ]]
 }
 
 # ==============================================================================
 # GPU-ACCELERATED TOOL DETECTION
 # ==============================================================================
 
-# Check if GPU-accelerated STAR is available
+# Check if GPU is available for STAR (STAR itself has no GPU binary;
+# GPU acceleration is used for auxiliary steps like sorting)
 has_gpu_star() {
-	has_gpu && command -v STARlong &>/dev/null
+	has_gpu && command -v STAR &>/dev/null
 }
 
 # Check for GPU-accelerated tools
@@ -611,19 +631,19 @@ check_gpu_tools() {
 	local tools_found=0
 	
 	# RAPIDS cuML for ML acceleration
-	if python -c "import cuml" 2>/dev/null; then
+	if python3 -c "import cuml" 2>/dev/null; then
 		log_info "[GPU-TOOL] RAPIDS cuML available"
 		((tools_found++))
 	fi
-	
+
 	# GPU-accelerated compression
 	if command -v nvcomp &>/dev/null; then
 		log_info "[GPU-TOOL] nvcomp (GPU compression) available"
 		((tools_found++))
 	fi
-	
+
 	# NVIDIA DALI for data loading
-	if python -c "import nvidia.dali" 2>/dev/null; then
+	if python3 -c "import nvidia.dali" 2>/dev/null; then
 		log_info "[GPU-TOOL] NVIDIA DALI available"
 		((tools_found++))
 	fi
@@ -685,17 +705,17 @@ gpu_prep_main() {
 		intel)  setup_intel ;;
 	esac
 	
-	echo ""
+	log_info ""
 	verify_installation
-	
-	echo ""
+
+	log_info ""
 	log_step "Setup Complete"
 	log_info "To monitor GPU: nvidia-smi/rocm-smi"
 	log_info "To use GPU in pipeline: source modules/logging/gpu_utils.sh"
 	log_info "Log saved to: $GPU_LOG_FILE"
 	
 	if [[ "$GPU_VENDOR" == "nvidia" ]] && ! lsmod | grep -q nvidia; then
-		echo ""
+		log_info ""
 		log_warn ">>> REBOOT REQUIRED for GPU drivers to load <<<"
 	fi
 }
