@@ -13,6 +13,7 @@ export M3_STAR_SOURCED="true"
 
 # Source dependencies
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_M3_SCRIPT_DIR="$SCRIPT_DIR"
 source "$SCRIPT_DIR/shared_utils_method.sh"
 
 # ==============================================================================
@@ -150,28 +151,28 @@ _star_check_alignment_rates() {
 		# 1. Low unique mapping rate (<50% is very concerning, <70% is a warning)
 		if awk "BEGIN{exit !($uniq_pct < 50)}" 2>/dev/null; then
 			log_warn "[STAR QC] $SRR: Uniquely mapped only ${uniq_pct}% — VERY LOW (check sample quality, adapter contamination, or genome mismatch)"
-			((warn_count++))
+			((warn_count++)) || true
 		elif awk "BEGIN{exit !($uniq_pct < 70)}" 2>/dev/null; then
 			log_warn "[STAR QC] $SRR: Uniquely mapped ${uniq_pct}% — below 70% threshold"
-			((warn_count++))
+			((warn_count++)) || true
 		fi
 
 		# 2. High multi-mapping (>20%) may indicate rRNA contamination or repetitive sequences
 		if awk "BEGIN{exit !(${multi_pct:-0} > 20)}" 2>/dev/null; then
 			log_warn "[STAR QC] $SRR: Multi-mapped ${multi_pct}% — high rate may indicate rRNA contamination or repetitive element enrichment"
-			((warn_count++))
+			((warn_count++)) || true
 		fi
 
 		# 3. High unmapped-too-short (>15%) suggests adapter contamination or degraded RNA
 		if awk "BEGIN{exit !(${short_pct:-0} > 15)}" 2>/dev/null; then
 			log_warn "[STAR QC] $SRR: Unmapped (too short) ${short_pct}% — check adapter trimming or RNA degradation"
-			((warn_count++))
+			((warn_count++)) || true
 		fi
 
 		# 4. High unmapped-too-many-mismatches (>5%) suggests genome version mismatch
 		if awk "BEGIN{exit !(${mismatch_pct:-0} > 5)}" 2>/dev/null; then
 			log_warn "[STAR QC] $SRR: Unmapped (mismatches) ${mismatch_pct}% — may indicate genome/species mismatch"
-			((warn_count++))
+			((warn_count++)) || true
 		fi
 	done
 
@@ -192,7 +193,7 @@ _star_check_alignment_rates() {
 		for ((i=0; i<n; i++)); do
 			if awk "BEGIN{exit !(${unique_rates[$i]} < $threshold)}" 2>/dev/null; then
 				log_warn "[STAR QC] OUTLIER: ${sample_names[$i]} (${unique_rates[$i]}%) is >2 SD below cohort mean (${mean}%)"
-				((warn_count++))
+				((warn_count++)) || true
 			fi
 		done
 	fi
@@ -1020,7 +1021,7 @@ run_tximport_star() {
 	local tx2gene_file="$3"
 	local output_dir="${4:-$(dirname "$metadata_file")}"
 	local master_ref="${5:-$(basename "$output_dir")}"
-	local helper_script="$SCRIPT_DIR/../c_post_processing/preprocessing/STAR/tximport_star_helper.R"
+	local helper_script="$_M3_SCRIPT_DIR/../c_post_processing/preprocessing/STAR/tximport_star_helper.R"
 
 	if [[ ! -f "$helper_script" ]]; then
 		log_error "tximport_star_helper.R not found: $helper_script"
@@ -1038,7 +1039,7 @@ generate_tximport_star_script() {
 	local tx2gene_file="$3"
 	local matrix_dir="$4"
 	local output_script="$5"
-	local helper_script="$SCRIPT_DIR/../c_post_processing/preprocessing/STAR/tximport_star_helper.R"
+	local helper_script="$_M3_SCRIPT_DIR/../c_post_processing/preprocessing/STAR/tximport_star_helper.R"
 
 	if [[ -f "$helper_script" ]]; then
 		cp "$helper_script" "$output_script"

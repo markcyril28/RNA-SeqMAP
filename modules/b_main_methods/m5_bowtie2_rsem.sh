@@ -748,7 +748,7 @@ _create_rsem_summary() {
 
 # Check if GNU Parallel should be used for sample processing
 _rsem_should_use_parallel() {
-	[[ "${USE_GNU_PARALLEL:-FALSE}" != "TRUE" ]] && return 1
+	[[ "${USE_GNU_PARALLEL:-TRUE}" != "TRUE" ]] && return 1
 	command -v parallel >/dev/null 2>&1 || return 1
 	return 0
 }
