@@ -35,18 +35,22 @@ find_trimmed_fastq() {
 	elif [[ -f "$TrimGalore_DIR/${SRR}_1_val_1.fq" && -f "$TrimGalore_DIR/${SRR}_2_val_2.fq" ]]; then
 		trimmed1="$TrimGalore_DIR/${SRR}_1_val_1.fq"
 		trimmed2="$TrimGalore_DIR/${SRR}_2_val_2.fq"
-	elif compgen -G "$TrimGalore_DIR/${SRR}*val_1.*" >/dev/null 2>&1; then
-		local files1=("$TrimGalore_DIR"/${SRR}*val_1.*) files2=("$TrimGalore_DIR"/${SRR}*val_2.*)
-		trimmed1="${files1[0]}"
-		[[ -f "${files2[0]:-}" ]] && trimmed2="${files2[0]}"
-	# Single-end patterns (compressed first)
-	elif [[ -f "$TrimGalore_DIR/${SRR}_trimmed.fq.gz" ]]; then
-		trimmed1="$TrimGalore_DIR/${SRR}_trimmed.fq.gz"
-	elif [[ -f "$TrimGalore_DIR/${SRR}_trimmed.fq" ]]; then
-		trimmed1="$TrimGalore_DIR/${SRR}_trimmed.fq"
-	elif compgen -G "$TrimGalore_DIR/${SRR}*trimmed.fq*" >/dev/null 2>&1; then
-		local files=("$TrimGalore_DIR"/${SRR}*trimmed.fq*)
-		trimmed1="${files[0]}"
+	else
+		# Glob fallback for non-standard paired-end names (no subshell via compgen)
+		local files1=("$TrimGalore_DIR"/${SRR}*val_1.*)
+		if [[ -f "${files1[0]:-}" ]]; then
+			local files2=("$TrimGalore_DIR"/${SRR}*val_2.*)
+			trimmed1="${files1[0]}"
+			[[ -f "${files2[0]:-}" ]] && trimmed2="${files2[0]}"
+		# Single-end patterns (compressed first)
+		elif [[ -f "$TrimGalore_DIR/${SRR}_trimmed.fq.gz" ]]; then
+			trimmed1="$TrimGalore_DIR/${SRR}_trimmed.fq.gz"
+		elif [[ -f "$TrimGalore_DIR/${SRR}_trimmed.fq" ]]; then
+			trimmed1="$TrimGalore_DIR/${SRR}_trimmed.fq"
+		else
+			local files=("$TrimGalore_DIR"/${SRR}*trimmed.fq*)
+			[[ -f "${files[0]:-}" ]] && trimmed1="${files[0]}"
+		fi
 	fi
 }
 
@@ -115,12 +119,18 @@ detect_read_length() {
 	
 	local decompress_cmd="cat"
 	case "$fastq" in
-		*.gz) decompress_cmd="zcat" ;;
+		*.gz)
+			if command -v pigz &>/dev/null; then
+				decompress_cmd="pigz -dc -p ${THREADS_PER_JOB:-4}"
+			else
+				decompress_cmd="zcat"
+			fi
+			;;
 		*.bz2) decompress_cmd="bzcat" ;;
 	esac
 	
 	local avg_length=$($decompress_cmd "$fastq" 2>/dev/null | \
-		awk 'NR%4==2 {sum+=length($0); count++} count==1000 {print int(sum/count); exit}')
+		awk 'NR%4==2 {sum+=length($0); count++} count==1000 {print int(sum/count); exit} END {if (count>0 && count<1000) print int(sum/count)}')
 	
 	if [[ -z "$avg_length" || $avg_length -lt 50 || $avg_length -gt 300 ]]; then
 		echo "$default_length"
@@ -155,8 +165,13 @@ should_use_parallel() {
 
 gzip_trimmed_fastq_files() {
 	log_info "Compressing trimmed FASTQ files in $TRIM_DIR_ROOT..."
+	local _compress_cmd="gzip"
+	if command -v pigz &>/dev/null; then
+		_compress_cmd="pigz -p ${THREADS_PER_JOB:-4}"
+		log_info "Using pigz for multi-threaded compression"
+	fi
 	find "$TRIM_DIR_ROOT" -type f -name "*.fq" -print0 | \
-		xargs -0 -P "${JOBS:-2}" -I {} gzip {} 2>/dev/null || true
+		xargs -0 -P "${JOBS:-2}" -I {} $_compress_cmd {} 2>/dev/null || true
 	log_info "Compression completed."
 }
 

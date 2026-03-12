@@ -40,9 +40,18 @@ download_srrs() {
 		run_with_space_time_log fasterq-dump --split-files --threads "$THREADS" \
 			"$raw_dir/$SRR/$SRR.sra" -O "$raw_dir"
 		
-		# Compress downloaded files
-		[[ -f "$raw_dir/${SRR}_1.fastq" ]] && gzip "$raw_dir/${SRR}_1.fastq"
-		[[ -f "$raw_dir/${SRR}_2.fastq" ]] && gzip "$raw_dir/${SRR}_2.fastq"
+		# Compress downloaded files (use shared pigz detection, avoid per-SRR command -v spawn)
+		local _ccmd="${_SHARED_GZIP_C:-gzip}"
+		[[ "$_ccmd" == "pigz" ]] && _ccmd="pigz -p ${THREADS:-4}"
+		local _p1 _p2
+		if [[ -f "$raw_dir/${SRR}_1.fastq" && -f "$raw_dir/${SRR}_2.fastq" ]]; then
+			$_ccmd "$raw_dir/${SRR}_1.fastq" & _p1=$!
+			$_ccmd "$raw_dir/${SRR}_2.fastq" & _p2=$!
+			wait $_p1 $_p2
+		else
+			[[ -f "$raw_dir/${SRR}_1.fastq" ]] && $_ccmd "$raw_dir/${SRR}_1.fastq"
+			[[ -f "$raw_dir/${SRR}_2.fastq" ]] && $_ccmd "$raw_dir/${SRR}_2.fastq"
+		fi
 	done
 	log_info "All downloads completed."
 }
@@ -157,8 +166,10 @@ download_srrs_parallel() {
 		
 		prefetch "$SRR" --output-directory "$raw_dir" || return 1
 		fasterq-dump --split-files --threads "${THREADS_PER_JOB:-2}" "$raw_dir/$SRR/$SRR.sra" -O "$raw_dir" || return 1
-		[[ -f "$raw_dir/${SRR}_1.fastq" ]] && gzip "$raw_dir/${SRR}_1.fastq"
-		[[ -f "$raw_dir/${SRR}_2.fastq" ]] && gzip "$raw_dir/${SRR}_2.fastq"
+		local _ccmd="gzip"
+		command -v pigz &>/dev/null && _ccmd="pigz -p ${THREADS_PER_JOB:-2}"
+		[[ -f "$raw_dir/${SRR}_1.fastq" ]] && $_ccmd "$raw_dir/${SRR}_1.fastq"
+		[[ -f "$raw_dir/${SRR}_2.fastq" ]] && $_ccmd "$raw_dir/${SRR}_2.fastq"
 	}
 	export -f _download_worker
 	
