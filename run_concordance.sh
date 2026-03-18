@@ -56,6 +56,11 @@ if [[ -n "${1:-}" && -f "$1" ]]; then
 fi
 
 # Reference genome to compare across methods
+# If a sourced config set MASTER_REFERENCES as an array, take the first element
+# (matches run_post_processing.sh behaviour).
+if [[ "$(declare -p MASTER_REFERENCES 2>/dev/null)" == "declare -a"* ]]; then
+    MASTER_REFERENCE="${MASTER_REFERENCES[0]}"
+fi
 MASTER_REFERENCE="${MASTER_REFERENCE:-GPE001970_genome}"
 
 # Methods to compare (space-separated string).
@@ -67,14 +72,49 @@ METHODS="${METHODS:-M1_HISAT2_RefGuided M2_HISAT2_DeNovo M3_STAR_Align M4_Salmon
 
 # Method-specific reference directory names
 # M1/M3 align to genome; M2/M4/M5 align to transcriptome
+# Derive defaults from MASTER_REFERENCE instead of hardcoding GPE001970,
+# so that sourcing a non-GPE001970 config produces correct paths.
+_genome_ref="${MASTER_REFERENCE}"
+# Build transcript reference by swapping _genome → _transcripts (or appending _transcripts)
+if [[ "$_genome_ref" == *_genome ]]; then
+    _transcript_ref="${_genome_ref%_genome}_transcripts"
+else
+    _transcript_ref="${_genome_ref}_transcripts"
+fi
+# Verify the auto-derived transcript reference exists for at least one method's
+# alignment directory.  If not, search for the actual transcript reference dir
+# (handles non-standard naming like Eggplant_V4.1_transcripts.function).
+_m2_stringtie_base="${ALIGNMENT_BASE:-${BASE_DIR}/2_ALIGNMENT_RESULTs}/M2_HISAT2_DeNovo/stringtie_WD"
+if [[ -d "$_m2_stringtie_base" && ! -d "$_m2_stringtie_base/$_transcript_ref" ]]; then
+    _base_pattern="${_genome_ref%_genome}"
+    [[ "$_base_pattern" == "$_genome_ref" ]] && _base_pattern="$_genome_ref"
+    _found_ref=$(find "$_m2_stringtie_base" -maxdepth 1 -type d -name "${_base_pattern}*transcript*" -printf '%f\n' 2>/dev/null | head -1)
+    if [[ -n "$_found_ref" ]]; then
+        log_info "Auto-derived transcript ref '${_transcript_ref}' not found; using '${_found_ref}'"
+        _transcript_ref="$_found_ref"
+    fi
+    unset _base_pattern _found_ref
+fi
+unset _m2_stringtie_base
 declare -A METHOD_REF_DIRS
-METHOD_REF_DIRS[M1_HISAT2_RefGuided]="${M1_REF_DIR:-GPE001970_genome}"
-METHOD_REF_DIRS[M2_HISAT2_DeNovo]="${M2_REF_DIR:-GPE001970_transcripts}"
-METHOD_REF_DIRS[M3_STAR_Align]="${M3_REF_DIR:-GPE001970_genome}"
-METHOD_REF_DIRS[M4_Salmon_Saf]="${M4_REF_DIR:-GPE001970_transcripts}"
-METHOD_REF_DIRS[M5_RSEM_Bowtie2]="${M5_REF_DIR:-GPE001970_transcripts}"
+METHOD_REF_DIRS[M1_HISAT2_RefGuided]="${M1_REF_DIR:-$_genome_ref}"
+METHOD_REF_DIRS[M2_HISAT2_DeNovo]="${M2_REF_DIR:-$_transcript_ref}"
+METHOD_REF_DIRS[M3_STAR_Align]="${M3_REF_DIR:-$_genome_ref}"
+METHOD_REF_DIRS[M4_Salmon_Saf]="${M4_REF_DIR:-$_transcript_ref}"
+METHOD_REF_DIRS[M5_RSEM_Bowtie2]="${M5_REF_DIR:-$_transcript_ref}"
+unset _genome_ref _transcript_ref
 
 # Gene groups for ranking stability (comma-separated basenames without .csv)
+# If a sourced config set GENE_GROUPS as a bash array, join with commas
+# (the R concordance config expects comma-separated, not space-separated).
+if [[ "$(declare -p GENE_GROUPS 2>/dev/null)" == "declare -a"* ]]; then
+    _gg_joined=""
+    for _gg in "${GENE_GROUPS[@]}"; do
+        _gg_joined="${_gg_joined:+${_gg_joined},}${_gg}"
+    done
+    GENE_GROUPS="$_gg_joined"
+    unset _gg_joined _gg
+fi
 GENE_GROUPS="${GENE_GROUPS:-SmelDMPs_v5_with_18s_and_HAP2,Selected_SmelGRF-GIF_with_two_GIF}"
 
 # Gene groups directory (reference-specific — strip _genome/_transcripts suffix to match dir name)
@@ -82,7 +122,9 @@ _GG_REF_TAG="${MASTER_REFERENCE%%_genome}"
 _GG_REF_TAG="${_GG_REF_TAG%%_transcripts}"
 _GG_REF_DIR="${BASE_DIR}/inputs/gene_groups_csv/experimental/${_GG_REF_TAG}"
 if [[ ! -d "$_GG_REF_DIR" ]]; then
+    log_warn "Reference-specific gene groups dir not found: $_GG_REF_DIR"
     _GG_REF_DIR="${BASE_DIR}/inputs/gene_groups_csv"
+    log_warn "Falling back to generic gene groups dir: $_GG_REF_DIR"
 fi
 GENE_GROUPS_DIR="${GENE_GROUPS_DIR:-$_GG_REF_DIR}"
 unset _GG_REF_TAG _GG_REF_DIR

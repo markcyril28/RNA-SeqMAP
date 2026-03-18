@@ -78,24 +78,23 @@ fi
 # FUNCTIONS
 #===============================================================================
 
-# Associative array for O(1) folder name lookup without subshell spawns.
-# Usage: folder="${_OUTPUT_FOLDERS[$analysis]:-}" instead of folder=$(get_output_folder_name "$analysis")
-declare -A _OUTPUT_FOLDERS=(
-    ["Matrix_Creation"]="0_Matrix_Creation"
-    ["Basic_Heatmap"]="I_Basic_Heatmap"
-    ["Heatmap_with_CV"]="II_Heatmap_with_CV"
-    ["BarGraph"]="III_Bar_Graphs"
-    ["Coexpression_using_WGCNA"]="IV_Coexpression_WGCNA"
-    ["Differential_Expression"]="V_Differential_Expression"
-    ["Gene_Set_Enrichment"]="VI_Gene_Set_Enrichment"
-    ["PCA_Dimensionality_Reduction"]="VII_PCA"
-    ["Sample_Correlation_Clustering"]="VIII_Sample_Clustering"
-    ["Tissue_Specificity"]="IX_Tissue_Specificity"
-)
-
-# Legacy function wrapper (still used by pipeline_utils.sh export)
+# Map analysis name to output folder name.
+# Uses case statement (not associative array) so the function works correctly
+# when exported to GNU Parallel subshells (bash cannot export associative arrays).
 get_output_folder_name() {
-    echo "${_OUTPUT_FOLDERS[$1]:-}"
+    case "$1" in
+        "Matrix_Creation")                echo "0_Matrix_Creation" ;;
+        "Basic_Heatmap")                  echo "I_Basic_Heatmap" ;;
+        "Heatmap_with_CV")               echo "II_Heatmap_with_CV" ;;
+        "BarGraph")                       echo "III_Bar_Graphs" ;;
+        "Coexpression_using_WGCNA")      echo "IV_Coexpression_WGCNA" ;;
+        "Differential_Expression")        echo "V_Differential_Expression" ;;
+        "Gene_Set_Enrichment")            echo "VI_Gene_Set_Enrichment" ;;
+        "PCA_Dimensionality_Reduction")  echo "VII_PCA" ;;
+        "Sample_Correlation_Clustering") echo "VIII_Sample_Clustering" ;;
+        "Tissue_Specificity")             echo "IX_Tissue_Specificity" ;;
+        *)                                echo "" ;;
+    esac
 }
 
 #===============================================================================
@@ -104,8 +103,11 @@ get_output_folder_name() {
 
 [[ ${#PIPELINE_CONFIGS[@]} -eq 0 ]] && { log_error "No configs enabled in PIPELINE_CONFIGS"; exit 1; }
 
-eval "$(conda shell.bash hook)"
-conda activate gea 2>/dev/null || log_warn "conda env 'gea' not found, using current env"
+# Skip conda hook (~0.3-0.5s) if already in the correct environment
+if [[ "${CONDA_DEFAULT_ENV:-}" != "gea" ]]; then
+    eval "$(conda shell.bash hook 2>/dev/null)" 2>/dev/null || true
+    conda activate gea 2>/dev/null || log_warn "conda env 'gea' not found, using current env"
+fi
 
 # Log dirs use absolute paths so subprocesses that change directories still resolve correctly
 LOG_DIR="$BASE_DIR/3_POST_PROC/logs/log_files"
@@ -134,10 +136,21 @@ _HAS_PARALLEL=false
 command -v parallel &>/dev/null && _HAS_PARALLEL=true
 
 # Pre-compute parallel job count (THREADS and DESIRED_CPU_PER_JOB are set once at top)
+# Two limits: CPU-based and RAM-based (each R process loads ggplot2/ComplexHeatmap ≈ 800MB)
 JOBS=1
 if [[ "$ENABLE_GNU_PARALLEL" == "TRUE" ]]; then
     JOBS=$((THREADS / DESIRED_CPU_PER_JOB))
     (( JOBS < 1 )) && JOBS=1
+    # Memory guard: cap concurrent R jobs so total < 75% of RAM
+    # Each R figure-generation process uses ~800MB (ggplot2 + ComplexHeatmap + data)
+    _R_MEM_MB=800
+    _MAX_JOBS_BY_RAM=$(( AVAILABLE_RAM_GB * 1024 * 75 / 100 / _R_MEM_MB ))
+    (( _MAX_JOBS_BY_RAM < 1 )) && _MAX_JOBS_BY_RAM=1
+    if (( JOBS > _MAX_JOBS_BY_RAM )); then
+        log_info "Capping parallel jobs from $JOBS to $_MAX_JOBS_BY_RAM (RAM limit: ${AVAILABLE_RAM_GB}GB, ~${_R_MEM_MB}MB/job)"
+        JOBS=$_MAX_JOBS_BY_RAM
+    fi
+    unset _R_MEM_MB _MAX_JOBS_BY_RAM
 fi
 
 #===============================================================================
@@ -200,7 +213,7 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
             output_base="$BASE_DIR/3_POST_PROC/$method/Figure_Outputs"
             [[ -d "$output_base" ]] || continue
             for analysis in "${ANALYSES[@]}"; do
-                folder_name="${_OUTPUT_FOLDERS[$analysis]:-}"
+                folder_name="$(get_output_folder_name "$analysis")"
                 target="$output_base/$folder_name/$MASTER_REFERENCE"
                 if [[ -n "$folder_name" && -d "$target" ]]; then
                     rm -rf "$target"
@@ -284,7 +297,13 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
             if [[ ${#METHODS[@]} -gt 1 && "$ENABLE_GNU_PARALLEL" == "TRUE" ]] && $_HAS_PARALLEL; then
                 # Each method's heavy analyses are independent of other methods.
                 # Run methods in parallel, each getting THREADS/N_METHODS cores.
+                # Memory guard: DESeq2/WGCNA/GSEA use ~2-4GB per R process;
+                # cap concurrent methods so total < 75% of RAM
                 _n_methods=${#METHODS[@]}
+                _heavy_mem_per_method=3072  # ~3GB per heavy R analysis
+                _max_by_ram=$(( AVAILABLE_RAM_GB * 1024 * 75 / 100 / _heavy_mem_per_method ))
+                (( _max_by_ram < 1 )) && _max_by_ram=1
+                (( _n_methods > _max_by_ram )) && _n_methods=$_max_by_ram
                 _threads_per_method=$(( THREADS / _n_methods ))
                 (( _threads_per_method < 1 )) && _threads_per_method=1
                 log_info "Phase 2: Heavy analyses (parallel across ${_n_methods} methods, ${_threads_per_method} threads each): ${HEAVY_ANALYSES[*]}"
