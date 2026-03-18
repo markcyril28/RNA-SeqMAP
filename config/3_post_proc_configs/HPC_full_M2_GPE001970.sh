@@ -4,7 +4,7 @@
 # HPC FULL CONFIG: M2 — HISAT2 De Novo (GPE001970_transcripts)
 # ==============================================================================
 # Purpose: Production post-processing for M2 (HISAT2 de novo transcript
-#          assembly via StringTie).  Uses the full eggplant tissue atlas.
+#          assembly via StringTie).  Uses the GPE001970 transcriptome reference.
 #
 # Method:
 #   M2 — HISAT2 De Novo  →  uses GPE001970_transcripts
@@ -15,7 +15,7 @@
 # NOT applicable: Tximport_STAR, Tximport_Salmon, Tximport_RSEM, Matrix_Creation
 #
 # Usage:
-#   Uncomment this config in PIPELINE_CONFIGS inside run_all_post_processing.sh
+#   Uncomment this config in PIPELINE_CONFIGS inside run_post_processing.sh
 # ==============================================================================
 
 # ==============================================================================

@@ -9,13 +9,13 @@
 # Method:
 #   M4 — Salmon SAF  →  uses Eggplant_V4.1_transcripts.function
 #
-# Preprocessing:  Tximport_Salmon → Matrix_Creation (Tximport is a no-op when
-#                 Matrix_Creation is active; keep both for flexibility).
+# Preprocessing:  tximport runs automatically via run_method_preprocessing();
+#                 skipped when Matrix_Creation is in ANALYSES (it supersedes).
 # DE support:     Possible via tximport counts, but not enabled by default.
 # NOT applicable: Stringtie_Matrix, Tximport_STAR, Tximport_RSEM
 #
 # Usage:
-#   Uncomment this config in PIPELINE_CONFIGS inside run_all_post_processing.sh
+#   Uncomment this config in PIPELINE_CONFIGS inside run_post_processing.sh
 # ==============================================================================
 
 # ==============================================================================
@@ -72,13 +72,14 @@ METHODS=(
 # ANALYSES
 # ==============================================================================
 #
-# Tximport_Salmon is a no-op when Matrix_Creation is also active (keep for
-# standalone use).  Stringtie_Matrix and Tximport_STAR/RSEM are NOT applicable.
+# tximport preprocessing runs automatically via run_method_preprocessing();
+# Stringtie_Matrix and Tximport_STAR/RSEM are NOT applicable.
 # Tissue_Specificity is applicable to transcript-level quantification.
 
 ANALYSES=(
     # ---- M4 preprocessing ----
-    "Tximport_Salmon"           # standalone; no-op when Matrix_Creation is active
+    #"Tximport_Salmon"          # Legacy name — always skipped by run_single_analysis();
+                                # tximport runs automatically via run_method_preprocessing()
     "Matrix_Creation"           # builds count matrix from Salmon quant output
 
     # ---- Visualisation ----

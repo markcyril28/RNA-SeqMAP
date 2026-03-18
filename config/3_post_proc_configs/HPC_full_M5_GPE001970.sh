@@ -15,7 +15,7 @@
 # NOT applicable: Stringtie_Matrix, Tximport_STAR, Tximport_Salmon
 #
 # Usage:
-#   Uncomment this config in PIPELINE_CONFIGS inside run_all_post_processing.sh
+#   Uncomment this config in PIPELINE_CONFIGS inside run_post_processing.sh
 # ==============================================================================
 
 # ==============================================================================

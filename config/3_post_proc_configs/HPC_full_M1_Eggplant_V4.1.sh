@@ -14,7 +14,7 @@
 # NOT applicable: Tximport_*, Matrix_Creation, Stringtie_Matrix
 #
 # Usage:
-#   Uncomment this config in PIPELINE_CONFIGS inside run_all_post_processing.sh
+#   Uncomment this config in PIPELINE_CONFIGS inside run_post_processing.sh
 # ==============================================================================
 
 # ==============================================================================
@@ -24,7 +24,7 @@
 # M1 uses genome-level references.
 #
 # Reference → Source files:
-#   Eggplant_V4.1  →  inputs/fasta/reference_genomes/Eggplant_V4.1.fa
+#   Eggplant_V4.1  →  inputs/fasta/reference_genome/Eggplant_V4.1.fa
 #                      inputs/gtf/reference/Eggplant_V4.1_function_IPR_final_stringtie.gtf
 
 MASTER_REFERENCES=(

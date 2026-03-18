@@ -5,8 +5,8 @@
 # ==============================================================================
 
 # Runtime Configuration
-THREADS=24                              # Threads for parallel operations
-JOBS=1									# Parallel jobs for GNU Parallel
+THREADS=64                              # Threads for parallel operations
+JOBS=2									# Parallel jobs for GNU Parallel
 USE_GNU_PARALLEL="TRUE"                 # TRUE/FALSE for GNU Parallel
 keep_bam_global="n"                     # y=keep BAM files, n=delete after
 
@@ -67,8 +67,8 @@ decoy="inputs/fasta/experimental/TEST.fasta"
 
 # FASTA Files for Analysis (transcripts, required for M2, M4, M5)
 ALL_FASTA_FILES=(
-	"inputs/fasta/reference_genomes/GPE001970_transcripts.fa"
-	"inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"
+	"inputs/fasta/reference_genome/GPE001970_transcripts.fa"
+	"inputs/fasta/reference_genome/Eggplant_V4.1_transcripts.function.fa"
 )
 
 # ==============================================================================
@@ -172,8 +172,10 @@ SRR_COMBINED_LIST=(
 # DIRECTORY STRUCTURE AND OUTPUT PATHS
 # ==============================================================================
 
-POST_PROCESSING_ROOT="3_POST_PROC"
-export POST_PROCESSING_ROOT
+# POST_PROCESSING_ROOT is set and converted to absolute by global_config_method.sh
+# (sourced via modules_loader.sh above). Do NOT override it here — that would
+# revert the absolute path back to a relative one, creating inconsistency with
+# ALIGNMENT_RESULTS_ROOT which remains absolute.
 
 # Create required directories
 # NOTE: SALMON_INDEX_ROOT / SALMON_QUANT_ROOT / SALMON_SAF_MATRIX_ROOT and the RSEM equivalents

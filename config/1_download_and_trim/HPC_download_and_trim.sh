@@ -15,9 +15,10 @@
 # IMPORTANT PARAMETERS
 # ==============================================================================
 
+# Optimal Thread for TrimGalore is 4.
 # Runtime Configuration
-THREADS=64                              # Threads for parallel operations
-JOBS=4                                  # Parallel jobs for GNU Parallel
+THREADS=32                              # Threads for parallel operations
+JOBS=8                                  # Parallel jobs for GNU Parallel
 USE_GNU_PARALLEL="TRUE"                 # TRUE/FALSE for GNU Parallel
 keep_bam_global="n"                     # y=keep BAM files, n=delete after
 
@@ -32,7 +33,7 @@ PIPELINE_STAGES=(
 	# Option B: Combined download+trim+cleanup (auto-deletes raw after trim)
 	"DOWNLOAD_TRIM_and_DELETE_RAW_SRR"
 
-	#"GZIP_TRIMMED_FILES"
+	"GZIP_TRIMMED_FILES"
 	"QUALITY_CONTROL"
 
 	#"DELETE_RAW_SRR"				# Manually delete raw SRR files
