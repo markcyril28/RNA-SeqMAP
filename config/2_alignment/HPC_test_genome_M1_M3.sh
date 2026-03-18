@@ -81,8 +81,8 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 # The pipeline loops through all uncommented pairs.
 # ------------------------------------------------------------------------------
 GENOME_REF_PAIRS=(
-	"inputs/gtf/reference/GPE001970_genome.gtf|inputs/fasta/reference_genomes/GPE001970_genome.fa|inputs/fasta/reference_genomes/GPE001970_transcripts.fa"                                       	# GPE001970
-	"inputs/gtf/reference/Eggplant_V4.1_function_IPR_final_stringtie.gtf|inputs/fasta/reference_genomes/Eggplant_V4.1.fa|inputs/fasta/reference_genomes/Eggplant_V4.1_transcripts.function.fa"  	# Eggplant V4.1
+	"inputs/gtf/reference/GPE001970_genome.gtf|inputs/fasta/reference_genome/GPE001970_genome.fa|inputs/fasta/reference_genome/GPE001970_transcripts.fa"                                       	# GPE001970
+	"inputs/gtf/reference/Eggplant_V4.1_function_IPR_final_stringtie.gtf|inputs/fasta/reference_genome/Eggplant_V4.1.fa|inputs/fasta/reference_genome/Eggplant_V4.1_transcripts.function.fa"  	# Eggplant V4.1
 )
 
 # ==============================================================================

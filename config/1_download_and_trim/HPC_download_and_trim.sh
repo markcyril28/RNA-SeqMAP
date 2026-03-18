@@ -77,7 +77,7 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 # NOTE: FASTA is not used by the download/trim stages.
 # A single placeholder entry is required for the pipeline loop to execute.
 ALL_FASTA_FILES=(
-	"inputs/fasta/reference_genomes/GPE001970_transcripts.fa"
+	"inputs/fasta/reference_genome/GPE001970_transcripts.fa"
 )
 
 # ==============================================================================
