@@ -56,12 +56,13 @@ log_choice="${log_choice:-1}"  # 1 = tee to console, 2 = file only
 # CORE LOGGING FUNCTIONS
 # ==============================================================================
 
-timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
-log() { local level="$1"; shift; printf '[%s] [%s] %s\n' "$(timestamp)" "$level" "$*"; }
+# timestamp: use bash built-in printf %(%T)T (no subprocess) with date fallback for bash < 4.2
+timestamp() { local _t; printf -v _t '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null && echo "$_t" || date '+%Y-%m-%d %H:%M:%S'; }
+log() { local level="$1"; shift; local _ts; printf -v _ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _ts=$(date '+%Y-%m-%d %H:%M:%S'); printf '[%s] [%s] %s\n' "$_ts" "$level" "$*"; }
 log_info() { log INFO "$@"; }
 # Cache timestamp and format message once (was two printf calls per invocation)
-log_warn() { local _msg; _msg="[$(timestamp)] [WARN] $*"; echo "$_msg" >&2; [[ -n "${ERROR_WARN_FILE:-}" ]] && echo "$_msg" >> "$ERROR_WARN_FILE"; }
-log_error() { local _msg; _msg="[$(timestamp)] [ERROR] $*"; echo "$_msg" >&2; [[ -n "${ERROR_WARN_FILE:-}" ]] && echo "$_msg" >> "$ERROR_WARN_FILE"; }
+log_warn() { local _ts; printf -v _ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _ts=$(date '+%Y-%m-%d %H:%M:%S'); local _msg="[$_ts] [WARN] $*"; echo "$_msg" >&2; [[ -n "${ERROR_WARN_FILE:-}" ]] && echo "$_msg" >> "$ERROR_WARN_FILE"; }
+log_error() { local _ts; printf -v _ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _ts=$(date '+%Y-%m-%d %H:%M:%S'); local _msg="[$_ts] [ERROR] $*"; echo "$_msg" >&2; [[ -n "${ERROR_WARN_FILE:-}" ]] && echo "$_msg" >> "$ERROR_WARN_FILE"; }
 log_step() { log INFO "=============== $* ==============="; }
 
 strip_ansi_stream() {
@@ -69,7 +70,8 @@ strip_ansi_stream() {
 	# carriage returns from a stream so log files remain human-readable.
 	# CR (\r) is converted to newline so progress-bar overwrites become
 	# separate lines instead of one giant unreadable blob.
-	tr '\r' '\n' | sed -u 's/\x1B\[[0-9;?]*[a-zA-Z]//g; s/\x1B[()][A-Z0-9]//g'
+	# Single sed replaces tr+sed pipeline (1 process instead of 2).
+	sed -u 's/\r/\n/g; s/\x1B\[[0-9;?]*[a-zA-Z]//g; s/\x1B[()][A-Z0-9]//g'
 }
 
 # Initialize CSV headers for all log files if they don't exist yet.
