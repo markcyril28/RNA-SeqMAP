@@ -191,42 +191,25 @@ create_gene_trans_map() {
 	fi
 	
 	log_info "Creating gene-transcript mapping from FASTA..."
-	
-	# Detect if this is a Trinity assembly
-	local is_trinity=false
-	if grep -q "^>TRINITY_" "$fasta" 2>/dev/null; then
-		is_trinity=true
-		log_info "Detected Trinity assembly format"
-	fi
-	
-	if [[ "$is_trinity" == "true" ]]; then
-		awk '/^>/ {
-			trans = $1
-			gsub(/^>/, "", trans)
+
+	# Single awk pass: auto-detects Trinity format per-record (eliminates grep scan of entire FASTA)
+	awk '/^>/ {
+		sub(/^>/, "")
+		trans=$1
+		if (trans ~ /^TRINITY_/) {
 			gene = trans
-			# POSIX-portable: sub replaces _i<digits> suffix (no gawk capture groups)
 			sub(/_i[0-9]+$/, "", gene)
-			print gene "\t" trans
-		}' "$fasta" > "$output_file"
-	else
-		# Single awk pass reads FASTA directly (replaces grep|sed|awk chain — 2 fewer processes)
-		# Uses POSIX-portable match()+substr() instead of gawk-only capture groups
-		awk '/^>/ {
-			sub(/^>/, "")
-			trans=$1
-			gene=""
-			if (match($0, /gene=[^ ]+/)) {
-				gene=substr($0, RSTART+5, RLENGTH-5)
-			} else if (match($0, /gene_id[=:][^ ]+/)) {
-				gene=substr($0, RSTART+8, RLENGTH-8)
-			} else if (match(trans, /^[^|]+\|/)) {
-				gene=substr(trans, 1, RLENGTH-1)
-			} else {
-				gene=trans
-			}
-			print gene "\t" trans
-		}' "$fasta" > "$output_file"
-	fi
+		} else if (match($0, /gene=[^ ]+/)) {
+			gene=substr($0, RSTART+5, RLENGTH-5)
+		} else if (match($0, /gene_id[=:][^ ]+/)) {
+			gene=substr($0, RSTART+8, RLENGTH-8)
+		} else if (match(trans, /^[^|]+\|/)) {
+			gene=substr(trans, 1, RLENGTH-1)
+		} else {
+			gene=trans
+		}
+		print gene "\t" trans
+	}' "$fasta" > "$output_file"
 	
 	local unique_genes total_transcripts
 	read -r unique_genes total_transcripts < <(awk -F'\t' '{ genes[$1]++; total++ } END { print length(genes), total }' "$output_file")

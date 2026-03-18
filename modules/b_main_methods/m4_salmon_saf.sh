@@ -120,22 +120,25 @@ salmon_saf_pipeline() {
 
 			_parallel_log SALMON "$SRR" INFO "Quantifying with $threads_per_job threads"
 			local salmon_exit=0
+			# Redirect to log file — avoids sed pipe (saves 1 process) and simplifies exit code.
+			# Parallel already captures worker stdout, so piping through sed doubled I/O.
+			local _salmon_log="$out_dir/salmon_quant.log"
 			if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
 				salmon quant -i "$idx_dir" -l A \
 					-1 "$trimmed1" -2 "$trimmed2" \
 					-p "$threads_per_job" \
 					--numBootstraps "$salmon_num_bootstraps" \
 					--gcBias --seqBias \
-					-o "$out_dir" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
-				salmon_exit=${PIPESTATUS[0]}
+					-o "$out_dir" > "$_salmon_log" 2>&1
+				salmon_exit=$?
 			else
 				salmon quant -i "$idx_dir" -l A \
 					-r "$trimmed1" \
 					-p "$threads_per_job" \
 					--numBootstraps "$salmon_num_bootstraps" \
-					--seqBias \
-					-o "$out_dir" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
-				salmon_exit=${PIPESTATUS[0]}
+					--gcBias --seqBias \
+					-o "$out_dir" > "$_salmon_log" 2>&1
+				salmon_exit=$?
 			fi
 
 			[[ $salmon_exit -ne 0 ]] && { _parallel_log SALMON "$SRR" ERROR "Salmon failed (exit=$salmon_exit)"; return $salmon_exit; }
@@ -193,7 +196,7 @@ salmon_saf_pipeline() {
 					-r "$trimmed1" \
 					-p "$THREADS" \
 					--numBootstraps "$SALMON_NUM_BOOTSTRAPS" \
-					--seqBias \
+					--gcBias --seqBias \
 					-o "$out_dir"
 			fi
 			log_file_size "$out_dir/quant.sf" "Salmon quantification output - $SRR"

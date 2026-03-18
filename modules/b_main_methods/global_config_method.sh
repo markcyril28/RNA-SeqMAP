@@ -51,7 +51,7 @@ STAR_STRAND_SPECIFIC="${STAR_STRAND_SPECIFIC:-None}"
 # ==============================================================================
 # OVERWRITE_MODE controls whether alignment steps skip existing outputs.
 # "overwrite" = re-run even if outputs exist; "skip" = skip existing (default).
-# Derived from OVERWRITE_EXISTING (set/exported by run_all_post_processing.sh).
+# Derived from OVERWRITE_EXISTING (set/exported by run_post_processing.sh).
 # Respects an existing OVERWRITE_MODE set by a_GEA_script_v12.sh or the environment.
 _ow="${OVERWRITE_EXISTING:-FALSE}"
 if [[ "${_ow^^}" == "TRUE" ]]; then

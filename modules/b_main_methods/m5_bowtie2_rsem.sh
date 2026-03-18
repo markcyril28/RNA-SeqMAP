@@ -17,7 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/shared_utils_method.sh"
 
 # ==============================================================================
-# RSEM CONFIGURATION - IMPORTANT PARAMETERS (tweak here)
+# RSEM CONFIGURATION - IMPORTANT PARAMETERS
 # ==============================================================================
 
 # Number of samples to process in parallel (requires USE_GNU_PARALLEL=TRUE)
@@ -62,14 +62,19 @@ _rsem_detect_strandedness() {
 	local index_root="$3"
 	local cache_file="$index_root/.detected_strandedness"
 
-	# Return cached result if available (must be non-empty)
+	# Return cached result if available (must be non-empty and a valid strandedness value)
 	if [[ -s "$cache_file" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 		RSEM_STRANDEDNESS=$(cat "$cache_file")
-		if [[ -n "$RSEM_STRANDEDNESS" ]]; then
-			log_info "[STRANDEDNESS] Using cached result: $RSEM_STRANDEDNESS (from $cache_file)"
-			return 0
-		fi
-		log_warn "[STRANDEDNESS] Cache file exists but is empty, re-detecting"
+		case "$RSEM_STRANDEDNESS" in
+			none|forward|reverse)
+				log_info "[STRANDEDNESS] Using cached result: $RSEM_STRANDEDNESS (from $cache_file)"
+				return 0
+				;;
+			*)
+				log_warn "[STRANDEDNESS] Cache file contains invalid value '$RSEM_STRANDEDNESS', re-detecting"
+				RSEM_STRANDEDNESS="auto"
+				;;
+		esac
 	fi
 
 	# Check that Salmon is available
@@ -223,7 +228,7 @@ bowtie2_rsem_pipeline() {
 	[[ ${#rnaseq_list[@]} -eq 0 ]] && rnaseq_list=("${SRR_COMBINED_LIST[@]}")
 
 	# Convert line endings only if CRLF detected (avoids modifying file timestamp on every run)
-	if command -v dos2unix >/dev/null 2>&1 && grep -qP '\r$' "$fasta" 2>/dev/null; then
+	if command -v dos2unix >/dev/null 2>&1 && grep -q $'\r' "$fasta" 2>/dev/null; then
 		dos2unix "$fasta" 2>/dev/null || true
 	fi
 
@@ -235,21 +240,40 @@ bowtie2_rsem_pipeline() {
 
 	mkdir -p "$RSEM_INDEX_ROOT" "$quant_root" "$matrix_dir"
 
+	# Create gene-transcript mapping BEFORE building reference (needed for proper
+	# gene-level aggregation when using transcript FASTAs with multiple isoforms)
+	local gene_trans_map="${fasta}.gene_trans_map"
+	if [[ ! -s "$gene_trans_map" ]]; then
+		create_gene_trans_map "$fasta" "$gene_trans_map"
+	fi
+
 	# AUTO-DETECT STRANDEDNESS (runs once, caches result)
 	if [[ "$RSEM_STRANDEDNESS" == "auto" ]]; then
 		_rsem_detect_strandedness "$fasta" "${rnaseq_list[0]}" "$RSEM_INDEX_ROOT"
 	fi
 
 	# BUILD RSEM REFERENCE
+	# Pass --transcript-to-gene-map when available so RSEM performs proper gene-level
+	# aggregation in .genes.results (critical for transcript FASTAs with multiple isoforms)
+	local _gtm_args=()
+	if [[ -s "$gene_trans_map" ]]; then
+		_gtm_args=(--transcript-to-gene-map "$gene_trans_map")
+	fi
 	# Check all required index files: .grp (RSEM) + .rev.2.bt2 (written last by Bowtie2 build)
 	if [[ -f "${rsem_idx}.grp" && ( -f "${rsem_idx}.rev.2.bt2" || -f "${rsem_idx}.rev.2.bt2l" ) && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 		log_info "[RSEM INDEX] RSEM reference already exists. Skipping."
+		if [[ ${#_gtm_args[@]} -gt 0 && ! -f "$RSEM_INDEX_ROOT/.has_gene_trans_map" ]]; then
+			log_warn "[RSEM INDEX] Existing reference may lack gene-transcript mapping."
+			log_warn "[RSEM INDEX] Set OVERWRITE_MODE=overwrite to rebuild with proper gene-level aggregation."
+		fi
 	else
 		log_step "Building RSEM reference for $tag"
 		log_file_size "$fasta" "Input FASTA for RSEM index - $tag"
 		run_with_space_time_log --input "$fasta" --output "$RSEM_INDEX_ROOT" \
-			rsem-prepare-reference --bowtie2 -p "$THREADS" "$fasta" "$rsem_idx"
+			rsem-prepare-reference --bowtie2 -p "$THREADS" "${_gtm_args[@]}" "$fasta" "$rsem_idx"
 		log_file_size "$RSEM_INDEX_ROOT" "RSEM index output - $tag"
+		# Mark that this reference was built with gene-transcript mapping
+		[[ ${#_gtm_args[@]} -gt 0 ]] && touch "$RSEM_INDEX_ROOT/.has_gene_trans_map"
 	fi
 
 	# QUANTIFY SAMPLES - parallel or sequential
@@ -339,41 +363,15 @@ _rsem_parallel_worker() {
 		return 0
 	fi
 
-	# Locate trimmed reads (inlined to avoid function-export issues across bash versions)
-	local trim_dir="$abs_trim_dir_root/$SRR"
-	local trimmed1="" trimmed2=""
-
-	if [[ -f "$trim_dir/${SRR}_1_val_1.fq.gz" && -f "$trim_dir/${SRR}_2_val_2.fq.gz" ]]; then
-		trimmed1="$trim_dir/${SRR}_1_val_1.fq.gz"
-		trimmed2="$trim_dir/${SRR}_2_val_2.fq.gz"
-	elif [[ -f "$trim_dir/${SRR}_1_val_1.fq" && -f "$trim_dir/${SRR}_2_val_2.fq" ]]; then
-		trimmed1="$trim_dir/${SRR}_1_val_1.fq"
-		trimmed2="$trim_dir/${SRR}_2_val_2.fq"
-	else
-		# Glob fallback for non-standard paired-end names (check paired BEFORE single-end,
-		# matching find_trimmed_fastq() priority in shared_utils_preproc.sh)
-		for f in "$trim_dir"/${SRR}*val_1*.fq* "$trim_dir"/${SRR}*val_1*.gz; do
-			[[ -f "$f" ]] && { trimmed1="$f"; break; }
-		done
-		if [[ -n "$trimmed1" ]]; then
-			for f in "$trim_dir"/${SRR}*val_2*.fq* "$trim_dir"/${SRR}*val_2*.gz; do
-				[[ -f "$f" ]] && { trimmed2="$f"; break; }
-			done
-		# Single-end patterns (compressed first, then uncompressed, then glob fallback)
-		elif [[ -f "$trim_dir/${SRR}_trimmed.fq.gz" ]]; then
-			trimmed1="$trim_dir/${SRR}_trimmed.fq.gz"
-		elif [[ -f "$trim_dir/${SRR}_trimmed.fq" ]]; then
-			trimmed1="$trim_dir/${SRR}_trimmed.fq"
-		else
-			for f in "$trim_dir"/${SRR}*trimmed.fq* "$trim_dir"/${SRR}*trimmed*.gz; do
-				[[ -f "$f" ]] && { trimmed1="$f"; break; }
-			done
-		fi
-	fi
+	# Locate trimmed reads via shared helper (exported by shared_utils_method.sh;
+	# sets trimmed1 and trimmed2 — also handles conda reactivation, so the earlier
+	# conda block above is a no-op safety net for edge cases)
+	_init_parallel_worker "$SRR"
 
 	if [[ -z "$trimmed1" ]]; then
-		_plog "ERROR" "Missing trimmed reads in: $trim_dir"
-		_plog "ERROR" "Contents: $(ls -la "$trim_dir" 2>&1 || echo 'Directory does not exist')"
+		local _td="$abs_trim_dir_root/$SRR"
+		_plog "ERROR" "Missing trimmed reads in: $_td"
+		_plog "ERROR" "Contents: $(ls -la "$_td" 2>&1 || echo 'Directory does not exist')"
 		return 1
 	fi
 
@@ -390,6 +388,8 @@ _rsem_parallel_worker() {
 
 	local rsem_log="$out_dir/${SRR}.rsem.log"
 	local rsem_exit_code
+	# Redirect directly to log file — parallel already captures stdout from this worker,
+	# so tee would double the I/O. Direct redirect also simplifies exit code capture.
 	if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
 		rsem-calculate-expression \
 			--paired-end \
@@ -399,8 +399,8 @@ _rsem_parallel_worker() {
 			--seed "$RSEM_SEED" \
 			--num-threads "$threads_per_job" \
 			${_no_bam_flag:+"$_no_bam_flag"} \
-			"$trimmed1" "$trimmed2" "$rsem_idx" "$out_dir/$SRR" 2>&1 | tee "$rsem_log"
-		rsem_exit_code=${PIPESTATUS[0]}
+			"$trimmed1" "$trimmed2" "$rsem_idx" "$out_dir/$SRR" > "$rsem_log" 2>&1
+		rsem_exit_code=$?
 	else
 		rsem-calculate-expression \
 			--bowtie2 \
@@ -409,8 +409,8 @@ _rsem_parallel_worker() {
 			--seed "$RSEM_SEED" \
 			--num-threads "$threads_per_job" \
 			${_no_bam_flag:+"$_no_bam_flag"} \
-			"$trimmed1" "$rsem_idx" "$out_dir/$SRR" 2>&1 | tee "$rsem_log"
-		rsem_exit_code=${PIPESTATUS[0]}
+			"$trimmed1" "$rsem_idx" "$out_dir/$SRR" > "$rsem_log" 2>&1
+		rsem_exit_code=$?
 	fi
 
 	if [[ $rsem_exit_code -ne 0 ]]; then
@@ -595,7 +595,7 @@ _create_manual_rsem_matrix() {
 	for SRR in "${srr_list[@]}"; do
 		if [[ -f "$quant_root/$SRR/${SRR}.genes.results" ]]; then
 			first_sample="$SRR"
-			awk 'NR>1 {print $1}' "$quant_root/$SRR/${SRR}.genes.results" > "$temp_gene_ids"
+			awk -F'\t' 'NR>1 {print $1}' "$quant_root/$SRR/${SRR}.genes.results" > "$temp_gene_ids"
 			break
 		fi
 	done
@@ -612,7 +612,7 @@ _create_manual_rsem_matrix() {
 		if [[ -f "$quant_root/$SRR/${SRR}.genes.results" ]]; then
 			# Validate gene count matches first sample (detect truncated outputs)
 			local sample_genes
-			sample_genes=$(awk 'END{print NR-1}' "$quant_root/$SRR/${SRR}.genes.results")
+			sample_genes=$(awk -F'\t' 'END{print NR-1}' "$quant_root/$SRR/${SRR}.genes.results")
 			if [[ "$sample_genes" -ne "$num_genes" ]]; then
 				log_warn "[RSEM MATRIX] $SRR has $sample_genes genes (expected $num_genes) — filling with zeros"
 				awk -v n="$num_genes" -v c="$matrix_dir/${SRR}_counts.tmp" \
@@ -621,7 +621,7 @@ _create_manual_rsem_matrix() {
 				continue
 			fi
 			# Single awk pass extracts counts, TPM, FPKM simultaneously (was 3 separate passes per sample)
-			awk 'NR>1 {print $5 > counts; print $6 > tpm; print $7 > fpkm}' \
+			awk -F'\t' 'NR>1 {print $5 > counts; print $6 > tpm; print $7 > fpkm}' \
 				counts="$matrix_dir/${SRR}_counts.tmp" \
 				tpm="$matrix_dir/${SRR}_tpm.tmp" \
 				fpkm="$matrix_dir/${SRR}_fpkm.tmp" \
@@ -775,7 +775,7 @@ _create_rsem_summary() {
 			if [[ -f "$quant_root/$SRR/${SRR}.genes.results" ]]; then
 				# Single AWK pass: count total genes, expressed genes, and sum counts
 				local total expressed counts
-				read -r total expressed counts < <(awk 'NR>1 { total++; if ($5>0) expr++; s+=$5 }
+				read -r total expressed counts < <(awk -F'\t' 'NR>1 { total++; if ($5>0) expr++; s+=$5 }
 					END { printf "%d %d %d", total+0, expr+0, int(s) }
 				' "$quant_root/$SRR/${SRR}.genes.results")
 

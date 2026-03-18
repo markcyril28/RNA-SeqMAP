@@ -139,29 +139,63 @@ _hisat2_check_alignment_rates() {
 _m1_validate_fasta_gtf_chromosomes() {
 	local fasta="$1" gtf="$2"
 
-	# Single AWK pass over both files: extract chromosome names, compute overlap
-	# Replaces grep|head|sed|sort + awk|sort -u|head + comm pipeline (7+ processes → 1)
+	# Cache validation result: skip re-scanning multi-GB files on resume runs.
+	# Sentinel is invalidated when either input file is newer.
+	local _sentinel="${HISAT2_REF_GUIDED_INDEX_DIR:-.}/.fasta_gtf_validated"
+	if [[ -f "$_sentinel" && "$fasta" -ot "$_sentinel" && "$gtf" -ot "$_sentinel" ]]; then
+		return 0
+	fi
+
+	# Use .fai index if available (a few KB vs scanning multi-GB FASTA for >headers)
+	local fasta_source="$fasta"
+	local use_fai=false
+	if [[ -f "${fasta}.fai" ]]; then
+		fasta_source="${fasta}.fai"
+		use_fai=true
+	fi
+
+	# Single AWK pass: extract chromosome names, compute overlap
 	local result
-	result=$(awk '
-		# Pass 1: FASTA chromosome names (first 20)
-		FILENAME == ARGV[1] && /^>/ && fasta_n < 20 {
-			chr = $0; sub(/^>/, "", chr); sub(/[[:space:]].*/, "", chr)
-			if (!(chr in fasta_seen)) { fasta_seen[chr]=1; fasta_n++ }
-		}
-		# Pass 2: GTF chromosome names (first 20 unique, skip comments)
-		FILENAME == ARGV[2] && !/^#/ && gtf_n < 20 {
-			if (!($1 in gtf_seen)) { gtf_seen[$1]=1; gtf_n++ }
-		}
-		END {
-			overlap = 0
-			for (c in gtf_seen) if (c in fasta_seen) overlap++
-			# Print: overlap fasta_count gtf_count fasta_first5 | gtf_first5
-			printf "%d %d %d ", overlap, fasta_n, gtf_n
-			n=0; for (c in fasta_seen) { if (n<5) printf "%s ", c; n++ }
-			printf "| "
-			n=0; for (c in gtf_seen) { if (n<5) printf "%s ", c; n++ }
-		}
-	' "$fasta" "$gtf" 2>/dev/null)
+	if [[ "$use_fai" == "true" ]]; then
+		result=$(awk '
+			# Pass 1: .fai file (col1 = sequence name, first 20)
+			FILENAME == ARGV[1] && fasta_n < 20 {
+				if (!($1 in fasta_seen)) { fasta_seen[$1]=1; fasta_n++ }
+			}
+			# Pass 2: GTF chromosome names (first 20 unique, skip comments)
+			FILENAME == ARGV[2] && !/^#/ && gtf_n < 20 {
+				if (!($1 in gtf_seen)) { gtf_seen[$1]=1; gtf_n++ }
+			}
+			END {
+				overlap = 0
+				for (c in gtf_seen) if (c in fasta_seen) overlap++
+				printf "%d %d %d ", overlap, fasta_n, gtf_n
+				n=0; for (c in fasta_seen) { if (n<5) printf "%s ", c; n++ }
+				printf "| "
+				n=0; for (c in gtf_seen) { if (n<5) printf "%s ", c; n++ }
+			}
+		' "$fasta_source" "$gtf" 2>/dev/null)
+	else
+		result=$(awk '
+			# Pass 1: FASTA chromosome names (first 20)
+			FILENAME == ARGV[1] && /^>/ && fasta_n < 20 {
+				chr = $0; sub(/^>/, "", chr); sub(/[[:space:]].*/, "", chr)
+				if (!(chr in fasta_seen)) { fasta_seen[chr]=1; fasta_n++ }
+			}
+			# Pass 2: GTF chromosome names (first 20 unique, skip comments)
+			FILENAME == ARGV[2] && !/^#/ && gtf_n < 20 {
+				if (!($1 in gtf_seen)) { gtf_seen[$1]=1; gtf_n++ }
+			}
+			END {
+				overlap = 0
+				for (c in gtf_seen) if (c in fasta_seen) overlap++
+				printf "%d %d %d ", overlap, fasta_n, gtf_n
+				n=0; for (c in fasta_seen) { if (n<5) printf "%s ", c; n++ }
+				printf "| "
+				n=0; for (c in gtf_seen) { if (n<5) printf "%s ", c; n++ }
+			}
+		' "$fasta" "$gtf" 2>/dev/null)
+	fi
 
 	if [[ -z "$result" ]]; then
 		log_warn "[VALIDATE] Could not extract chromosome names from FASTA or GTF"
@@ -183,6 +217,9 @@ _m1_validate_fasta_gtf_chromosomes() {
 	else
 		log_info "[VALIDATE] FASTA/GTF chromosome names match ($overlap shared)"
 	fi
+
+	# Write sentinel so subsequent runs skip this validation
+	touch "$_sentinel" 2>/dev/null || true
 }
 
 # ==============================================================================
@@ -201,9 +238,11 @@ _m1_collect_bam_metrics() {
 		return 0
 	fi
 
-	# samtools stats is fast — runs in seconds even on large BAMs
+	# samtools stats with multi-threading (cap at 4 — I/O bound beyond that)
+	local _st_threads=${threads_per_job:-${THREADS:-4}}
+	(( _st_threads > 4 )) && _st_threads=4
 	local stats
-	stats=$(samtools stats "$bam" 2>/dev/null | grep '^SN\t') || return 0
+	stats=$(samtools stats -@ "$_st_threads" "$bam" 2>/dev/null | grep '^SN\t') || return 0
 
 	# Single awk pass extracts all 4 metrics (here-string avoids echo|pipe subshell)
 	local total_bases bases_clipped insert_mean insert_sd

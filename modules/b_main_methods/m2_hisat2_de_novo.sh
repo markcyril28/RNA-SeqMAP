@@ -212,8 +212,8 @@ hisat2_de_novo_pipeline() {
 				if [[ -z "$_sort_wi_flag" ]]; then
 					# Cap index threads at 4 — samtools index is I/O-bound
 					local _idx_t=$threads_per_job; (( _idx_t > 4 )) && _idx_t=4
-					samtools index -@ "$_idx_t" "$bam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
-					[[ ${PIPESTATUS[0]} -ne 0 ]] && { _parallel_log HISAT2_DN "$SRR" ERROR "samtools index failed"; rm -f "$bam"; return 1; }
+					samtools index -@ "$_idx_t" "$bam" 2>/dev/null
+					[[ $? -ne 0 ]] && { _parallel_log HISAT2_DN "$SRR" ERROR "samtools index failed"; rm -f "$bam"; return 1; }
 				fi
 			fi
 
@@ -356,10 +356,10 @@ hisat2_de_novo_pipeline() {
 	done
 	if [[ ${#_summary_files[@]} -gt 0 ]]; then
 		# Single awk pass extracts sample name and overall rate from all summary files
-		# Uses POSIX-compatible FNR==1 pattern (avoids gawk-only BEGINFILE)
+		# Uses fasta_tag variable for exact suffix stripping (supports fasta_tags with underscores)
 		local _qc_output
-		_qc_output=$(awk '
-			FNR==1 { sample = FILENAME; sub(/.*\//, "", sample); sub(/_[^_]*_alignment_summary\.txt$/, "", sample) }
+		_qc_output=$(awk -v ft="$fasta_tag" '
+			FNR==1 { sample = FILENAME; sub(/.*\//, "", sample); sub("_" ft "_alignment_summary\\.txt$", "", sample) }
 			/overall alignment rate/ { gsub(/%.*/, ""); print sample, $NF }
 		' "${_summary_files[@]}" 2>/dev/null) || true
 		while read -r _qc_srr _qc_rate; do
@@ -402,6 +402,8 @@ _m2_infer_strand_from_bam() {
 	# Paired-end: check read1 (0x40) strand via 0x10 flag
 	# Single-end: check overall strand via 0x10 flag
 	# Uses POSIX-compatible int(flag/N)%2 instead of gawk-specific and()
+	# Single samtools|awk pipeline computes counts AND strand decision
+	# (1 pipe instead of 1 pipe + 3 extra awk invocations for float math)
 	eval "$(samtools view -F 0x904 "$bam" 2>/dev/null | awk '
 		BEGIN { paired=0; fwd=0; rev=0 }
 		{
@@ -417,22 +419,27 @@ _m2_infer_strand_from_bam() {
 				else fwd++
 			}
 		}
-		END { printf "is_paired=%d fwd_count=%d rev_count=%d", paired, fwd, rev }
+		END {
+			total = fwd + rev
+			frac = (total > 0) ? fwd / total : 0.5
+			is_pe = (paired > 0) ? 1 : 0
+			# strand: FR if frac>0.7, RF if frac<0.3, else unstranded
+			strand = (frac > 0.7) ? "FR" : (frac < 0.3) ? "RF" : "unstranded"
+			printf "is_paired=%d fwd_count=%d rev_count=%d total=%d fwd_frac=%.4f _detected_strand=%s", \
+				paired, fwd, rev, total, frac, strand
+		}
 	')"
 
-	total=$(( ${fwd_count:-0} + ${rev_count:-0} ))
-	if [[ "$total" -eq 0 ]]; then
+	if [[ "${total:-0}" -eq 0 ]]; then
 		log_warn "[STRANDNESS] No mapped reads in BAM — running unstranded"
 		_detected_strand="unstranded"
 		return 0
 	fi
 
-	fwd_frac=$(awk "BEGIN{printf \"%.4f\", ${fwd_count:-0} / $total}")
 	local _is_pe=$(( ${is_paired:-0} > 0 ? 1 : 0 ))
 	log_info "[STRANDNESS] Read1 forward fraction: $fwd_frac ($total primary alignments, PE=$_is_pe)"
 
-	if awk "BEGIN{exit !($fwd_frac > 0.7)}"; then
-		_detected_strand="FR"
+	if [[ "$_detected_strand" == "FR" ]]; then
 		# HISAT2 requires FR for paired-end, F for single-end
 		if [[ $_is_pe -eq 1 ]]; then
 			hisat2_strand_opts="--rna-strandness FR"
@@ -441,8 +448,7 @@ _m2_infer_strand_from_bam() {
 		fi
 		stringtie_strand_opt="--fr"
 		log_info "[STRANDNESS] Auto-detected: FR (ligation / forward-stranded)"
-	elif awk "BEGIN{exit !($fwd_frac < 0.3)}"; then
-		_detected_strand="RF"
+	elif [[ "$_detected_strand" == "RF" ]]; then
 		# HISAT2 requires RF for paired-end, R for single-end
 		if [[ $_is_pe -eq 1 ]]; then
 			hisat2_strand_opts="--rna-strandness RF"

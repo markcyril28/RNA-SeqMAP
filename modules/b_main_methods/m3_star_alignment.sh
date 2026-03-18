@@ -430,16 +430,19 @@ star_alignment_pipeline() {
 		local genome_sa_index=14
 		local genome_chr_bin=18
 		local genome_bp num_seqs
-		# Single awk pass extracts both metrics (replaces awk + grep — 1 process instead of 2)
-		eval "$(awk '/^>/{n++} !/^>/{bp+=length($0)} END{printf "genome_bp=%d num_seqs=%d", bp+0, (n>0?n:1)}' "$fasta" 2>/dev/null)"
-		if [[ -n "$genome_bp" && "$genome_bp" -gt 0 ]]; then
-			genome_sa_index=$(awk "BEGIN{v=int(log($genome_bp)/log(2)/2-1); print (v<14)?v:14}")
-			[[ "$genome_sa_index" -lt 1 ]] && genome_sa_index=1
-			# genomeChrBinNbits: min(18, floor(log2(GenomeLength/NumberOfSequences) - 1))
-			# Required for genomes with many scaffolds (e.g., draft assemblies)
-			genome_chr_bin=$(awk "BEGIN{v=int(log($genome_bp/$num_seqs)/log(2)-1); print (v<18)?v:18}")
-			[[ "$genome_chr_bin" -lt 1 ]] && genome_chr_bin=1
-		fi
+		# Single awk pass: extract genome metrics AND compute STAR index parameters
+		# (1 process instead of 3 — eliminates two extra awk BEGIN invocations)
+		eval "$(awk '
+			/^>/{n++} !/^>/{bp+=length($0)}
+			END{
+				if(n<1) n=1; if(bp<1) bp=0
+				sa=14; cb=18
+				if(bp>0){
+					v=int(log(bp)/log(2)/2-1); sa=(v<14)?v:14; if(sa<1) sa=1
+					v=int(log(bp/n)/log(2)-1);  cb=(v<18)?v:18; if(cb<1) cb=1
+				}
+				printf "genome_bp=%d num_seqs=%d genome_sa_index=%d genome_chr_bin=%d", bp, n, sa, cb
+			}' "$fasta" 2>/dev/null)"
 		log_info "[STAR INDEX] Genome size: ${genome_bp:-unknown} bp, $num_seqs sequences -> genomeSAindexNbases=$genome_sa_index, genomeChrBinNbits=$genome_chr_bin"
 
 		run_with_space_time_log --input "$fasta" --output "$star_index_dir" \
@@ -860,17 +863,20 @@ star_alignment_pipeline() {
 			_parallel_log SALMON_STAR "$SRR" INFO "Quantifying with $threads_per_job threads"
 
 			local quant_exit=0
-			# Strip ANSI escape codes and carriage returns (Salmon uses colored progress bars)
+			# Redirect to log file — avoids sed pipe (saves 1 process per sample) and
+			# simplifies exit code capture (direct $? vs PIPESTATUS).
+			# Parallel already captures worker stdout, so piping through sed doubled I/O.
+			local _salmon_log="$quant_dir/salmon_quant.log"
 			if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
 				salmon quant -p "$threads_per_job" -i "$salmon_idx" -o "$quant_dir" \
-					--gcBias --seqBias -l "${_sal_lib_pe:-A}" -1 "$trimmed1" -2 "$trimmed2" 2>&1 | \
-					sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
-				quant_exit=${PIPESTATUS[0]}
+					--gcBias --seqBias -l "${_sal_lib_pe:-A}" -1 "$trimmed1" -2 "$trimmed2" \
+					> "$_salmon_log" 2>&1
+				quant_exit=$?
 			else
 				salmon quant -p "$threads_per_job" -i "$salmon_idx" -o "$quant_dir" \
-					--gcBias --seqBias -l "${_sal_lib_se:-A}" -r "$trimmed1" 2>&1 | \
-					sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
-				quant_exit=${PIPESTATUS[0]}
+					--gcBias --seqBias -l "${_sal_lib_se:-A}" -r "$trimmed1" \
+					> "$_salmon_log" 2>&1
+				quant_exit=$?
 			fi
 			[[ $quant_exit -ne 0 ]] && { _parallel_log SALMON_STAR "$SRR" ERROR "Salmon quant failed (exit=$quant_exit)"; return $quant_exit; }
 
