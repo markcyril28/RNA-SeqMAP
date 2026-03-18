@@ -233,7 +233,12 @@ run_tissue_specificity <- function(config = NULL, matrices_dir = NULL) {
     # Tau measures specificity across DISTINCT tissues, not individual samples.
     # Without averaging, replicates inflate the denominator (n-1) while contributing
     # near-identical expression values, systematically underestimating Tau.
-    tissue_data <- validation$data
+    # Convert SRR IDs to organ labels so that:
+    #   1. Biological replicates are correctly grouped by organ for averaging
+    #   2. MaxTissue reports organ names (e.g., "Flower_Buds"), not SRR IDs
+    #   3. Heatmaps display organ labels
+    organ_data <- convert_to_organ_labels(validation$data)
+    tissue_data <- organ_data
     col_names <- colnames(tissue_data)
     # Strip R's make.unique suffixes (.1, .2, etc.) to recover base tissue names
     base_tissues <- sub("\\.[0-9]+$", "", col_names)
@@ -259,8 +264,8 @@ run_tissue_specificity <- function(config = NULL, matrices_dir = NULL) {
     }
     specificity <- calculate_tissue_specificity(tissue_data)
 
-    # Log-transformed data for heatmap visualization
-    data_matrix <- apply_normalization(validation$data, NORM_SCHEMES[1], COUNT_TYPES[1])
+    # Log-transformed data for heatmap visualization (organ-labeled, per-sample)
+    data_matrix <- apply_normalization(organ_data, NORM_SCHEMES[1], COUNT_TYPES[1])
     
     # Save results
     write.table(specificity, file.path(output_dir, paste0(gene_group, "_tissue_specificity.tsv")),

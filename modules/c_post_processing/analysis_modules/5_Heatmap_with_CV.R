@@ -216,7 +216,7 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
     top_cv_anno <- NULL
     bottom_cv_anno <- NULL
     if (length(col_cv) == ncol(data_matrix)) {
-      col_cv_text <- sprintf("%.1f", ifelse(is.na(col_cv), 0, col_cv))
+      col_cv_text <- ifelse(is.na(col_cv), "N/A", sprintf("%.1f", col_cv))
 
       cv_col_anno <- HeatmapAnnotation(
         `CV` = unname(col_cv),
@@ -291,7 +291,7 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
 
     # Row CV annotation: color strip + numeric text (right side of heatmap)
     if (length(row_cv) == nrow(data_matrix)) {
-      row_cv_text <- sprintf("%.1f", ifelse(is.na(row_cv), 0, row_cv))
+      row_cv_text <- ifelse(is.na(row_cv), "N/A", sprintf("%.1f", row_cv))
 
       cv_row_anno <- rowAnnotation(
         `CV` = unname(row_cv),
@@ -306,11 +306,13 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
     }
     
     # Save with auto-adjusted dimensions
+    .dev_open <- FALSE
+    on.exit(if (.dev_open) try(dev.off(), silent = TRUE), add = TRUE)
     png(output_path, width = img_width, height = img_height, res = 150)
-    on.exit(try(dev.off(), silent = TRUE), add = TRUE)
+    .dev_open <- TRUE
     draw(ht, heatmap_legend_side = LEGEND_POSITION)
     dev.off()
-    on.exit(NULL)  # clear handler after successful close
+    .dev_open <- FALSE
     
     # Export raw values with CV as TSV alongside the PNG
     if (exists("EXPORT_RAW_VALUES") && EXPORT_RAW_VALUES) {

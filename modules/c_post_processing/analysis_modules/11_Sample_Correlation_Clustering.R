@@ -50,7 +50,15 @@ calculate_sample_correlation <- function(data_matrix, method = CORRELATION_METHO
   } else {
     cor_matrix <- cor(data_matrix, use = "pairwise.complete.obs", method = method)
   }
-  cor_matrix[is.na(cor_matrix)] <- 0
+  n_na <- sum(is.na(cor_matrix))
+  if (n_na > 0) {
+    # Identify which samples produced NA correlations (zero-variance or all-NA)
+    na_samples <- colnames(cor_matrix)[colSums(is.na(cor_matrix)) > 0]
+    cat("    Warning:", n_na, "NA values in correlation matrix (samples with zero variance or all-NA values:",
+        paste(na_samples, collapse = ", "), ")\n")
+    cat("    Replacing NA correlations with 0 for visualization (treat with caution)\n")
+    cor_matrix[is.na(cor_matrix)] <- 0
+  }
   return(cor_matrix)
 }
 

@@ -213,10 +213,24 @@ gpu_dist <- function(x, method = "euclidean") {
 
 read_count_matrix <- function(file_path) {
   tryCatch({
+    # .rds cache: readRDS is ~10-50x faster than TSV parsing for repeated reads.
+    # Each analysis module (heatmap, PCA, DEA, etc.) re-reads the same matrix files;
+    # the .rds cache eliminates redundant parsing after the first read.
+    rds_path <- paste0(file_path, ".rds")
+    if (file.exists(rds_path) &&
+        file.mtime(rds_path) >= file.mtime(file_path)) {
+      return(readRDS(rds_path))
+    }
+
     # data.table::fread() is 10-50x faster than read.table() for large matrices
-    data <- data.table::fread(file_path, header = TRUE, sep = "\t",
-                              na.strings = c("", "NA", "null"),
-                              data.table = FALSE)
+    data <- if (.HAS_DATATABLE) {
+      data.table::fread(file_path, header = TRUE, sep = "\t",
+                        na.strings = c("", "NA", "null"),
+                        data.table = FALSE)
+    } else {
+      read.table(file_path, header = TRUE, sep = "\t", stringsAsFactors = FALSE,
+                 check.names = FALSE, na.strings = c("", "NA", "null"))
+    }
     # Normalize duplicate column names: fread uses "_1" suffixes but downstream
     # code (apply_labels, replicate averaging) expects ".1" from make.unique()
     if (any(duplicated(colnames(data)))) {
@@ -234,6 +248,10 @@ read_count_matrix <- function(file_path) {
     }
     data_matrix <- as.matrix(data)
     data_matrix[is.na(data_matrix)] <- 0
+
+    # Save .rds cache for subsequent reads by other analysis modules
+    tryCatch(saveRDS(data_matrix, rds_path), error = function(e) NULL)
+
     return(data_matrix)
   }, error = function(e) {
     cat("Error reading file:", file_path, "-", e$message, "\n")
@@ -250,8 +268,13 @@ save_matrix_data <- function(data_matrix, output_path, metadata = NULL) {
       stringsAsFactors = FALSE,
       check.names = FALSE
     )
-    data.table::fwrite(matrix_df, file = paste0(base_path, ".tsv"),
-                       sep = "\t", quote = FALSE)
+    if (.HAS_DATATABLE) {
+      data.table::fwrite(matrix_df, file = paste0(base_path, ".tsv"),
+                         sep = "\t", quote = FALSE)
+    } else {
+      write.table(matrix_df, file = paste0(base_path, ".tsv"),
+                  sep = "\t", quote = FALSE, row.names = FALSE)
+    }
     return(TRUE)
   }, error = function(e) {
     cat("Error saving matrix:", e$message, "\n")
@@ -373,8 +396,20 @@ preprocess_for_cpm <- function(data_matrix, count_type = "expected_count") {
   # Log2(CPM + 1) applied for variance stabilization (pseudocount of 1)
   # Suitable for visualization; for DEA, use DESeq2's internal normalization
   if (is.null(data_matrix) || nrow(data_matrix) == 0) return(NULL)
+  # CPM requires raw read/fragment counts — not valid for coverage (per-base depth)
+  if (tolower(count_type) == "coverage") {
+    warning("CPM normalization is invalid for coverage data (per-base abundance, not raw counts). ",
+            "Falling back to log2(x+1).", call. = FALSE)
+    return(preprocess_for_count_type_normalized(data_matrix, count_type))
+  }
   lib_sizes <- colSums(data_matrix, na.rm = TRUE)
-  lib_sizes[lib_sizes == 0] <- 1  # Avoid division by zero
+  zero_libs <- lib_sizes == 0
+  if (any(zero_libs)) {
+    warning("CPM: ", sum(zero_libs), " sample(s) have zero total counts: ",
+            paste(head(names(lib_sizes)[zero_libs], 5), collapse = ", "),
+            " -- setting to 1 to avoid division by zero.", call. = FALSE)
+    lib_sizes[zero_libs] <- 1
+  }
   data_cpm <- sweep(data_matrix, 2, lib_sizes/1e6, FUN = "/")
   data_cpm[is.na(data_cpm) | is.infinite(data_cpm)] <- 0
   return(log2(data_cpm + 1))  # +1 pseudocount before log
@@ -459,6 +494,12 @@ preprocess_for_deseq2_normalized <- function(data_matrix, count_type = "expected
   # DESeq2-style median-of-ratios normalization
   # Computes size factors based on geometric mean of each gene across samples
   if (is.null(data_matrix) || nrow(data_matrix) == 0) return(NULL)
+  # Median-of-ratios assumes raw fragment counts — not valid for coverage (per-base depth)
+  if (tolower(count_type) == "coverage") {
+    warning("DESeq2 median-of-ratios normalization is invalid for coverage data (per-base abundance). ",
+            "Falling back to log2(x+1).", call. = FALSE)
+    return(preprocess_for_count_type_normalized(data_matrix, count_type))
+  }
   
   # Replace zeros/NAs with small value for geometric mean calculation
   data_clean <- data_matrix
@@ -575,6 +616,8 @@ convert_to_organ_labels <- function(counts_matrix) {
 
 # Cache for gene_groups_csv directory listing (avoids repeated list.files() calls)
 .gene_groups_csv_cache <- new.env(hash = TRUE, parent = emptyenv())
+# Cache for loaded gene name mappings (avoids re-reading CSV on every convert_to_shortened_names call)
+.gene_name_mapping_cache <- new.env(hash = TRUE, parent = emptyenv())
 
 .find_gene_group_csv <- function(gene_group, gene_groups_dir) {
   # Check top-level first (fast path)
@@ -586,7 +629,9 @@ convert_to_organ_labels <- function(counts_matrix) {
   if (is.null(.gene_groups_csv_cache[[cache_key]])) {
     all_files <- list.files(gene_groups_dir, pattern = "\\.csv$",
                             recursive = TRUE, full.names = TRUE)
-    file_map <- setNames(all_files, tools::file_path_sans_ext(basename(all_files)))
+    .fnames <- tools::file_path_sans_ext(basename(all_files))
+    .first <- !duplicated(.fnames)
+    file_map <- setNames(all_files[.first], .fnames[.first])
     .gene_groups_csv_cache[[cache_key]] <- file_map
   }
   file_map <- .gene_groups_csv_cache[[cache_key]]
@@ -600,9 +645,14 @@ convert_to_organ_labels <- function(counts_matrix) {
 #   - Gene,Shortened_Name,...
 #   - Gene_ID,Name,... (for reference gene_info.csv files)
 load_gene_name_mapping <- function(gene_group, gene_groups_dir = GENE_GROUPS_DIR) {
+  # Return cached mapping if available (avoids re-reading CSV per call)
+  cache_key <- paste0(gene_group, "|", gene_groups_dir)
+  cached <- .gene_name_mapping_cache[[cache_key]]
+  if (!is.null(cached)) return(cached)
+
   # Use cached directory listing for fast CSV lookup
   csv_file <- .find_gene_group_csv(gene_group, gene_groups_dir)
-  
+
   # If not found, check if it's a reference with a gene_info.csv
   if (!file.exists(csv_file)) {
     # Check for gene_info.csv companion file in INPUT_FASTAs
@@ -621,7 +671,7 @@ load_gene_name_mapping <- function(gene_group, gene_groups_dir = GENE_GROUPS_DIR
         }
       }
     }
-    
+
     if (input_fastas_dir != "") {
       # Look for gene_info.csv matching the gene_group name
       gene_info_file <- file.path(input_fastas_dir, "mapping", paste0(gene_group, ".gene_info.csv"))
@@ -630,18 +680,25 @@ load_gene_name_mapping <- function(gene_group, gene_groups_dir = GENE_GROUPS_DIR
       }
     }
   }
-  
+
   if (!file.exists(csv_file)) return(NULL)
-  
+
   tryCatch({
-    df <- read.csv(csv_file, stringsAsFactors = FALSE, header = TRUE)
+    # data.table::fread is 5-10x faster than read.csv for larger gene group files
+    df <- if (.HAS_DATATABLE) {
+      data.table::fread(csv_file, header = TRUE, data.table = FALSE)
+    } else {
+      read.csv(csv_file, stringsAsFactors = FALSE, header = TRUE)
+    }
     # Support both "Gene_ID" and "Gene" as the ID column
     gene_col <- if ("Gene_ID" %in% colnames(df)) "Gene_ID" else if ("Gene" %in% colnames(df)) "Gene" else NULL
     # Support both "Shortened_Name" and "Name" as the display name column
     name_col <- if ("Shortened_Name" %in% colnames(df)) "Shortened_Name" else if ("Name" %in% colnames(df)) "Name" else NULL
-    
+
     if (!is.null(gene_col) && !is.null(name_col)) {
-      return(setNames(trimws(df[[name_col]]), trimws(df[[gene_col]])))
+      result <- setNames(trimws(df[[name_col]]), trimws(df[[gene_col]]))
+      .gene_name_mapping_cache[[cache_key]] <- result
+      return(result)
     }
     return(NULL)
   }, error = function(e) NULL)

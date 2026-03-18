@@ -62,8 +62,8 @@ if (GENERATE_GENE_LEVEL) {
     }
     gtf_candidates <- c(
       Sys.getenv("STAR_GTF_FILE", unset = ""),
-      # Prefer stringtie GTF variant (used by STAR alignment) to ensure
-      # transcript_id attributes match the Salmon index built during alignment
+      # Prefer the _stringtie.gtf variant: its transcript_id attributes are
+      # formatted consistently with the Salmon index built during STAR alignment
       file.path(gtf_ref_dir, paste0(MASTER_REFERENCE, "_function_IPR_final_stringtie.gtf")),
       file.path(gtf_ref_dir, paste0(MASTER_REFERENCE, "_function_IPR_final.gtf")),
       file.path(gtf_ref_dir, paste0(MASTER_REFERENCE, ".gtf"))
@@ -76,7 +76,10 @@ if (GENERATE_GENE_LEVEL) {
       awk_cmd <- sprintf(
         "awk '$3==\"transcript\" { tid=\"\"; gid=\"\"; for(i=9;i<=NF;i++) { if($i==\"transcript_id\") { gsub(/[\";]/,\"\",$(i+1)); tid=$(i+1) } if($i==\"gene_id\") { gsub(/[\";]/,\"\",$(i+1)); gid=$(i+1) } } if(tid!=\"\" && gid!=\"\") print tid \"\\t\" gid }' '%s' | sort -u > '%s'",
         gtf_file, tx2gene_out)
-      system(awk_cmd)
+      awk_exit <- system(awk_cmd)
+      if (awk_exit != 0) {
+        cat("  Warning: awk tx2gene extraction exited with code", awk_exit, "\n")
+      }
       if (file.exists(tx2gene_out) && file.size(tx2gene_out) > 0) {
         tx2gene_files <- tx2gene_out
         cat("  Created tx2gene mapping:", tx2gene_out, "\n")
@@ -87,12 +90,25 @@ if (GENERATE_GENE_LEVEL) {
   }
 
   if (length(tx2gene_files) > 0) {
-    tx2gene <- read.delim(tx2gene_files[1], header = FALSE,
-                          col.names = c("TXNAME", "GENEID"),
-                          stringsAsFactors = FALSE)
-    if (nrow(tx2gene) == 0 || ncol(tx2gene) < 2) {
-      cat("  Error: tx2gene file is empty or malformed:", tx2gene_files[1], "\n")
+    # Read without col.names to detect actual column count (col.names would force 2 columns,
+    # masking single-column files). Matches tximport_star_to_matrices.R approach.
+    raw_tx2gene <- read.delim(tx2gene_files[1], header = FALSE,
+                              stringsAsFactors = FALSE, colClasses = "character")
+    if (nrow(raw_tx2gene) == 0 || ncol(raw_tx2gene) < 2) {
+      cat("  Error: tx2gene file is empty or malformed (", ncol(raw_tx2gene),
+          "column(s)):", tx2gene_files[1], "\n")
     } else {
+      # Detect column order: tximport needs c(TXNAME, GENEID)
+      # star_alignment_pipeline writes: transcript_id TAB gene_id (col1=TX, col2=GENE)
+      # gene_trans_map fallback writes: gene_id TAB transcript_id (col1=GENE, col2=TX)
+      if (grepl("gene_trans_map$", tx2gene_files[1])) {
+        tx2gene <- raw_tx2gene[, c(2, 1), drop = FALSE]
+      } else {
+        tx2gene <- raw_tx2gene[, 1:2, drop = FALSE]
+      }
+      colnames(tx2gene) <- c("TXNAME", "GENEID")
+      tx2gene$TXNAME <- trimws(tx2gene$TXNAME)
+      tx2gene$GENEID <- trimws(tx2gene$GENEID)
       quant_files <- file.path(quant_dir, SAMPLE_IDS, "quant.sf")
       names(quant_files) <- SAMPLE_IDS
       # Tissue-specific fallback: scan subdirectories for quant.sf files
@@ -124,7 +140,7 @@ if (GENERATE_GENE_LEVEL) {
         qf_ids <- sample_qf$Name
         tx_ids <- tx2gene$TXNAME
         overlap <- length(intersect(qf_ids, tx_ids))
-        match_rate <- overlap / length(qf_ids)
+        match_rate <- if (length(qf_ids) > 0) overlap / length(qf_ids) else 0
         if (match_rate < 0.5) {
           cat("  ERROR: tx2gene transcript IDs poorly match quant.sf IDs!\n")
           cat("    Match rate:", round(match_rate * 100), "% (", overlap, "/", length(qf_ids), "sampled)\n")

@@ -44,6 +44,7 @@ source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_confi
     wide <- data.table::dcast(long, gene ~ srr, value.var = "tpm", fill = 0)
     mat <- as.matrix(wide[, -1, with = FALSE])
     rownames(mat) <- wide$gene
+    if (nrow(mat) == 0) { warning("Matrix assembly produced 0 rows — check input data"); return(NULL) }
   } else {
     # Fallback: original approach
     all_genes <- unique(unlist(lapply(tpm_list, names)))
@@ -54,6 +55,7 @@ source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_confi
       genes <- intersect(names(tpm_list[[srr]]), all_genes)
       mat[genes, srr] <- tpm_list[[srr]][genes]
     }
+    if (nrow(mat) == 0) { warning("Matrix assembly produced 0 rows — check input data"); return(NULL) }
   }
   return(mat)
 }
@@ -64,7 +66,7 @@ source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_confi
     as.data.frame(data.table::fread(path, ...))
   } else {
     read.table(path, header = TRUE, sep = "\t", stringsAsFactors = FALSE,
-               comment.char = "", quote = "")
+               check.names = FALSE, comment.char = "", quote = "")
   }
 }
 
@@ -155,9 +157,27 @@ load_m2_tpm <- function() {
     }
     # Map STRG.N -> reference gene ID via the Reference column
     # Filter out unmapped de novo transcripts (Reference == "." or "-" or empty)
+    # Two-round suffix stripping to reach gene-level IDs for double-suffixed
+    # transcript IDs (e.g., Sme2.5_01g005840.1.01 -> .1 -> gene-level).
+    # Without the second round, isoform-level entries (.1 vs .2) remain separate
+    # and get SUM-aggregated in harmonization instead of MAX-aggregated here,
+    # inflating M2 TPM for multi-isoform genes.
     gene_ids <- sub("\\.[0-9]+$", "", df$Reference)
+    gene_ids <- sub("\\.[0-9]+$", "", gene_ids)
     valid <- nzchar(gene_ids) & !gene_ids %in% c(".", "-")
-    agg <- tapply(df$TPM[valid], gene_ids[valid], sum, na.rm = TRUE)
+    n_unmapped <- sum(!valid)
+    if (n_unmapped > 0) {
+      pct_unmapped <- round(100 * n_unmapped / length(valid), 1)
+      cat("[M2]", srr, ":", n_unmapped, "of", length(valid), "transcripts unmapped (",
+          pct_unmapped, "%)\n")
+      if (pct_unmapped > 50)
+        cat("[M2] WARNING: >50% unmapped transcripts in", srr, "— check assembly quality\n")
+    }
+    # Use MAX (not SUM) to aggregate multiple STRG.N entries mapping to the same
+    # reference gene. In de novo mode, StringTie can produce multiple gene assemblies
+    # (e.g., sense/antisense) for the same locus — summing would inflate TPM relative
+    # to other methods. MAX matches matrix_builder.py's visualization aggregation.
+    agg <- tapply(df$TPM[valid], gene_ids[valid], max, na.rm = TRUE)
     tpm_list[[srr]] <- agg
   }
 
@@ -213,7 +233,22 @@ load_m3_tpm <- function() {
   }
 
   if (length(sample_dirs) == 0) {
-    cat("[M3] No sample directories found\n")
+    cat("[M3] No sample directories found under", quant_base, "\n")
+    # Fallback: try pre-built TPM matrix from tximport (matches M4 fallback pattern)
+    tpm_search_base <- file.path(POST_PROC_BASE, method,
+                                 "count_matrices_from_STAR", ref_dir)
+    tpm_files <- list.files(tpm_search_base, pattern = "_tpm_Gene_ID_.*\\.tsv$",
+                            recursive = TRUE, full.names = TRUE)
+    if (length(tpm_files) > 0) {
+      tpm_file <- tpm_files[1]
+      cat("[M3] Using pre-built TPM matrix:", tpm_file, "\n")
+      df <- if (.use_dt) as.data.frame(data.table::fread(tpm_file)) else {
+        read.table(tpm_file, header = TRUE, sep = "\t", stringsAsFactors = FALSE,
+                   check.names = FALSE)
+      }
+      rownames(df) <- df[[1]]; df <- df[, -1, drop = FALSE]
+      return(as.matrix(df))
+    }
     return(NULL)
   }
 
@@ -362,7 +397,7 @@ load_m5_tpm <- function() {
       return(NULL)
     }
     df <- if (.use_dt) {
-      as.data.frame(data.table::fread(tpm_file, header = TRUE), check.names = FALSE)
+      as.data.frame(data.table::fread(tpm_file, header = TRUE))
     } else {
       read.csv(tpm_file, row.names = 1, check.names = FALSE)
     }
@@ -620,7 +655,8 @@ for (method in names(tpm_matrices)) {
 cat("  Final gene count:", length(filtered_genes), "\n")
 
 # Free intermediate objects before saving (prevents memory bloat during concordance analysis)
-rm(gene_sets, sample_sets, expressed_genes_per_method, expressed_union)
+# NOTE: gene_sets and sample_sets are kept — they are referenced in the result list below.
+rm(expressed_genes_per_method, expressed_union)
 gc(verbose = FALSE)
 
 # -----------------------------------------------

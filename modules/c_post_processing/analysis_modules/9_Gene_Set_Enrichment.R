@@ -195,19 +195,27 @@ generate_enrichment_plots <- function(enrich_result, analysis_name, output_dir, 
   n_terms <- min(N_TOP_TERMS, nrow(enrich_result@result))
   
   if (GENERATE_GSEA_FIGURES$dotplot) {
-    p <- dotplot(enrich_result, showCategory = n_terms) +
-      ggtitle(paste0(analysis_name, " - Top Enriched Terms")) +
-      theme(plot.title = element_text(hjust = 0.5, face = "bold"))
-    ggsave(file.path(output_dir, paste0(analysis_name, "_dotplot.png")),
-           p, width = 10, height = 8, dpi = 150)
+    tryCatch({
+      p <- dotplot(enrich_result, showCategory = n_terms) +
+        ggtitle(paste0(analysis_name, " - Top Enriched Terms")) +
+        theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+      ggsave(file.path(output_dir, paste0(analysis_name, "_dotplot.png")),
+             p, width = 10, height = 8, dpi = 150)
+    }, error = function(e) {
+      cat("    Dotplot failed:", e$message, "\n")
+    })
   }
-  
+
   if (GENERATE_GSEA_FIGURES$barplot) {
-    p <- barplot(enrich_result, showCategory = n_terms) +
-      ggtitle(paste0(analysis_name, " - Enrichment Barplot")) +
-      theme(plot.title = element_text(hjust = 0.5, face = "bold"))
-    ggsave(file.path(output_dir, paste0(analysis_name, "_barplot.png")),
-           p, width = 10, height = 8, dpi = 150)
+    tryCatch({
+      p <- barplot(enrich_result, showCategory = n_terms) +
+        ggtitle(paste0(analysis_name, " - Enrichment Barplot")) +
+        theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+      ggsave(file.path(output_dir, paste0(analysis_name, "_barplot.png")),
+             p, width = 10, height = 8, dpi = 150)
+    }, error = function(e) {
+      cat("    Barplot failed:", e$message, "\n")
+    })
   }
   
   if (GENERATE_GSEA_FIGURES$emapplot && n_terms >= 2) {

@@ -44,11 +44,18 @@ all_flagged_list <- list()  # Collect flagged DFs in list; rbind once at end
 for (gene_group in CONCORDANCE_GENE_GROUPS) {
   cat("\n=== Gene group:", gene_group, "===\n")
 
-  # Find CSV file
+  # Find CSV file (check top-level first, then search subdirectories)
   csv_file <- file.path(GENE_GROUPS_DIR, paste0(gene_group, ".csv"))
   if (!file.exists(csv_file)) {
-    cat("  [WARN] Gene group CSV not found:", csv_file, "\n")
-    next
+    all_csvs <- list.files(GENE_GROUPS_DIR, pattern = "\\.csv$",
+                           recursive = TRUE, full.names = TRUE)
+    hit <- all_csvs[tools::file_path_sans_ext(basename(all_csvs)) == gene_group]
+    if (length(hit) > 0) {
+      csv_file <- hit[1]
+    } else {
+      cat("  [WARN] Gene group CSV not found:", gene_group, "\n")
+      next
+    }
   }
 
   gene_df <- read.csv(csv_file, stringsAsFactors = FALSE, header = TRUE)
@@ -120,19 +127,19 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
     reverse_map <- setNames(as.character(gene_names), gn_base)
     # On duplicates the last value wins, which is acceptable for display names
 
-    for (k in which(na_mask)) {
-      gene <- matched_genes[k]
-      base_id <- sub("\\.[0-9]+$", "", gene)
-      if (base_id %in% names(gene_names)) {
-        display_names[k] <- gene_names[base_id]
-      } else if (gene %in% names(reverse_map)) {
-        display_names[k] <- reverse_map[gene]
-      } else if (base_id %in% names(reverse_map)) {
-        display_names[k] <- reverse_map[base_id]
-      } else {
-        display_names[k] <- gene
-      }
-    }
+    # Vectorized lookup: try each key variant in priority order, fill remaining NAs
+    na_genes <- matched_genes[na_mask]
+    base_ids  <- sub("\\.[0-9]+$", "", na_genes)
+    base_ids2 <- sub("\\.[0-9]+$", "", base_ids)
+
+    result <- gene_names[base_ids]
+    still_na <- is.na(result)
+    if (any(still_na)) { result[still_na] <- gene_names[base_ids2[still_na]]; still_na <- is.na(result) }
+    if (any(still_na)) { result[still_na] <- reverse_map[na_genes[still_na]]; still_na <- is.na(result) }
+    if (any(still_na)) { result[still_na] <- reverse_map[base_ids[still_na]];  still_na <- is.na(result) }
+    if (any(still_na)) { result[still_na] <- reverse_map[base_ids2[still_na]]; still_na <- is.na(result) }
+    if (any(still_na)) { result[still_na] <- na_genes[still_na] }
+    display_names[na_mask] <- result
   }
 
   # Build results table
@@ -220,13 +227,16 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
   )
 
   fig_height <- max(700, 200 + n_genes * 35)
-  png(file.path(FIGURES_DIR, paste0("ranking_heatmap_", gene_group, ".png")),
-      width = 1600, height = fig_height, res = 150)
-  on.exit(try(dev.off(), silent = TRUE), add = TRUE)
-  draw(ht, padding = unit(c(30, 30, 25, 40), "mm"))
-  dev.off()
-  on.exit(NULL)
-  cat("  Saved: ranking_heatmap_", gene_group, ".png\n", sep = "")
+  tryCatch({
+    png(file.path(FIGURES_DIR, paste0("ranking_heatmap_", gene_group, ".png")),
+        width = 1600, height = fig_height, res = 150)
+    draw(ht, padding = unit(c(30, 30, 25, 40), "mm"))
+    dev.off()
+    cat("  Saved: ranking_heatmap_", gene_group, ".png\n", sep = "")
+  }, error = function(e) {
+    try(dev.off(), silent = TRUE)
+    cat("  Error generating ranking heatmap:", e$message, "\n")
+  })
 
   # -----------------------------------------------
   # Z-score scaled (0–10) heatmap for gene group
@@ -288,13 +298,16 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
     )
   )
 
-  png(file.path(FIGURES_DIR, paste0("zscore_heatmap_", gene_group, ".png")),
-      width = 1600, height = fig_height, res = 150)
-  on.exit(try(dev.off(), silent = TRUE), add = TRUE)
-  draw(ht_z, padding = unit(c(30, 30, 25, 40), "mm"))
-  dev.off()
-  on.exit(NULL)
-  cat("  Saved: zscore_heatmap_", gene_group, ".png\n", sep = "")
+  tryCatch({
+    png(file.path(FIGURES_DIR, paste0("zscore_heatmap_", gene_group, ".png")),
+        width = 1600, height = fig_height, res = 150)
+    draw(ht_z, padding = unit(c(30, 30, 25, 40), "mm"))
+    dev.off()
+    cat("  Saved: zscore_heatmap_", gene_group, ".png\n", sep = "")
+  }, error = function(e) {
+    try(dev.off(), silent = TRUE)
+    cat("  Error generating Z-score heatmap:", e$message, "\n")
+  })
 
   # Save Z-score table
   zscore_grp_df <- data.frame(
@@ -324,44 +337,47 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
                                      "#CE93D8", "#2196F3", "#4CAF50",
                                      "#FF9800", "#F44336", "#795548"))(n_genes)
 
-  png(file.path(FIGURES_DIR, paste0("ranking_bump_chart_", gene_group, ".png")),
-      width = max(1200, 260 * n_methods_plot), height = max(850, 120 + n_genes * 40), res = 150)
-  on.exit(try(dev.off(), silent = TRUE), add = TRUE)
+  tryCatch({
+    png(file.path(FIGURES_DIR, paste0("ranking_bump_chart_", gene_group, ".png")),
+        width = max(1200, 260 * n_methods_plot), height = max(850, 120 + n_genes * 40), res = 150)
 
-  par(mar = c(10, 10, 6, 20), xpd = TRUE)
-  plot(1, type = "n",
-       xlim = c(0.5, n_methods_plot + 0.5),
-       ylim = c(n_genes + 0.5, 0.5),
-       xlab = "", ylab = "Rank (1 = highest)",
-       xaxt = "n", yaxt = "n",
-       main = paste0("Expression Ranking Stability: ", gene_group),
-       cex.main = 1.3, cex.lab = 1.2)
+    par(mar = c(10, 10, 6, 20), xpd = TRUE)
+    plot(1, type = "n",
+         xlim = c(0.5, n_methods_plot + 0.5),
+         ylim = c(n_genes + 0.5, 0.5),
+         xlab = "", ylab = "Rank (1 = highest)",
+         xaxt = "n", yaxt = "n",
+         main = paste0("Expression Ranking Stability: ", gene_group),
+         cex.main = 1.3, cex.lab = 1.2)
 
-  axis(1, at = seq_len(n_methods_plot), labels = method_labels, las = 2, cex.axis = 1.0)
-  axis(2, at = seq_len(n_genes), las = 1, cex.axis = 0.9)
+    axis(1, at = seq_len(n_methods_plot), labels = method_labels, las = 2, cex.axis = 1.0)
+    axis(2, at = seq_len(n_genes), las = 1, cex.axis = 0.9)
 
-  for (i in seq_len(n_genes)) {
-    ranks <- rank_matrix[i, ]
-    lwd_val <- if (flagged[i]) 2.5 else 1.2
-    lty_val <- if (flagged[i]) 1 else 2
+    for (i in seq_len(n_genes)) {
+      ranks <- rank_matrix[i, ]
+      lwd_val <- if (flagged[i]) 2.5 else 1.2
+      lty_val <- if (flagged[i]) 1 else 2
 
-    lines(seq_len(n_methods_plot), ranks, col = gene_colors[i],
-          lwd = lwd_val, lty = lty_val)
-    points(seq_len(n_methods_plot), ranks, col = gene_colors[i],
-           pch = 16, cex = 1.2)
-  }
+      lines(seq_len(n_methods_plot), ranks, col = gene_colors[i],
+            lwd = lwd_val, lty = lty_val)
+      points(seq_len(n_methods_plot), ranks, col = gene_colors[i],
+             pch = 16, cex = 1.2)
+    }
 
-  # Legend outside plot
-  legend("right", inset = c(-0.35, 0),
-         legend = display_names,
-         col = gene_colors, lwd = 2, pch = 16,
-         cex = if (n_genes > 12) 0.75 else 0.95,
-         ncol = if (n_genes > 20) 2 else 1,
-         bg = "white")
+    # Legend outside plot
+    legend("right", inset = c(-0.35, 0),
+           legend = display_names,
+           col = gene_colors, lwd = 2, pch = 16,
+           cex = if (n_genes > 12) 0.75 else 0.95,
+           ncol = if (n_genes > 20) 2 else 1,
+           bg = "white")
 
-  dev.off()
-  on.exit(NULL)
-  cat("  Saved: ranking_bump_chart_", gene_group, ".png\n", sep = "")
+    dev.off()
+    cat("  Saved: ranking_bump_chart_", gene_group, ".png\n", sep = "")
+  }, error = function(e) {
+    try(dev.off(), silent = TRUE)
+    cat("  Error generating bump chart:", e$message, "\n")
+  })
 }
 
 # -----------------------------------------------

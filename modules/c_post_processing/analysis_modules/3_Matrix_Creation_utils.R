@@ -19,10 +19,14 @@
 save_count_matrices <- function(counts, output_dir, prefix, master_ref, level,
                                 tpm = NULL, count_type_label = NULL) {
   # Auto-detect count label from method type when not explicitly provided.
-  # Salmon/STAR use "NumReads"; RSEM uses "expected_count".
+  # Salmon/STAR use "NumReads"; RSEM uses "expected_count"; StringTie/prepDE uses "counts".
   if (is.null(count_type_label)) {
     method_type <- get_method_type(CURRENT_METHOD)
-    count_type_label <- if (method_type %in% c("salmon", "star")) "NumReads" else "expected_count"
+    count_type_label <- switch(method_type,
+      "salmon" = , "star" = "NumReads",
+      "stringtie" = "counts",
+      "expected_count"  # default (RSEM and others)
+    )
   }
   ensure_output_dir(output_dir)
 
@@ -32,7 +36,11 @@ save_count_matrices <- function(counts, output_dir, prefix, master_ref, level,
     matrix_df <- as.data.frame(matrix_data, check.names = FALSE)
     matrix_df <- cbind(GeneID = rownames(matrix_data), matrix_df)
     rownames(matrix_df) <- NULL
-    data.table::fwrite(matrix_df, output_file, sep = "\t", quote = FALSE)
+    if (.HAS_DATATABLE) {
+      data.table::fwrite(matrix_df, output_file, sep = "\t", quote = FALSE)
+    } else {
+      write.table(matrix_df, output_file, sep = "\t", quote = FALSE, row.names = FALSE)
+    }
     cat("Saved:", basename(output_file), "\n")
   }
 
@@ -97,11 +105,15 @@ filter_by_gene_group <- function(counts_matrix, gene_list_file) {
       cat("Failed to read CSV gene list\n")
       return(NULL)
     }
+    if (!"Gene_ID" %in% colnames(gene_df)) {
+      cat("  Warning: 'Gene_ID' column not found in", basename(gene_list_file),
+          "— using first column ('", colnames(gene_df)[1], "') as gene IDs\n")
+    }
     gene_list <- trimws(
       if ("Gene_ID" %in% colnames(gene_df)) gene_df$Gene_ID else gene_df[[1]])
   } else {
     gene_list <- suppressWarnings(readLines(gene_list_file))
-    gene_list <- gene_list[!grepl("^#|^Gene_ID$|^Gene$", gene_list, ignore.case = TRUE) & nzchar(gene_list)]
+    gene_list <- gene_list[!grepl("^#|^Gene_ID(\\t|$)|^Gene(\\t|$)", gene_list, ignore.case = TRUE) & nzchar(gene_list)]
     gene_list <- trimws(sub("\t.*", "", gene_list))  # strip tab-delimited extra fields (e.g. gene names)
   }
 
@@ -152,8 +164,9 @@ run_matrix_saving <- function(results, output_dir, master_ref,
   if (!is.null(gene_groups_dir) && dir.exists(gene_groups_dir)) {
     .all_gg_files <- list.files(gene_groups_dir, pattern = "\\.(csv|txt|tsv)$",
                                 recursive = TRUE, full.names = TRUE)
-    .gg_file_map <- setNames(.all_gg_files,
-                              tools::file_path_sans_ext(basename(.all_gg_files)))
+    .gg_names <- tools::file_path_sans_ext(basename(.all_gg_files))
+    .gg_first <- !duplicated(.gg_names)  # keep first occurrence (consistent with tximport script)
+    .gg_file_map <- setNames(.all_gg_files[.gg_first], .gg_names[.gg_first])
   }
 
   for (level in level_names) {

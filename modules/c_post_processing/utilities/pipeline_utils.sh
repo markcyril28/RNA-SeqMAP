@@ -46,25 +46,27 @@ _rebuild_exported_arrays() {
 # ANALYSIS SCRIPT MAPPING
 #===============================================================================
 
-# Map analysis name to R script filename
+# Map analysis name to R script filename.
+# Uses case statement (not associative array) so the function works correctly
+# when exported to GNU Parallel subshells (bash cannot export associative arrays).
 # NOTE: Preprocessing scripts (Tximport_Salmon, Tximport_RSEM, Stringtie_Matrix)
 #       are now handled via get_preprocessing_script() in preprocessing/ folder
 # NOTE: Matrix_Creation uses method-specific scripts for M3/M4/M5 (see
-#       get_matrix_creation_script()); this table provides the fallback.
+#       get_matrix_creation_script()); this provides the fallback.
 get_analysis_script() {
-    local -A scripts=(
-        ["Matrix_Creation"]="3_Matrix_Creation.R"
-        ["Basic_Heatmap"]="4_Basic_Heatmap.R"
-        ["Heatmap_with_CV"]="5_Heatmap_with_CV.R"
-        ["BarGraph"]="6_BarGraph.R"
-        ["Coexpression_using_WGCNA"]="7_Coexpression_WGCNA.R"
-        ["Differential_Expression"]="8_Differential_Expression.R"
-        ["Gene_Set_Enrichment"]="9_Gene_Set_Enrichment.R"
-        ["PCA_Dimensionality_Reduction"]="10_PCA_Dimensionality_Reduction.R"
-        ["Sample_Correlation_Clustering"]="11_Sample_Correlation_Clustering.R"
-        ["Tissue_Specificity"]="12_Tissue_Specificity.R"
-    )
-    echo "${scripts[$1]:-}"
+    case "$1" in
+        "Matrix_Creation")                echo "3_Matrix_Creation.R" ;;
+        "Basic_Heatmap")                  echo "4_Basic_Heatmap.R" ;;
+        "Heatmap_with_CV")               echo "5_Heatmap_with_CV.R" ;;
+        "BarGraph")                       echo "6_BarGraph.R" ;;
+        "Coexpression_using_WGCNA")      echo "7_Coexpression_WGCNA.R" ;;
+        "Differential_Expression")        echo "8_Differential_Expression.R" ;;
+        "Gene_Set_Enrichment")            echo "9_Gene_Set_Enrichment.R" ;;
+        "PCA_Dimensionality_Reduction")  echo "10_PCA_Dimensionality_Reduction.R" ;;
+        "Sample_Correlation_Clustering") echo "11_Sample_Correlation_Clustering.R" ;;
+        "Tissue_Specificity")             echo "12_Tissue_Specificity.R" ;;
+        *)                                echo "" ;;
+    esac
 }
 
 # Return the method-specific Matrix_Creation script (M3/M4/M5) or fallback.
@@ -296,6 +298,8 @@ run_method_analysis() {
 #===============================================================================
 
 export_utils_for_parallel() {
+    # Guard: skip if already exported this session (saves ~20 export -f calls per dataset iteration)
+    [[ "${_PARALLEL_UTILS_EXPORTED:-}" == "true" ]] && return 0
     # Export logging functions (from logging_utils.sh)
     export -f log log_info log_warn log_error log_step timestamp
     # Export error capture (from logging_utils.sh)
@@ -306,4 +310,5 @@ export_utils_for_parallel() {
     export -f _rebuild_exported_arrays
     export -f run_method_analysis run_single_analysis setup_method_env run_method_preprocessing
     export -f is_figure_analysis get_analysis_script get_matrix_creation_script get_preprocessing_script parse_srr_csv
+    _PARALLEL_UTILS_EXPORTED="true"
 }

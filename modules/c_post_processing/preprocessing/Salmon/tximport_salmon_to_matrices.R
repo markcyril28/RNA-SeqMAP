@@ -41,7 +41,7 @@ save_count_matrix <- function(counts_matrix, output_dir, base_name, master_ref, 
 }
 
 # Use absolute paths from env vars to avoid working-directory dependency.
-# BASE_DIR is exported by run_all_post_processing.sh.
+# BASE_DIR is exported by run_post_processing.sh.
 # SALMON_QUANT_ROOT is optionally exported by the alignment pipeline after
 # set_fasta_output_dirs() — it already includes the fasta_tag as a subdir.
 BASE_DIR <- Sys.getenv("BASE_DIR", unset = "")
@@ -59,12 +59,8 @@ QUANT_DIR <- if (QUANT_DIR_INCLUDES_REF) {
 } else {
   "Salmon_Quant"  # last-resort relative fallback
 }
-MASTER_REFERENCE <- Sys.getenv("MASTER_REFERENCE", unset = "")
-if (!nzchar(MASTER_REFERENCE)) {
-  warning("MASTER_REFERENCE env var is not set — defaulting to 'All_Smel_Genes'. ",
-          "Export MASTER_REFERENCE before running this script to suppress this warning.")
-  MASTER_REFERENCE <- "All_Smel_Genes"
-}
+# MASTER_REFERENCE is already set by 0_shared_config.R (sourced above).
+# Do not re-read from env here — the defaults would diverge.
 # Use an absolute path when BASE_DIR is available (run_method_analysis does pushd, so the
 # working directory is correct, but an absolute path allows the script to be run standalone).
 MATRICES_OUTPUT_DIR <- if (nzchar(BASE_DIR)) {
@@ -186,8 +182,8 @@ for (level_name in names(processing_levels)) {
     file.path(INPUT_FASTAS_DIR, "mapping", paste0(MASTER_REFERENCE, ".fa.gene_trans_map")),
     file.path(INPUT_FASTAS_DIR, "mapping", paste0(MASTER_REFERENCE, ".fasta.gene_trans_map")),
     file.path(INPUT_FASTAS_DIR, "fasta", paste0(MASTER_REFERENCE, ".fa.gene_trans_map")),
-    file.path(INPUT_FASTAS_DIR, "fasta", "reference_genomes", paste0(MASTER_REFERENCE, ".fa.gene_trans_map")),
-    file.path(INPUT_FASTAS_DIR, "fasta", "reference_genomes", paste0(MASTER_REFERENCE, ".fasta.gene_trans_map"))
+    file.path(INPUT_FASTAS_DIR, "fasta", "reference_genome", paste0(MASTER_REFERENCE, ".fa.gene_trans_map")),
+    file.path(INPUT_FASTAS_DIR, "fasta", "reference_genome", paste0(MASTER_REFERENCE, ".fasta.gene_trans_map"))
   )
 
   tx2gene_file <- NULL

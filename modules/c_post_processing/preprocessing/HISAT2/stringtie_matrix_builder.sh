@@ -113,7 +113,7 @@ TPM_COL=9
 # ===============================================
 # LOAD SAMPLE IDS FROM CSV
 # ===============================================
-# SRR_CSV_DIR is exported by run_all_post_processing.sh
+# SRR_CSV_DIR is exported by run_post_processing.sh
 # Fallback to inputs/SRR_csv relative to the project root
 
 SRR_CSV_DIR="${SRR_CSV_DIR:-$SCRIPT_DIR/../../../../inputs/SRR_csv}"
@@ -269,7 +269,7 @@ merge_group_counts() {
     # Write to $tmpdir (not alongside input) so cleanup is guaranteed on error.
     for srr in "${processed_srrs[@]}"; do
         awk -F'\t' -v gc="$GENENAME_COL" -v cov="$COVERAGE_COL" -v fpkm="$FPKM_COL" -v tpm="$TPM_COL" \
-            -v outdir="$tmpdir" -v srr="$srr" 'NR > 1 {
+            -v outdir="$tmpdir" -v srr="$srr" 'NR > 1 && $gc != "" && $gc != "." && $gc != "-" {
             print $gc "\t" $cov > outdir "/" srr ".cov"
             print $gc "\t" $fpkm > outdir "/" srr ".fpkm"
             print $gc "\t" $tpm > outdir "/" srr ".tpm"
@@ -285,10 +285,13 @@ merge_group_counts() {
             tpm)      ext="tpm" ;;
         esac
 
+        # Build sample_files and matched_srrs in a single pass (was two identical loops)
+        local -a matched_srrs=()
         for srr in "${processed_srrs[@]}"; do
             local extracted="$tmpdir/${srr}.${ext}"
             if [[ -f "$extracted" ]]; then
                 sample_files+=("$extracted")
+                matched_srrs+=("$srr")
             fi
         done
 
@@ -296,16 +299,6 @@ merge_group_counts() {
             log_warn "No sample files for $count_type in $gene_group, skipping matrix"
             continue
         fi
-
-        # Build list of SRRs that actually have extracted files for this count type
-        # (must match sample_files order so header columns align with matrix body)
-        local -a matched_srrs=()
-        for srr in "${processed_srrs[@]}"; do
-            local extracted="$tmpdir/${srr}.${ext}"
-            if [[ -f "$extracted" ]]; then
-                matched_srrs+=("$srr")
-            fi
-        done
 
         # NOTE: Filename uses "geneName" (camelCase) while the TSV header column is "GeneName" (PascalCase).
         # build_input_path() in 0_shared_config.R maps gene_type=="Shortened_Name" -> "geneName" to match this convention.
@@ -376,7 +369,7 @@ build_full_transcriptome_matrix() {
         local file_path="$INPUTS_DIR/$MASTER_REFERENCE/$srr/${srr}_${MASTER_REFERENCE}${ABUNDANCE_SUFFIX}"
         if [[ -f "$file_path" ]]; then
             # Single awk replaces tail|cut pipeline (1 process instead of 2 per sample)
-            awk -F'\t' -v c="$GENENAME_COL" 'NR>1 {print $c}' "$file_path" >> "$tmp_csv"
+            awk -F'\t' -v c="$GENENAME_COL" 'NR>1 && $c!="" && $c!="." && $c!="-" {print $c}' "$file_path" >> "$tmp_csv"
             files_found=$((files_found + 1))
         fi
     done
@@ -416,6 +409,16 @@ GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-$SCRIPT_DIR/../..
 log_info "Gene groups CSV directory: $GENE_GROUPS_CSV_DIR"
 log_step "Starting count matrix generation for ${#GENE_GROUPS[@]} gene groups"
 
+# Pre-build CSV lookup map: single find call replaces N per-group find spawns
+declare -A _CSV_LOOKUP=()
+if [[ -d "$GENE_GROUPS_CSV_DIR" ]]; then
+    while IFS= read -r _csv_path; do
+        _csv_base="$(basename "${_csv_path%.csv}")"
+        # First match wins (skip duplicates)
+        [[ -z "${_CSV_LOOKUP[$_csv_base]+x}" ]] && _CSV_LOOKUP["$_csv_base"]="$_csv_path"
+    done < <(find "$GENE_GROUPS_CSV_DIR" -maxdepth 3 -name "*.csv" -type f 2>/dev/null)
+fi
+
 # Build full-transcriptome matrix first (enables WGCNA and genome-wide analyses)
 build_full_transcriptome_matrix
 
@@ -423,12 +426,8 @@ for gene_group in "${GENE_GROUPS[@]}"; do
     log_info "========================================"
     log_info "Processing gene group: $gene_group"
 
-    REF_CSV="${GENE_GROUPS_CSV_DIR}/${gene_group}.csv"
-
-    # Search subdirectories if not found at top level
-    if [[ ! -f "$REF_CSV" ]]; then
-        REF_CSV=$(find "$GENE_GROUPS_CSV_DIR" -maxdepth 3 -name "${gene_group}.csv" -type f -print -quit 2>/dev/null)
-    fi
+    # O(1) lookup from pre-built map (replaces per-group find subprocess)
+    REF_CSV="${_CSV_LOOKUP[$gene_group]:-${GENE_GROUPS_CSV_DIR}/${gene_group}.csv}"
 
     if [[ -z "$REF_CSV" || ! -f "$REF_CSV" ]]; then
         log_error "Reference CSV not found: ${GENE_GROUPS_CSV_DIR}/${gene_group}.csv, skipping $gene_group"

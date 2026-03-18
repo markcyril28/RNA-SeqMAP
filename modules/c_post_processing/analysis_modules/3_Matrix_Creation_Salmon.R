@@ -36,6 +36,10 @@ import_salmon <- function(quant_dir, sample_ids, tx2gene = NULL) {
     cat("WARNING: Missing quant.sf for:", paste(names(files)[!files_exist], collapse = ", "), "\n")
     files <- files[files_exist]
   }
+  if (length(files) < 2) {
+    cat("ERROR: Need >= 2 quant.sf files for import (found", length(files), ")\n")
+    return(NULL)
+  }
 
   if (!is.null(tx2gene)) {
     tximport(files, type = "salmon", txIn = TRUE, txOut = FALSE,
@@ -61,8 +65,8 @@ if (!nzchar(.input_fastas_dir) && nzchar(.base_dir))
   file.path(.input_fastas_dir, "mapping", paste0(MASTER_REFERENCE, ".fa.gene_trans_map")),
   file.path(.input_fastas_dir, "mapping", paste0(MASTER_REFERENCE, ".fasta.gene_trans_map")),
   file.path(.input_fastas_dir, "fasta",   paste0(MASTER_REFERENCE, ".fa.gene_trans_map")),
-  file.path(.input_fastas_dir, "fasta",   "reference_genomes", paste0(MASTER_REFERENCE, ".fa.gene_trans_map")),
-  file.path(.input_fastas_dir, "fasta",   "reference_genomes", paste0(MASTER_REFERENCE, ".fasta.gene_trans_map"))
+  file.path(.input_fastas_dir, "fasta",   "reference_genome", paste0(MASTER_REFERENCE, ".fa.gene_trans_map")),
+  file.path(.input_fastas_dir, "fasta",   "reference_genome", paste0(MASTER_REFERENCE, ".fasta.gene_trans_map"))
 )
 
 .tx2gene_file <- NULL
@@ -88,7 +92,7 @@ if (is.null(.tx2gene_file) && nzchar(.input_fastas_dir)) {
 }
 
 rm(list = intersect(c(".base_dir", ".input_fastas_dir", ".candidates",
-                       ".tx2gene_file", ".cand", ".all_maps", ".hits"), ls()))
+                       ".tx2gene_file", ".cand", ".all_maps", ".hits"), ls(all.names = TRUE)))
 
 # ===============================================
 # MAIN
@@ -129,10 +133,27 @@ if (GENERATE_GENE_LEVEL) {
     cat("WARNING: Skipping gene-level import — tx2gene mapping not found.\n")
     cat("  Gene-level matrices require a .gene_trans_map file to aggregate transcripts to genes.\n")
   } else {
+    # Validate tx2gene IDs against a sample quant.sf before full import
+    .sample_qsf <- file.path(quant_dir, SAMPLE_IDS[1], "quant.sf")
+    if (file.exists(.sample_qsf)) {
+      .qsf_ids <- tryCatch(read.table(.sample_qsf, header = TRUE, sep = "\t",
+                            nrows = 200, stringsAsFactors = FALSE)$Name, error = function(e) NULL)
+      if (!is.null(.qsf_ids)) {
+        .match_rate <- mean(.qsf_ids %in% .tx2gene$TXNAME)
+        if (.match_rate < 0.5) {
+          cat("WARNING: tx2gene match rate against quant.sf is", round(.match_rate * 100, 1),
+              "% — transcript IDs may not match. Check gene_trans_map file.\n")
+        }
+      }
+      rm(list = intersect(c(".sample_qsf", ".qsf_ids", ".match_rate"), ls(all.names = TRUE)))
+    }
     txi <- tryCatch(
       import_salmon(quant_dir, SAMPLE_IDS, tx2gene = .tx2gene),
       error = function(e) { cat("  Gene-level import error:", e$message, "\n"); NULL })
-    if (!is.null(txi)) {
+    if (!is.null(txi) && is.list(txi) && "counts" %in% names(txi)) {
+      if (nrow(txi$counts) == 0 || ncol(txi$counts) == 0) {
+        cat("WARNING: Gene-level import produced empty matrix — skipping\n")
+      } else {
       results$gene_level     <- txi$counts
       results$gene_level_tpm <- txi$abundance
       # Save full tximport object for DESeq2 (preserves transcript-length offsets)
@@ -140,6 +161,7 @@ if (GENERATE_GENE_LEVEL) {
       ensure_output_dir(txi_rds_dir)
       saveRDS(txi, file.path(txi_rds_dir, "tximport_gene_level.rds"))
       cat("Saved tximport RDS for DESeq2: tximport_gene_level.rds\n")
+      }
     }
   }
 }
@@ -148,9 +170,13 @@ if (GENERATE_ISOFORM_LEVEL) {
   txi <- tryCatch(
     import_salmon(quant_dir, SAMPLE_IDS),   # txOut = TRUE (no tx2gene)
     error = function(e) { cat("  Isoform-level import error:", e$message, "\n"); NULL })
-  if (!is.null(txi)) {
-    results$isoform_level     <- txi$counts
-    results$isoform_level_tpm <- txi$abundance
+  if (!is.null(txi) && is.list(txi) && "counts" %in% names(txi)) {
+    if (nrow(txi$counts) == 0 || ncol(txi$counts) == 0) {
+      cat("WARNING: Isoform-level import produced empty matrix — skipping\n")
+    } else {
+      results$isoform_level     <- txi$counts
+      results$isoform_level_tpm <- txi$abundance
+    }
   }
 }
 

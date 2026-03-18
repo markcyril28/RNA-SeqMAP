@@ -107,6 +107,13 @@ run_pca_analysis <- function(data_t, metadata, output_dir, gene_group) {
     return(NULL)
   }
 
+  # Remove columns with non-finite values (NaN/Inf from log of zero, etc.)
+  finite_cols <- colSums(!is.finite(data_t)) == 0
+  if (sum(!finite_cols) > 0) {
+    cat("    Removed", sum(!finite_cols), "genes with non-finite values\n")
+    data_t <- data_t[, finite_cols, drop = FALSE]
+  }
+
   # Vectorized column variance: avoid apply() loop
   cm <- colMeans(data_t, na.rm = TRUE)
   col_vars <- colSums(sweep(data_t, 2, cm)^2, na.rm = TRUE) / (nrow(data_t) - 1)
@@ -169,7 +176,11 @@ run_tsne_analysis <- function(data_t, metadata, output_dir, gene_group) {
   n_samples <- nrow(data_t)
   max_perplexity <- floor((n_samples - 1) / 3)
   effective_perplexity <- min(TSNE_PERPLEXITY, max_perplexity)
-  
+  if (effective_perplexity < TSNE_PERPLEXITY) {
+    cat("    Adjusting perplexity from", TSNE_PERPLEXITY, "to", effective_perplexity,
+        "(must be < (n_samples-1)/3 =", max_perplexity, ")\n")
+  }
+
   if (n_samples < MIN_SAMPLES_TSNE || effective_perplexity < 1) {
     cat("    Too few samples for t-SNE (need >=", MIN_SAMPLES_TSNE, ")\n")
     return(NULL)

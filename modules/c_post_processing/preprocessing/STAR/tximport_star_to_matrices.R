@@ -36,7 +36,7 @@ if (!exists("match_gene_ids", mode = "function")) {
 
 # Salmon quant output is in the alignment results directory, NOT post-proc.
 # Path includes MASTER_REFERENCE (= fasta_tag) to isolate per-reference outputs.
-# Use BASE_DIR (absolute path set by run_all_post_processing.sh) when available;
+# Use BASE_DIR (absolute path set by run_post_processing.sh) when available;
 # fall back to relative path for standalone usage (script runs from 3_POST_PROC/M3_STAR_Align/).
 .base_dir     <- Sys.getenv("BASE_DIR", unset = "")
 QUANT_DIR     <- if (nzchar(.base_dir)) {
@@ -49,8 +49,8 @@ QUANT_DIR     <- if (nzchar(.base_dir)) {
 MATRICES_DIR  <- "count_matrices_from_STAR"
 # Note: MASTER_REFERENCE is already set by 0_shared_config.R above; no re-assignment needed.
 
-GENERATE_GENE_LEVEL     <- TRUE
-GENERATE_ISOFORM_LEVEL  <- TRUE
+GENERATE_GENE_LEVEL     <- as.logical(Sys.getenv("STAR_GENERATE_GENE_LEVEL",    "TRUE"))
+GENERATE_ISOFORM_LEVEL  <- as.logical(Sys.getenv("STAR_GENERATE_ISOFORM_LEVEL", "TRUE"))
 
 # ===============================================
 # HELPER: SAVE MATRICES WITH STANDARD NAMING
@@ -180,6 +180,10 @@ for (level_name in names(processing_levels)) {
     files       <- files[files_exist]
     current_ids <- SAMPLE_IDS[files_exist]
   }
+  if (length(files) < 2) {
+    cat("ERROR: Need >= 2 quant.sf files for tximport (found", length(files), ")\n\n")
+    next
+  }
   cat("Found", length(files), "quant.sf files\n\n")
 
   # -------------------------------------------------
@@ -222,7 +226,7 @@ for (level_name in names(processing_levels)) {
     qf_ids <- sample_qf$Name
     tx_ids <- tx2gene$TXNAME
     overlap <- length(intersect(qf_ids, tx_ids))
-    match_rate <- overlap / length(qf_ids)
+    match_rate <- if (length(qf_ids) > 0) overlap / length(qf_ids) else 0
     if (match_rate < 0.5) {
       cat("ERROR: tx2gene transcript IDs poorly match quant.sf IDs!\n")
       cat("  Match rate:", round(match_rate * 100), "% (", overlap, "/", length(qf_ids), "sampled)\n")
@@ -312,7 +316,7 @@ for (level_name in names(processing_levels)) {
   dir.create(level_output_dir, recursive = TRUE, showWarnings = FALSE)
 
   # Dataset-namespaced folder (matches gene group structure; avoids overwrite across datasets)
-  CURRENT_DATASET <- Sys.getenv("CURRENT_DATASET", unset = "")
+  # CURRENT_DATASET is already set by 0_shared_config.R from the same env var
   full_ref_folder <- if (nzchar(CURRENT_DATASET)) {
     paste0(MASTER_REFERENCE, "_in_", CURRENT_DATASET)
   } else {
@@ -420,5 +424,5 @@ for (level_name in names(processing_levels)) {
 
 cat(paste(rep("=", 70), collapse = ""), "\n")
 cat("ALL LEVELS COMPLETE\n")
-cat("Output directory:", MATRICES_DIR, "/", MASTER_REFERENCE, "\n")
+cat("Output directory:", file.path(MATRICES_DIR, MASTER_REFERENCE), "\n")
 cat(paste(rep("=", 70), collapse = ""), "\n\n")

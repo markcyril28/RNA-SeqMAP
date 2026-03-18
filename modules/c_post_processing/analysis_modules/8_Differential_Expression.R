@@ -74,6 +74,8 @@ prepare_deseq_dataset <- function(count_matrix, sample_info) {
   # The gold-standard approach is DESeqDataSetFromTximport(txi, ...).
   # This simplified path still gives valid results but may be slightly less
   # accurate for genes with large transcript-length variation across samples.
+  # Replace non-finite values (Inf, NaN) with 0 before integer conversion
+  count_matrix[!is.finite(count_matrix)] <- 0
   count_matrix <- round(count_matrix)
   storage.mode(count_matrix) <- "integer"
   
@@ -278,12 +280,13 @@ create_de_heatmap <- function(dds, res_df, contrast_name, output_dir, n_top = 50
   
   png(file.path(output_dir, paste0(contrast_name, "_top_DE_heatmap.png")),
       width = 1000, height = 800, res = 100)
-  on.exit(try(dev.off(), silent = TRUE), add = TRUE)
-  pheatmap(hm_data, scale = "row", cluster_rows = TRUE, cluster_cols = TRUE,
-           show_rownames = nrow(hm_data) <= 30,
-           main = paste0("Top DE Genes: ", contrast_name))
-  dev.off()
-  on.exit(NULL)
+  tryCatch({
+    pheatmap(hm_data, scale = "row", cluster_rows = TRUE, cluster_cols = TRUE,
+             show_rownames = nrow(hm_data) <= 30,
+             main = paste0("Top DE Genes: ", contrast_name))
+  }, finally = {
+    dev.off()
+  })
 }
 
 # ===============================================
@@ -305,8 +308,13 @@ load_m1_gene_group_counts <- function(gene_group, matrices_dir, master_ref, cach
     }
 
     full_matrix <- tryCatch({
-      df <- data.table::fread(deseq2_csv, header = TRUE, data.table = FALSE,
-                              check.names = FALSE)
+      df <- if (.HAS_DATATABLE) {
+        data.table::fread(deseq2_csv, header = TRUE, data.table = FALSE,
+                          check.names = FALSE)
+      } else {
+        read.csv(deseq2_csv, header = TRUE, check.names = FALSE,
+                 stringsAsFactors = FALSE)
+      }
       rn <- df[[1]]
       df[[1]] <- NULL
       mat <- as.matrix(df)  # numeric columns -> numeric matrix directly
@@ -328,8 +336,13 @@ load_m1_gene_group_counts <- function(gene_group, matrices_dir, master_ref, cach
       if (length(hits) > 0) gene_group_csv <- hits[1]
     }
     if (file.exists(gene_group_csv)) {
-      gdf <- tryCatch(data.table::fread(gene_group_csv, header = TRUE, data.table = FALSE),
-                     error = function(e) NULL)
+      gdf <- tryCatch({
+        if (.HAS_DATATABLE) {
+          data.table::fread(gene_group_csv, header = TRUE, data.table = FALSE)
+        } else {
+          read.csv(gene_group_csv, header = TRUE, stringsAsFactors = FALSE)
+        }
+      }, error = function(e) NULL)
       if (!is.null(gdf) && nrow(gdf) > 0) {
         gene_ids <- if ("Gene_ID" %in% colnames(gdf)) trimws(gdf$Gene_ID) else trimws(gdf[[1]])
       }
@@ -416,15 +429,19 @@ run_differential_expression <- function(config = NULL, matrices_dir = NULL) {
   .gene_group_ids_cache <- list()
   .all_csvs <- list.files(GENE_GROUPS_DIR, pattern = "\\.csv$",
                           recursive = TRUE, full.names = TRUE)
-  .csv_lookup <- setNames(.all_csvs, tools::file_path_sans_ext(basename(.all_csvs)))
+  .csv_names <- tools::file_path_sans_ext(basename(.all_csvs))
+  .csv_first <- !duplicated(.csv_names)
+  .csv_lookup <- setNames(.all_csvs[.csv_first], .csv_names[.csv_first])
   for (.gg in config$gene_groups) {
     .gg_csv <- file.path(GENE_GROUPS_DIR, paste0(.gg, ".csv"))
     if (!file.exists(.gg_csv) && .gg %in% names(.csv_lookup)) {
       .gg_csv <- .csv_lookup[[.gg]]
     }
     if (file.exists(.gg_csv)) {
-      .gdf <- tryCatch(data.table::fread(.gg_csv, header = TRUE),
-                       error = function(e) NULL)
+      .gdf <- tryCatch({
+        if (.HAS_DATATABLE) data.table::fread(.gg_csv, header = TRUE)
+        else read.csv(.gg_csv, header = TRUE, stringsAsFactors = FALSE)
+      }, error = function(e) NULL)
       if (!is.null(.gdf) && nrow(.gdf) > 0) {
         .gene_group_ids_cache[[.gg]] <- if ("Gene_ID" %in% colnames(.gdf)) trimws(.gdf$Gene_ID) else trimws(.gdf[[1]])
       }
@@ -437,7 +454,11 @@ run_differential_expression <- function(config = NULL, matrices_dir = NULL) {
     .m1_csv <- file.path(matrices_dir, config$master_reference, "deseq2_input", "gene_count_matrix.csv")
     if (file.exists(.m1_csv)) {
       .m1_full_matrix_cache <- tryCatch({
-        .df <- data.table::fread(.m1_csv, header = TRUE, data.table = FALSE, check.names = FALSE)
+        .df <- if (.HAS_DATATABLE) {
+          data.table::fread(.m1_csv, header = TRUE, data.table = FALSE, check.names = FALSE)
+        } else {
+          read.csv(.m1_csv, header = TRUE, check.names = FALSE, stringsAsFactors = FALSE)
+        }
         .rn <- .df[[1]]
         .df[[1]] <- NULL
         .m <- as.matrix(.df)  # numeric columns -> numeric matrix directly

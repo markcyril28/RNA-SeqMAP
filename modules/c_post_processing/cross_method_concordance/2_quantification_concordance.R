@@ -66,11 +66,20 @@ for (i in seq_along(method_pairs)) {
   nonzero_mask <- (mat1 > 0) | (mat2 > 0)  # genes × samples logical matrix
   nonzero_per_sample <- colSums(nonzero_mask)
 
-  for (s in common_samples) {
-    if (nonzero_per_sample[s] < CORRELATION_MIN_GENES) next
+  # Vectorized skip detection: avoid O(n²) c() concatenation in loop
+  skipped_samples <- common_samples[nonzero_per_sample[common_samples] < CORRELATION_MIN_GENES]
+  valid_samples <- setdiff(common_samples, skipped_samples)
+  for (s in valid_samples) {
     nz <- nonzero_mask[, s]
     spearman_per_sample[s, i] <- cor(mat1[nz, s], mat2[nz, s], method = "spearman",
                                       use = "pairwise.complete.obs")
+  }
+  if (length(skipped_samples) > 0) {
+    cat("  Warning: Skipped", length(skipped_samples), "samples for pair",
+        get_short_name(m1), "vs", get_short_name(m2),
+        "(fewer than", CORRELATION_MIN_GENES, "expressed genes):",
+        paste(head(skipped_samples, 5), collapse = ", "),
+        if (length(skipped_samples) > 5) "..." else "", "\n")
   }
 }
 
@@ -147,13 +156,16 @@ ht <- Heatmap(median_spearman,
   height = unit(14, "cm")
 )
 
-png(file.path(FIGURES_DIR, "method_concordance_heatmap_spearman.png"),
-    width = 1600, height = 1300, res = 150)
-on.exit(try(dev.off(), silent = TRUE), add = TRUE)
-draw(ht, padding = unit(c(30, 30, 25, 40), "mm"))
-dev.off()
-on.exit(NULL)
-cat("  Saved: method_concordance_heatmap_spearman.png\n")
+tryCatch({
+  png(file.path(FIGURES_DIR, "method_concordance_heatmap_spearman.png"),
+      width = 1600, height = 1300, res = 150)
+  draw(ht, padding = unit(c(30, 30, 25, 40), "mm"))
+  dev.off()
+  cat("  Saved: method_concordance_heatmap_spearman.png\n")
+}, error = function(e) {
+  try(dev.off(), silent = TRUE)
+  cat("  Error generating concordance heatmap:", e$message, "\n")
+})
 
 # -----------------------------------------------
 # Save concordance results for report generation

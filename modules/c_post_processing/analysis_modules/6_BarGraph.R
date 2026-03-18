@@ -75,6 +75,12 @@ generate_bar_graph <- function(data_matrix, output_path, title,
       colors <- colorRampPalette(brewer.pal(8, BAR_FILL_PALETTE))(n_samples)
     }
     
+    # Guard: need at least 1 gene for a meaningful plot
+    if (nrow(data_matrix) == 0 || nrow(df_long) == 0) {
+      cat("      Warning: No data to plot\n")
+      return(FALSE)
+    }
+
     # Create plot
     if (facet_by_gene && nrow(data_matrix) <= 20) {
       p <- ggplot(df_long, aes(x = Sample, y = Expression, fill = Sample)) +

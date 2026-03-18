@@ -34,19 +34,23 @@ MASTER_REFERENCE <- Sys.getenv("MASTER_REFERENCE", unset = "Eggplant_V4.1")
 # GPU acceleration flag (isTRUE guards against NA from empty/malformed env var)
 ENABLE_GPU <- isTRUE(as.logical(Sys.getenv("ENABLE_GPU", unset = "FALSE")))
 
-# Thread count
+# Thread count (guard against non-numeric env var producing NA)
 THREADS <- as.integer(Sys.getenv("THREADS", unset = "8"))
+if (is.na(THREADS)) { warning("THREADS env var is non-numeric, defaulting to 8"); THREADS <- 8L }
 
 # Available RAM (GB) - used to determine if memory-intensive operations are safe
 AVAILABLE_RAM_GB <- as.integer(Sys.getenv("AVAILABLE_RAM_GB", unset = "24"))
+if (is.na(AVAILABLE_RAM_GB)) { warning("AVAILABLE_RAM_GB env var is non-numeric, defaulting to 24"); AVAILABLE_RAM_GB <- 24L }
 
 # Available GPU VRAM (GB) - used for GPU memory management
 GPU_VRAM_GB <- as.integer(Sys.getenv("GPU_VRAM_GB", unset = "8"))
+if (is.na(GPU_VRAM_GB)) { warning("GPU_VRAM_GB env var is non-numeric, defaulting to 8"); GPU_VRAM_GB <- 8L }
 
 # Global random seed for reproducibility across all stochastic operations
 # (t-SNE, UMAP, GSEA permutations, DESeq2 shrinkage, WGCNA layout, etc.)
 # Override via environment variable GLOBAL_RANDOM_SEED if needed.
 GLOBAL_RANDOM_SEED <- as.integer(Sys.getenv("GLOBAL_RANDOM_SEED", unset = "42"))
+if (is.na(GLOBAL_RANDOM_SEED)) { warning("GLOBAL_RANDOM_SEED env var is non-numeric, defaulting to 42"); GLOBAL_RANDOM_SEED <- 42L }
 
 # Memory-aware settings (with 24GB+ RAM: prioritize accuracy over memory conservation)
 HIGH_MEMORY_MODE <- AVAILABLE_RAM_GB >= 16
@@ -297,14 +301,17 @@ get_method_type <- function(method = CURRENT_METHOD) {
   return("unknown")
 }
 
-# Get method-specific quant directory
+# Get method-specific quant directory (relative path within the method's alignment folder)
+# NOTE: For M3 STAR, Salmon quant outputs live under {MASTER_REF}/6_salmon/quant/,
+# not under a flat directory like the other methods.  This function returns the
+# top-level subdirectory only; callers must append reference/level paths as needed.
 get_quant_dir <- function(method = CURRENT_METHOD) {
   method_type <- get_method_type(method)
   switch(method_type,
     "stringtie" = "stringtie_WD",
     "salmon" = "Salmon_Quant",
     "rsem" = "RSEM_Quant_WD",
-    "star" = "STAR_alignment_WD",
+    "star" = "6_salmon",
     "quant_WD"  # default
   )
 }

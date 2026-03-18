@@ -33,7 +33,8 @@ process_all_combinations <- function(
   # map it to the closest available alternative.
   count_type_mapping <- list(
     "stringtie" = list(
-      "expected_count" = "coverage",  # fallback only — coverage is per-base depth, NOT raw fragment counts
+      # No fallback for expected_count: coverage is per-base depth, NOT raw fragment counts.
+      # Mapping expected_count → coverage would produce misleading results (e.g., invalid CPM/DESeq2).
       "tpm" = "tpm",
       "fpkm" = "fpkm",
       "coverage" = "coverage"
@@ -72,6 +73,12 @@ process_all_combinations <- function(
     }
   })))
   
+  dropped_count_types <- COUNT_TYPES[!COUNT_TYPES %in% names(method_mapping) & !COUNT_TYPES %in% valid_count_types]
+  if (length(dropped_count_types) > 0) {
+    cat("  Note: count types not available for", CURRENT_METHOD, "(", method_type, "):",
+        paste(dropped_count_types, collapse = ", "), "\n")
+  }
+
   if (length(active_count_types) == 0) {
     cat("  Warning: No valid count types for method", CURRENT_METHOD,
         "- configured:", paste(COUNT_TYPES, collapse = ","), "\n")
@@ -117,6 +124,11 @@ process_all_combinations <- function(
             # (e.g., "raw"/"cpm"/"deseq2_normalized" are invalid for pre-normalized TPM/FPKM)
             valid_schemes <- get_norm_schemes(count_type)
             active_norm_schemes <- NORM_SCHEMES[NORM_SCHEMES %in% valid_schemes]
+            dropped_schemes <- NORM_SCHEMES[!NORM_SCHEMES %in% valid_schemes]
+            if (length(dropped_schemes) > 0) {
+              cat("    Note: skipping invalid norm schemes for", count_type, ":",
+                  paste(dropped_schemes, collapse = ", "), "\n")
+            }
             # Pre-apply labels to raw data ONCE (independent of norm_scheme)
             # Normalization only changes values, not row/column structure,
             # so we label once and normalize the labeled data directly.
@@ -135,23 +147,34 @@ process_all_combinations <- function(
                 next
               }
               
-              callback_result <- processing_callback(
-                gene_group = gene_group,
-                gene_group_output_dir = gene_group_output_dir,
-                processing_level = processing_level,
-                count_type = count_type,
-                gene_type = gene_type,
-                label_type = label_type,
-                norm_scheme = norm_scheme,
-                raw_data_matrix = raw_labeled,
-                normalized_data = normalized_labeled,
-                overwrite = config$overwrite_existing,
-                extra_options = extra_options
+              callback_result <- tryCatch(
+                processing_callback(
+                  gene_group = gene_group,
+                  gene_group_output_dir = gene_group_output_dir,
+                  processing_level = processing_level,
+                  count_type = count_type,
+                  gene_type = gene_type,
+                  label_type = label_type,
+                  norm_scheme = norm_scheme,
+                  raw_data_matrix = raw_labeled,
+                  normalized_data = normalized_labeled,
+                  overwrite = config$overwrite_existing,
+                  extra_options = extra_options
+                ),
+                error = function(e) {
+                  cat("    [ERROR] Callback failed:", e$message, "\n")
+                  list(total = 1L, successful = 0L, skipped = 0L)
+                }
               )
-              
-              counters$total <- counters$total + callback_result$total
-              counters$successful <- counters$successful + callback_result$successful
-              counters$skipped <- counters$skipped + callback_result$skipped
+
+              if (is.null(callback_result) ||
+                  !all(c("total", "successful", "skipped") %in% names(callback_result))) {
+                counters$total <- counters$total + 1L
+              } else {
+                counters$total <- counters$total + callback_result$total
+                counters$successful <- counters$successful + callback_result$successful
+                counters$skipped <- counters$skipped + callback_result$skipped
+              }
             }
           }
         }

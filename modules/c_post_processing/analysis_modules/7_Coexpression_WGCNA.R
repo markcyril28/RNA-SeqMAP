@@ -31,6 +31,15 @@ source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
 WGCNA_THREADS <- as.integer(Sys.getenv("WGCNA_THREADS", unset = as.character(THREADS)))
 allowWGCNAThreads(nThreads = WGCNA_THREADS)
 
+# Guard: .wgcna_fwrite() used throughout; fall back to write.table if missing
+.wgcna_fwrite <- function(x, file, ...) {
+  if (.HAS_DATATABLE) {
+    data.table::fwrite(x, file, ...)
+  } else {
+    write.table(x, file, row.names = FALSE, ...)
+  }
+}
+
 # ===============================================
 # CONFIGURATION
 # ===============================================
@@ -348,7 +357,13 @@ identify_hub_genes <- function(gene_info, n_top = N_HUB_GENES) {
   }
 
   # rbindlist avoids repeated intermediate data.frame copies from do.call(rbind, ...)
-  return(as.data.frame(data.table::rbindlist(hub_list, use.names = TRUE, fill = TRUE)))
+  if (requireNamespace("data.table", quietly = TRUE)) {
+    return(as.data.frame(data.table::rbindlist(hub_list, use.names = TRUE, fill = TRUE)))
+  } else {
+    non_null <- Filter(Negate(is.null), hub_list)
+    if (length(non_null) == 0) return(data.frame())
+    return(do.call(rbind, non_null))
+  }
 }
 
 create_correlation_network <- function(data_matrix, query_genes, output_dir, gene_group,
@@ -786,7 +801,7 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     # Sort to show query genes first
     gene_info <- gene_info[order(-gene_info$Is_Query_Gene, gene_info$Module), ]
     
-    data.table::fwrite(gene_info, file.path(output_dir, paste0(gene_group, "_module_assignments.tsv")),
+    .wgcna_fwrite(gene_info, file.path(output_dir, paste0(gene_group, "_module_assignments.tsv")),
                        sep = "\t", quote = FALSE)
     
     # ===== STEP 9: Query gene module summary =====
@@ -794,7 +809,7 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     cat("  Query genes module distribution:\n")
     print(table(query_gene_info$Module))
     
-    data.table::fwrite(query_gene_info,
+    .wgcna_fwrite(query_gene_info,
                        file.path(output_dir, paste0(gene_group, "_query_genes_modules.tsv")),
                        sep = "\t", quote = FALSE)
     
@@ -803,7 +818,7 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     if (!is.null(hubs) && nrow(hubs) > 0) {
       # Mark query genes in hub list
       hubs$Is_Query_Gene <- hubs$Gene %in% query_genes_matched
-      data.table::fwrite(hubs, file.path(output_dir, paste0(gene_group, "_hub_genes.tsv")),
+      .wgcna_fwrite(hubs, file.path(output_dir, paste0(gene_group, "_hub_genes.tsv")),
                          sep = "\t", quote = FALSE)
     } else {
       cat("  Warning: No hub genes identified (all genes may be in grey module)\n")
@@ -840,11 +855,16 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
         )
       }
     }
-    coexpr_results <- data.table::rbindlist(coexpr_list, use.names = TRUE, fill = TRUE)
+    coexpr_results <- if (requireNamespace("data.table", quietly = TRUE)) {
+      data.table::rbindlist(coexpr_list, use.names = TRUE, fill = TRUE)
+    } else {
+      non_null <- Filter(Negate(is.null), coexpr_list)
+      if (length(non_null) > 0) do.call(rbind, non_null) else data.frame()
+    }
     if (nrow(coexpr_results) > 0) coexpr_results <- as.data.frame(coexpr_results)
     
     if (!is.null(coexpr_results) && nrow(coexpr_results) > 0) {
-      data.table::fwrite(coexpr_results,
+      .wgcna_fwrite(coexpr_results,
                          file.path(output_dir, paste0(gene_group, "_coexpressed_genes.tsv")),
                          sep = "\t", quote = FALSE)
     }
@@ -857,13 +877,13 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     # 14a: Save full correlation matrix as TSV (single-step df construction)
     cat("    Saving correlation matrix...\n")
     cor_df <- data.frame(Gene = rownames(cor_matrix), cor_matrix, check.names = FALSE)
-    data.table::fwrite(cor_df, file.path(raw_results_dir, paste0(gene_group, "_correlation_matrix.tsv")),
+    .wgcna_fwrite(cor_df, file.path(raw_results_dir, paste0(gene_group, "_correlation_matrix.tsv")),
                        sep = "\t", quote = FALSE)
 
     # 14b: Save module eigengenes (single-step df construction)
     cat("    Saving module eigengenes...\n")
     me_df <- data.frame(Sample = rownames(MEs), MEs, check.names = FALSE)
-    data.table::fwrite(me_df, file.path(raw_results_dir, paste0(gene_group, "_module_eigengenes.tsv")),
+    .wgcna_fwrite(me_df, file.path(raw_results_dir, paste0(gene_group, "_module_eigengenes.tsv")),
                        sep = "\t", quote = FALSE)
     
     # 14c: Save network as RDS for complete reproducibility
@@ -891,7 +911,7 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
                 ncol(data_matrix), length(query_genes_matched)),
       stringsAsFactors = FALSE
     )
-    data.table::fwrite(params_summary, file.path(raw_results_dir, paste0(gene_group, "_parameters.tsv")),
+    .wgcna_fwrite(params_summary, file.path(raw_results_dir, paste0(gene_group, "_parameters.tsv")),
                        sep = "\t", quote = FALSE)
     
     # 14g: Save data matrix used (expression values)
@@ -900,7 +920,7 @@ run_wgcna <- function(config = NULL, matrices_dir = NULL) {
     expr_df <- as.data.frame(data_filtered)
     expr_df$Gene <- rownames(expr_df)
     expr_df <- expr_df[, c("Gene", setdiff(names(expr_df), "Gene"))]
-    data.table::fwrite(expr_df, file.path(raw_results_dir, paste0(gene_group, "_expression_matrix.tsv")),
+    .wgcna_fwrite(expr_df, file.path(raw_results_dir, paste0(gene_group, "_expression_matrix.tsv")),
                        sep = "\t", quote = FALSE)
     
     cat("  Raw results saved to:", raw_results_dir, "\n")

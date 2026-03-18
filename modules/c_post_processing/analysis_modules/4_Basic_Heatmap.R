@@ -178,11 +178,13 @@ generate_heatmap_violet <- function(data_matrix, output_path, title,
     )
     
     # Save with auto-adjusted dimensions
+    .dev_open <- FALSE
+    on.exit(if (.dev_open) try(dev.off(), silent = TRUE), add = TRUE)
     png(output_path, width = img_width, height = img_height, res = 150)
-    on.exit(try(dev.off(), silent = TRUE), add = TRUE)
+    .dev_open <- TRUE
     draw(ht, heatmap_legend_side = LEGEND_POSITION)
     dev.off()
-    on.exit(NULL)  # clear handler after successful close
+    .dev_open <- FALSE
     
     # Export raw values as TSV alongside the PNG
     if (exists("EXPORT_RAW_VALUES") && EXPORT_RAW_VALUES) {

@@ -116,7 +116,6 @@ HARMONIZED_RDS <- file.path(OUTPUT_DIR, "harmonized_tpm_matrices.rds")
 # Analysis parameters
 CONCORDANCE_MIN_EXPR <- 0.1       # Minimum TPM to consider a gene "expressed"
 CONCORDANCE_MIN_SAMPLES <- 3      # Gene must be expressed in at least this many samples
-DISCORDANCE_CV_THRESHOLD <- 1.5   # CV across methods above this flags a gene as discordant
 RANKING_CHANGE_THRESHOLD <- 0.3   # Fractional rank change above this is "drastic"
 CORRELATION_MIN_GENES <- 10       # Minimum nonzero genes per sample for pairwise correlation
 
