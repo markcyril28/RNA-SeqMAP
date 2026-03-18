@@ -117,7 +117,7 @@ run_all() {
 		_SOFTWARE_CATALOGED="true"
 	fi
 	log_configuration
-	log_step "Script started at: $(date -d @$start_time)"
+	log_step "Script started at: $(date -d "@$start_time")"
 
 	log_info "SRR samples to process:"
 	for srr in "${rnaseq_list[@]}"; do log_info "$srr"; done
@@ -189,7 +189,8 @@ run_all() {
 	fi
 	if [[ $RUN_METHOD_4_SALMON_SAF == "TRUE" ]]; then
 		if [[ ! -f "${decoy:-}" ]]; then
-			log_warn "Genome file '${decoy:-<unset>}' not found — skipping Salmon SAF pipeline."
+			log_error "Genome file '${decoy:-<unset>}' not found — skipping Salmon SAF pipeline."
+			((method_failures++)) || true
 		else
 			_enabled_methods+=("M4")
 			_method_cmds+=("salmon_saf_pipeline --FASTA \"$fasta\" --GENOME \"$decoy\" --RNASEQ_LIST ${rnaseq_list[*]}")
@@ -264,7 +265,7 @@ run_all() {
 	end_time=$(date +%s)
 	elapsed=$((end_time - start_time))
 	log_step "Final timing"
-	log_info "Script ended at: $(date -d @$end_time)"
+	log_info "Script ended at: $(date -d "@$end_time")"
 	# Pure bash arithmetic (avoids date subshell spawn)
 	log_info "Elapsed time: $(printf '%02d:%02d:%02d' $((elapsed/3600)) $(((elapsed%3600)/60)) $((elapsed%60)))"
 
@@ -278,13 +279,26 @@ run_all() {
 # EXECUTE
 # ==============================================================================
 
-[[ ${#CONFIG_FILES[@]} -eq 0 ]] && { log_error "No configuration files listed in CONFIG_FILES."; exit 1; }
+[[ ${#CONFIG_FILES[@]} -eq 0 ]] && { echo "[ERROR] No configuration files listed in CONFIG_FILES." >&2; exit 1; }
+
+# Source logging early so log_step/log_error/log_info are available before configs.
+# The modules_loader double-source guard ensures this is safe when configs re-source it.
+source "${PROJECT_ROOT}/modules/logging/logging_utils.sh" 2>/dev/null || {
+	# Minimal fallback if logging module cannot be loaded
+	log_info()  { echo "[INFO]  $*"; }
+	log_warn()  { echo "[WARN]  $*"; }
+	log_error() { echo "[ERROR] $*" >&2; }
+	log_step()  { echo ""; echo "==> $*"; }
+}
 
 # Cleanup trap: log summary on exit; clean up STAR temp dirs on signal kill
 _pipeline_cleanup() {
 	local rc=$?
-	# Remove any orphan STAR temp directories left by interrupted runs
-	find "${PROJECT_ROOT}" -maxdepth 4 -type d -name '_STARtmp*' -exec rm -rf {} + 2>/dev/null || true
+	# Only search for orphan STAR temp dirs when STAR was actually used (avoids
+	# traversing entire PROJECT_ROOT on every exit — saves ~0.5-2s on large trees)
+	if [[ "${RUN_METHOD_3_STAR_ALIGNMENT:-}" == "TRUE" ]]; then
+		find "${PROJECT_ROOT}/2_ALIGNMENT_RESULTs" -maxdepth 4 -type d -name '_STARtmp*' -exec rm -rf {} + 2>/dev/null || true
+	fi
 	if [[ $rc -ne 0 ]]; then
 		log_error "Pipeline terminated with exit code $rc"
 	fi

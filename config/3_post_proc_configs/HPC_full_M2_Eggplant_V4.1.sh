@@ -72,14 +72,14 @@ METHODS=(
 # ANALYSES
 # ==============================================================================
 #
-# Enable "Stringtie_Matrix" only on the first run (when matrices are not yet built).
+# Stringtie_Matrix preprocessing runs automatically via run_method_preprocessing.
 # Tximport_* and Matrix_Creation are NOT applicable to M2.
 # Differential_Expression is NOT supported (StringTie TPM, not integer counts).
 # Tissue_Specificity is applicable to transcript-level expression values.
 
 ANALYSES=(
-    # ---- M2 preprocessing (enable on first run only) ----
-    #"Stringtie_Matrix"          # M2 only — skip if matrices already built
+    # ---- M2 preprocessing (runs automatically via run_method_preprocessing) ----
+    #"Stringtie_Matrix"          # Legacy name — preprocessing handles this automatically
 
     # ---- Visualisation ----
     "Basic_Heatmap"

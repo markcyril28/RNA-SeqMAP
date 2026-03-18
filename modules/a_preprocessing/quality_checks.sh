@@ -15,6 +15,10 @@ export QC_SOURCED="true"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/shared_utils_preproc.sh"
 
+# Cache tool availability once at module load (avoids command -v per SRR)
+_QC_HAS_FASTQC=false; command -v fastqc >/dev/null 2>&1 && _QC_HAS_FASTQC=true
+_QC_HAS_MULTIQC=false; command -v multiqc >/dev/null 2>&1 && _QC_HAS_MULTIQC=true
+
 # ==============================================================================
 # QUALITY CONTROL FUNCTIONS
 # ==============================================================================
@@ -60,10 +64,10 @@ run_quality_control() {
 	log_step "QC: $SRR"
 	mkdir -p "$srr_outdir"
 
-	if command -v fastqc >/dev/null 2>&1; then
+	if $_QC_HAS_FASTQC; then
 		# QC for raw files (single folder per SRR)
 		if [[ -d "$RAW_DIR" ]]; then
-			if ! compgen -G "$srr_outdir/*_raw_fastqc.html" >/dev/null; then
+			local _raw_qc=("$srr_outdir"/*_raw_fastqc.html); if [[ ! -f "${_raw_qc[0]:-}" ]]; then
 				log_info "Running FastQC on raw files for $SRR"
 				run_with_space_time_log fastqc -t "${THREADS:-2}" -o "$srr_outdir" \
 					"$RAW_DIR"/${SRR}*.fastq* 2>/dev/null || log_warn "FastQC failed for raw $SRR"
@@ -73,7 +77,7 @@ run_quality_control() {
 
 		# QC for trimmed files (same SRR folder, renamed as trimmed)
 		if [[ -d "$TrimGalore_DIR" ]]; then
-			if ! compgen -G "$srr_outdir/*_trimmed_fastqc.html" >/dev/null; then
+			local _trim_qc=("$srr_outdir"/*_trimmed_fastqc.html); if [[ ! -f "${_trim_qc[0]:-}" ]]; then
 				log_info "Running FastQC on trimmed files for $SRR"
 				run_with_space_time_log fastqc -t "${THREADS:-2}" -o "$srr_outdir" \
 					"$TrimGalore_DIR"/${SRR}*val*.fq* 2>/dev/null || log_warn "FastQC failed for trimmed $SRR"
@@ -86,7 +90,7 @@ run_quality_control() {
 }
 
 run_multiqc() {
-	if command -v multiqc >/dev/null 2>&1; then
+	if $_QC_HAS_MULTIQC; then
 		run_with_space_time_log multiqc "$FASTQC_ROOT" -o "$FASTQC_ROOT/summary" --force 2>/dev/null || true
 	else
 		log_warn "MultiQC not found. Skipping aggregation."
@@ -126,7 +130,7 @@ run_quality_control_parallel() {
 	# Export required variables and functions for parallel execution
 	export PATH CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_EXE
 	export RAW_DIR_ROOT TRIM_DIR_ROOT FASTQC_ROOT THREADS_PER_JOB
-	export -f timestamp log log_info log_warn log_error log_step run_with_space_time_log rename_fastqc_outputs 2>/dev/null || true
+	export -f timestamp log log_info log_warn log_error log_step rename_fastqc_outputs 2>/dev/null || true
 
 	_qc_worker() {
 		local SRR="$1"
@@ -144,7 +148,7 @@ run_quality_control_parallel() {
 
 		# QC for raw files (single folder per SRR)
 		if [[ -d "$RAW_DIR" ]]; then
-			if ! compgen -G "$srr_outdir/*_raw_fastqc.html" >/dev/null; then
+			local _raw_qc=("$srr_outdir"/*_raw_fastqc.html); if [[ ! -f "${_raw_qc[0]:-}" ]]; then
 				log_info "Running FastQC on raw files for $SRR"
 				fastqc -t "${THREADS_PER_JOB:-2}" -o "$srr_outdir" \
 					"$RAW_DIR"/${SRR}*.fastq* 2>/dev/null || log_warn "FastQC failed for raw $SRR"
@@ -154,7 +158,7 @@ run_quality_control_parallel() {
 
 		# QC for trimmed files (same SRR folder, renamed as trimmed)
 		if [[ -d "$TrimGalore_DIR" ]]; then
-			if ! compgen -G "$srr_outdir/*_trimmed_fastqc.html" >/dev/null; then
+			local _trim_qc=("$srr_outdir"/*_trimmed_fastqc.html); if [[ ! -f "${_trim_qc[0]:-}" ]]; then
 				log_info "Running FastQC on trimmed files for $SRR"
 				fastqc -t "${THREADS_PER_JOB:-2}" -o "$srr_outdir" \
 					"$TrimGalore_DIR"/${SRR}*val*.fq* 2>/dev/null || log_warn "FastQC failed for trimmed $SRR"
@@ -166,7 +170,8 @@ run_quality_control_parallel() {
 	
 	# Run FastQC in parallel for all samples
 	printf "%s\n" "${SRR_LIST[@]}" | parallel \
-		--env PATH --env CONDA_PREFIX \
+		--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
+		--env RAW_DIR_ROOT --env TRIM_DIR_ROOT --env FASTQC_ROOT --env THREADS_PER_JOB \
 		-j "${JOBS:-2}" \
 		--halt soon,fail=1 \
 		--joblog "$FASTQC_ROOT/parallel_fastqc.log" \
@@ -192,8 +197,8 @@ generate_qc_summary() {
 		# Find all fastqc_data.txt files and extract key metrics
 		for summary_file in "$FASTQC_ROOT"/*/*_fastqc/summary.txt; do
 			if [[ -f "$summary_file" ]]; then
-				local sample_dir=$(dirname "$summary_file")
-				local sample_name=$(basename "$sample_dir" | sed 's/_fastqc$//')
+				local sample_dir="${summary_file%/*}"
+				local sample_name="${sample_dir##*/}"; sample_name="${sample_name%_fastqc}"
 				echo "Sample: $sample_name"
 				cat "$summary_file"
 				echo ""

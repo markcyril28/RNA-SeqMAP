@@ -24,16 +24,19 @@ source "$SCRIPT_DIR/../a_preprocessing/shared_utils_preproc.sh"
 # Detect pigz once at module load; methods use $_SHARED_GZIP_DC instead of
 # repeatedly spawning `command -v pigz` per sample.
 
-if command -v pigz &>/dev/null; then
-	_SHARED_HAS_PIGZ="true"
-	_SHARED_GZIP_DC="pigz -dc"
-	_SHARED_GZIP_C="pigz"
-else
-	_SHARED_HAS_PIGZ="false"
-	_SHARED_GZIP_DC="gzip -dc"
-	_SHARED_GZIP_C="gzip"
+# Only detect if not already set by shared_utils_preproc.sh (avoids redundant command -v spawn)
+if [[ -z "${_SHARED_GZIP_C:-}" ]]; then
+	if command -v pigz &>/dev/null; then
+		_SHARED_HAS_PIGZ="true"
+		_SHARED_GZIP_DC="pigz -dc"
+		_SHARED_GZIP_C="pigz"
+	else
+		_SHARED_HAS_PIGZ="false"
+		_SHARED_GZIP_DC="gzip -dc"
+		_SHARED_GZIP_C="gzip"
+	fi
+	export _SHARED_HAS_PIGZ _SHARED_GZIP_DC _SHARED_GZIP_C
 fi
-export _SHARED_HAS_PIGZ _SHARED_GZIP_DC _SHARED_GZIP_C
 
 # ==============================================================================
 # VALIDATION FUNCTIONS
@@ -315,8 +318,9 @@ export -f _samtools_sort_mem
 _samtools_has_write_index() {
 	if [[ -z "${_SAMTOOLS_HAS_WRITE_INDEX:-}" ]]; then
 		# Check samtools version >= 1.10 (when --write-index was added)
+		# Single awk replaces head|grep -oP|head (3 processes → 1)
 		local _st_ver
-		_st_ver=$(samtools --version 2>/dev/null | head -1 | grep -oP '[0-9]+\.[0-9]+' | head -1) || _st_ver="0.0"
+		_st_ver=$(samtools --version 2>/dev/null | awk 'NR==1{if(match($0,/[0-9]+\.[0-9]+/))print substr($0,RSTART,RLENGTH);else print "0.0";exit}') || _st_ver="0.0"
 		local _st_major=${_st_ver%%.*} _st_minor=${_st_ver#*.}
 		_st_minor=${_st_minor%%.*}
 		if [[ "${_st_major:-0}" -gt 1 ]] || [[ "${_st_major:-0}" -eq 1 && "${_st_minor:-0}" -ge 10 ]]; then
@@ -328,6 +332,26 @@ _samtools_has_write_index() {
 	[[ "$_SAMTOOLS_HAS_WRITE_INDEX" == "yes" ]]
 }
 export -f _samtools_has_write_index
+
+# ==============================================================================
+# BAM VALIDATION HELPER
+# ==============================================================================
+# Check if a BAM file exists and exceeds a minimum byte threshold.
+# Uses bash -s (file size > 0) for quick existence check and stat only when a
+# precise size is needed (e.g., for log messages).  Consolidates 4 duplicate
+# code paths in m3_star_alignment.sh into a single function.
+# Usage: _bam_is_valid <bam_path> [min_bytes]
+# Returns 0 if valid, 1 otherwise.  Prints byte size to stdout.
+_bam_is_valid() {
+	local bam="$1"
+	local min_bytes="${2:-1000}"
+	[[ ! -f "$bam" ]] && { echo "0"; return 1; }
+	local sz
+	sz=$(stat -c%s "$bam" 2>/dev/null || stat -f%z "$bam" 2>/dev/null || echo "0")
+	echo "$sz"
+	[[ "$sz" -gt "$min_bytes" ]]
+}
+export -f _bam_is_valid
 
 # ==============================================================================
 # GNU PARALLEL HELPER FUNCTIONS
@@ -359,12 +383,20 @@ _init_parallel_worker() {
 	elif [[ -f "$trim_dir/${SRR}_trimmed.fq" ]]; then
 		trimmed1="$trim_dir/${SRR}_trimmed.fq"
 	else
+		# Glob fallback for non-standard paired-end names
 		for f in "$trim_dir"/${SRR}*val_1*.fq* "$trim_dir"/${SRR}*val_1*.gz; do
 			[[ -f "$f" ]] && { trimmed1="$f"; break; }
 		done
-		for f in "$trim_dir"/${SRR}*val_2*.fq* "$trim_dir"/${SRR}*val_2*.gz; do
-			[[ -f "$f" ]] && { trimmed2="$f"; break; }
-		done
+		if [[ -n "$trimmed1" ]]; then
+			for f in "$trim_dir"/${SRR}*val_2*.fq* "$trim_dir"/${SRR}*val_2*.gz; do
+				[[ -f "$f" ]] && { trimmed2="$f"; break; }
+			done
+		else
+			# Single-end glob fallback (matches canonical find_trimmed_fastq)
+			for f in "$trim_dir"/${SRR}*trimmed.fq* "$trim_dir"/${SRR}*trimmed*.gz; do
+				[[ -f "$f" ]] && { trimmed1="$f"; break; }
+			done
+		fi
 	fi
 }
 export -f _init_parallel_worker

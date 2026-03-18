@@ -63,7 +63,7 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 # INPUT FILES AND DATA SOURCES
 # ==============================================================================
 
-gtf_file="inputs/gtf/reference/GPE001970_transcripts.gtf"
+gtf_file="inputs/gtf/reference/GPE001970_genome.gtf"
 
 # FASTA Files for Analysis
 ALL_FASTA_FILES=(

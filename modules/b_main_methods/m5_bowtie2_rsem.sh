@@ -24,8 +24,21 @@ source "$SCRIPT_DIR/shared_utils_method.sh"
 MAX_PARALLEL_SAMPLES="${MAX_PARALLEL_SAMPLES:-2}"
 
 # Threads allocated per RSEM job (auto-calculated from THREADS / MAX_PARALLEL_SAMPLES)
-THREADS_PER_RSEM_JOB="${THREADS_PER_RSEM_JOB:-$((THREADS / MAX_PARALLEL_SAMPLES))}"
+# Memory-aware: RSEM uses ~2-3GB per thread; cap to prevent OOM on constrained systems.
+if [[ -z "${THREADS_PER_RSEM_JOB:-}" ]]; then
+	THREADS_PER_RSEM_JOB=$((THREADS / MAX_PARALLEL_SAMPLES))
+	# Memory guard: estimate available RAM and cap threads so total < 75% of RAM
+	# RSEM uses ~2.5GB per thread on average
+	_rsem_avail_mb=$(_get_available_ram_mb 2>/dev/null || echo 16384)
+	_rsem_usable_mb=$(( _rsem_avail_mb * 75 / 100 ))
+	_rsem_max_threads_per_job=$(( _rsem_usable_mb / 2560 / MAX_PARALLEL_SAMPLES ))
+	[[ $_rsem_max_threads_per_job -lt 1 ]] && _rsem_max_threads_per_job=1
+	[[ $THREADS_PER_RSEM_JOB -gt $_rsem_max_threads_per_job ]] && THREADS_PER_RSEM_JOB=$_rsem_max_threads_per_job
+	unset _rsem_avail_mb _rsem_usable_mb _rsem_max_threads_per_job
+fi
 [[ $THREADS_PER_RSEM_JOB -lt 1 ]] && THREADS_PER_RSEM_JOB=1
+# Safety cap: never exceed total THREADS (edge case with MAX_PARALLEL_SAMPLES=1 and low RAM)
+[[ $THREADS_PER_RSEM_JOB -gt $THREADS ]] && THREADS_PER_RSEM_JOB=$THREADS
 
 # Library strandedness: none (unstranded), forward (sense), reverse (antisense/dUTP)
 # Set to "reverse" for dUTP-based stranded libraries (most modern Illumina RNA-seq)
@@ -95,21 +108,24 @@ _rsem_detect_strandedness() {
 		return 0
 	}
 
-	# Subsample reads for faster strandness detection (~200k reads is sufficient)
+	# Subsample reads for faster strandedness detection (~200k reads is sufficient)
 	# This avoids mapping the entire FASTQ just to detect library type
 	local _sub1="$tmp_dir/sub_R1.fq.gz" _sub2=""
 	local _subsample_lines=800000  # 200k reads × 4 lines per FASTQ record
+	# Use pigz for recompression if available (multi-threaded, ~2-4x faster than gzip)
+	local _recompress="${_SHARED_GZIP_C:-gzip} -1"
+	[[ "${_SHARED_GZIP_C:-gzip}" == "pigz" ]] && _recompress="pigz -1 -p ${_detect_threads:-2}"
 	if [[ "$trimmed1" == *.gz ]]; then
-		${_SHARED_GZIP_DC:-gzip -dc} "$trimmed1" | head -n $_subsample_lines | gzip -1 > "$_sub1"
+		${_SHARED_GZIP_DC:-gzip -dc} "$trimmed1" | head -n $_subsample_lines | $_recompress > "$_sub1"
 	else
-		head -n $_subsample_lines "$trimmed1" | gzip -1 > "$_sub1"
+		head -n $_subsample_lines "$trimmed1" | $_recompress > "$_sub1"
 	fi
 	if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
 		_sub2="$tmp_dir/sub_R2.fq.gz"
 		if [[ "$trimmed2" == *.gz ]]; then
-			${_SHARED_GZIP_DC:-gzip -dc} "$trimmed2" | head -n $_subsample_lines | gzip -1 > "$_sub2"
+			${_SHARED_GZIP_DC:-gzip -dc} "$trimmed2" | head -n $_subsample_lines | $_recompress > "$_sub2"
 		else
-			head -n $_subsample_lines "$trimmed2" | gzip -1 > "$_sub2"
+			head -n $_subsample_lines "$trimmed2" | $_recompress > "$_sub2"
 		fi
 	fi
 
@@ -203,10 +219,13 @@ bowtie2_rsem_pipeline() {
 	done
 
 	[[ -z "$fasta" ]] && { log_error "Usage: --FASTA genes.fa"; return 1; }
+	[[ ! -f "$fasta" ]] && { log_error "FASTA file not found: $fasta"; return 1; }
 	[[ ${#rnaseq_list[@]} -eq 0 ]] && rnaseq_list=("${SRR_COMBINED_LIST[@]}")
 
-	# Convert line endings if dos2unix is available
-	command -v dos2unix >/dev/null 2>&1 && dos2unix "$fasta" 2>/dev/null || true
+	# Convert line endings only if CRLF detected (avoids modifying file timestamp on every run)
+	if command -v dos2unix >/dev/null 2>&1 && grep -qP '\r$' "$fasta" 2>/dev/null; then
+		dos2unix "$fasta" 2>/dev/null || true
+	fi
 
 	local tag="$(basename "${fasta%.*}")"
 	set_fasta_output_dirs "$tag"
@@ -238,7 +257,8 @@ bowtie2_rsem_pipeline() {
 		_rsem_quantify_parallel "$rsem_idx" "$quant_root" rnaseq_list[@] || \
 			log_error "[RSEM] Some parallel quantification jobs failed — check logs before relying on matrix output"
 	else
-		_rsem_quantify_sequential "$rsem_idx" "$quant_root" rnaseq_list[@]
+		_rsem_quantify_sequential "$rsem_idx" "$quant_root" rnaseq_list[@] || \
+			log_error "[RSEM] Some sequential quantification jobs failed — check logs before relying on matrix output"
 	fi
 
 	# GENERATE MATRICES
@@ -329,17 +349,26 @@ _rsem_parallel_worker() {
 	elif [[ -f "$trim_dir/${SRR}_1_val_1.fq" && -f "$trim_dir/${SRR}_2_val_2.fq" ]]; then
 		trimmed1="$trim_dir/${SRR}_1_val_1.fq"
 		trimmed2="$trim_dir/${SRR}_2_val_2.fq"
-	elif [[ -f "$trim_dir/${SRR}_trimmed.fq.gz" ]]; then
-		trimmed1="$trim_dir/${SRR}_trimmed.fq.gz"
-	elif [[ -f "$trim_dir/${SRR}_trimmed.fq" ]]; then
-		trimmed1="$trim_dir/${SRR}_trimmed.fq"
 	else
+		# Glob fallback for non-standard paired-end names (check paired BEFORE single-end,
+		# matching find_trimmed_fastq() priority in shared_utils_preproc.sh)
 		for f in "$trim_dir"/${SRR}*val_1*.fq* "$trim_dir"/${SRR}*val_1*.gz; do
 			[[ -f "$f" ]] && { trimmed1="$f"; break; }
 		done
-		for f in "$trim_dir"/${SRR}*val_2*.fq* "$trim_dir"/${SRR}*val_2*.gz; do
-			[[ -f "$f" ]] && { trimmed2="$f"; break; }
-		done
+		if [[ -n "$trimmed1" ]]; then
+			for f in "$trim_dir"/${SRR}*val_2*.fq* "$trim_dir"/${SRR}*val_2*.gz; do
+				[[ -f "$f" ]] && { trimmed2="$f"; break; }
+			done
+		# Single-end patterns (compressed first, then uncompressed, then glob fallback)
+		elif [[ -f "$trim_dir/${SRR}_trimmed.fq.gz" ]]; then
+			trimmed1="$trim_dir/${SRR}_trimmed.fq.gz"
+		elif [[ -f "$trim_dir/${SRR}_trimmed.fq" ]]; then
+			trimmed1="$trim_dir/${SRR}_trimmed.fq"
+		else
+			for f in "$trim_dir"/${SRR}*trimmed.fq* "$trim_dir"/${SRR}*trimmed*.gz; do
+				[[ -f "$f" ]] && { trimmed1="$f"; break; }
+			done
+		fi
 	fi
 
 	if [[ -z "$trimmed1" ]]; then
@@ -355,6 +384,10 @@ _rsem_parallel_worker() {
 
 	_plog "INFO" "Processing with $threads_per_job threads (strandedness: ${RSEM_STRANDEDNESS:-none})"
 
+	# Skip BAM output when BAMs won't be kept (saves significant disk I/O)
+	local _no_bam_flag=""
+	[[ "${keep_bam_global:-n}" != "y" ]] && _no_bam_flag="--no-bam-output"
+
 	local rsem_log="$out_dir/${SRR}.rsem.log"
 	local rsem_exit_code
 	if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
@@ -365,6 +398,7 @@ _rsem_parallel_worker() {
 			--strandedness "${RSEM_STRANDEDNESS:-none}" \
 			--seed "$RSEM_SEED" \
 			--num-threads "$threads_per_job" \
+			${_no_bam_flag:+"$_no_bam_flag"} \
 			"$trimmed1" "$trimmed2" "$rsem_idx" "$out_dir/$SRR" 2>&1 | tee "$rsem_log"
 		rsem_exit_code=${PIPESTATUS[0]}
 	else
@@ -374,6 +408,7 @@ _rsem_parallel_worker() {
 			--strandedness "${RSEM_STRANDEDNESS:-none}" \
 			--seed "$RSEM_SEED" \
 			--num-threads "$threads_per_job" \
+			${_no_bam_flag:+"$_no_bam_flag"} \
 			"$trimmed1" "$rsem_idx" "$out_dir/$SRR" 2>&1 | tee "$rsem_log"
 		rsem_exit_code=${PIPESTATUS[0]}
 	fi
@@ -391,7 +426,7 @@ _rsem_parallel_worker() {
 		return 1
 	fi
 
-	# Cleanup BAM files unless explicitly kept
+	# Cleanup any residual BAM files (safety net — --no-bam-output should prevent creation)
 	if [[ "${keep_bam_global:-n}" != "y" ]]; then
 		rm -f "$out_dir/${SRR}.transcript.bam" "$out_dir/${SRR}.genome.bam" \
 			  "$out_dir/${SRR}.transcript.sorted.bam" "$out_dir/${SRR}.transcript.sorted.bam.bai"
@@ -571,10 +606,20 @@ _create_manual_rsem_matrix() {
 	fi
 
 	local num_genes
-	num_genes=$(wc -l < "$temp_gene_ids")
+	num_genes=$(awk 'END{print NR}' "$temp_gene_ids")
 
 	for SRR in "${srr_list[@]}"; do
 		if [[ -f "$quant_root/$SRR/${SRR}.genes.results" ]]; then
+			# Validate gene count matches first sample (detect truncated outputs)
+			local sample_genes
+			sample_genes=$(awk 'END{print NR-1}' "$quant_root/$SRR/${SRR}.genes.results")
+			if [[ "$sample_genes" -ne "$num_genes" ]]; then
+				log_warn "[RSEM MATRIX] $SRR has $sample_genes genes (expected $num_genes) — filling with zeros"
+				awk -v n="$num_genes" -v c="$matrix_dir/${SRR}_counts.tmp" \
+					-v t="$matrix_dir/${SRR}_tpm.tmp" -v f="$matrix_dir/${SRR}_fpkm.tmp" \
+					'BEGIN{for(i=0;i<n;i++){print 0>c; print 0>t; print 0>f}}'
+				continue
+			fi
 			# Single awk pass extracts counts, TPM, FPKM simultaneously (was 3 separate passes per sample)
 			awk 'NR>1 {print $5 > counts; print $6 > tpm; print $7 > fpkm}' \
 				counts="$matrix_dir/${SRR}_counts.tmp" \
@@ -602,16 +647,22 @@ _create_manual_rsem_matrix() {
 	local header
 	header=$(printf '\t%s' "${srr_list[@]}")
 
-	# Create count matrix
-	{ printf 'gene_id%s\n' "$header"; paste "$temp_gene_ids" "${count_files[@]}"; } > "$matrix_dir/genes.counts.matrix"
-
-	# Create TPM matrix
-	{ printf 'gene_id%s\n' "$header"; paste "$temp_gene_ids" "${tpm_files[@]}"; } > "$matrix_dir/genes.TPM.not_cross_norm"
-
-	# Create FPKM matrix
-	{ printf 'gene_id%s\n' "$header"; paste "$temp_gene_ids" "${fpkm_files[@]}"; } > "$matrix_dir/genes.FPKM.not_cross_norm"
+	# Build all 3 matrices concurrently — each paste reads temp_gene_ids once in parallel
+	# (background jobs share OS page cache so temp_gene_ids is only loaded from disk once)
+	{ printf 'gene_id%s\n' "$header"; paste "$temp_gene_ids" "${count_files[@]}"; } > "$matrix_dir/genes.counts.matrix" &
+	local _pid_counts=$!
+	{ printf 'gene_id%s\n' "$header"; paste "$temp_gene_ids" "${tpm_files[@]}"; } > "$matrix_dir/genes.TPM.not_cross_norm" &
+	local _pid_tpm=$!
+	{ printf 'gene_id%s\n' "$header"; paste "$temp_gene_ids" "${fpkm_files[@]}"; } > "$matrix_dir/genes.FPKM.not_cross_norm" &
+	local _pid_fpkm=$!
+	local _matrix_fail=0
+	wait $_pid_counts || { log_warn "[RSEM MATRIX] Count matrix assembly failed"; _matrix_fail=1; }
+	wait $_pid_tpm    || { log_warn "[RSEM MATRIX] TPM matrix assembly failed"; _matrix_fail=1; }
+	wait $_pid_fpkm   || { log_warn "[RSEM MATRIX] FPKM matrix assembly failed"; _matrix_fail=1; }
 
 	rm -f "$temp_gene_ids" "$matrix_dir"/*_counts.tmp "$matrix_dir"/*_tpm.tmp "$matrix_dir"/*_fpkm.tmp
+
+	return $_matrix_fail
 }
 
 _prepare_rsem_deseq2_output() {
@@ -650,7 +701,7 @@ _prepare_rsem_deseq2_output() {
 	if [[ -f "$matrix_dir/genes.counts.matrix" ]]; then
 		if [[ ! -f "$gene_count_matrix" || "$matrix_dir/genes.counts.matrix" -nt "$gene_count_matrix" ]]; then
 			log_info "[RSEM MATRIX] Converting count matrix to CSV format..."
-			sed '1s/gene_id/Gene_ID/; s/\t/,/g' "$matrix_dir/genes.counts.matrix" > "$gene_count_matrix"
+			sed '1{s/^gene_id\t/Gene_ID\t/; s/^\t/Gene_ID\t/}; s/\t/,/g' "$matrix_dir/genes.counts.matrix" > "$gene_count_matrix"
 		fi
 	fi
 
@@ -667,14 +718,14 @@ _prepare_rsem_deseq2_output() {
 	if [[ -f "$matrix_dir/genes.TPM.not_cross_norm" ]]; then
 		local tpm_matrix="$deseq2_dir/gene_tpm_matrix.csv"
 		if [[ ! -f "$tpm_matrix" || "$matrix_dir/genes.TPM.not_cross_norm" -nt "$tpm_matrix" ]]; then
-			sed '1s/gene_id/Gene_ID/; s/\t/,/g' "$matrix_dir/genes.TPM.not_cross_norm" > "$tpm_matrix"
+			sed '1{s/^gene_id\t/Gene_ID\t/; s/^\t/Gene_ID\t/}; s/\t/,/g' "$matrix_dir/genes.TPM.not_cross_norm" > "$tpm_matrix"
 		fi
 	fi
 
 	if [[ -f "$matrix_dir/genes.FPKM.not_cross_norm" ]]; then
 		local fpkm_matrix="$deseq2_dir/gene_fpkm_matrix.csv"
 		if [[ ! -f "$fpkm_matrix" || "$matrix_dir/genes.FPKM.not_cross_norm" -nt "$fpkm_matrix" ]]; then
-			sed '1s/gene_id/Gene_ID/; s/\t/,/g' "$matrix_dir/genes.FPKM.not_cross_norm" > "$fpkm_matrix"
+			sed '1{s/^gene_id\t/Gene_ID\t/; s/^\t/Gene_ID\t/}; s/\t/,/g' "$matrix_dir/genes.FPKM.not_cross_norm" > "$fpkm_matrix"
 		fi
 	fi
 
@@ -724,9 +775,9 @@ _create_rsem_summary() {
 			if [[ -f "$quant_root/$SRR/${SRR}.genes.results" ]]; then
 				# Single AWK pass: count total genes, expressed genes, and sum counts
 				local total expressed counts
-				eval "$(awk 'NR>1 { total++; if ($5>0) expr++; s+=$5 }
-					END { printf "total=%d expressed=%d counts=%d", total+0, expr+0, int(s) }
-				' "$quant_root/$SRR/${SRR}.genes.results")"
+				read -r total expressed counts < <(awk 'NR>1 { total++; if ($5>0) expr++; s+=$5 }
+					END { printf "%d %d %d", total+0, expr+0, int(s) }
+				' "$quant_root/$SRR/${SRR}.genes.results")
 
 				# Extract Bowtie2 alignment rate from RSEM log
 				local align_rate="N/A"
@@ -740,7 +791,9 @@ _create_rsem_summary() {
 					fi
 				fi
 
-				echo "$SRR: $expressed/$total expressed genes, $counts expected counts, alignment rate: ${align_rate}%"
+				local _rate_display="${align_rate}"
+				[[ "$align_rate" != "N/A" ]] && _rate_display="${align_rate}%"
+				echo "$SRR: $expressed/$total expressed genes, $counts expected counts, alignment rate: ${_rate_display}"
 			fi
 		done
 
@@ -800,6 +853,10 @@ _rsem_process_single_sample() {
 		return 1
 	fi
 
+	# Skip BAM output when BAMs won't be kept (saves significant disk I/O)
+	local _no_bam_flag=""
+	[[ "${keep_bam_global:-n}" != "y" ]] && _no_bam_flag="--no-bam-output"
+
 	local rsem_log="$out_dir/${SRR}.rsem.log"
 	local rsem_exit_code
 	if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
@@ -811,6 +868,7 @@ _rsem_process_single_sample() {
 			--strandedness "${RSEM_STRANDEDNESS:-none}" \
 			--seed "$RSEM_SEED" \
 			--num-threads "$threads_to_use" \
+			${_no_bam_flag:+"$_no_bam_flag"} \
 			"$trimmed1" "$trimmed2" "$rsem_idx" "$out_dir/$SRR" 2>&1 | tee "$rsem_log"
 		rsem_exit_code=${PIPESTATUS[0]}
 	else
@@ -821,6 +879,7 @@ _rsem_process_single_sample() {
 			--strandedness "${RSEM_STRANDEDNESS:-none}" \
 			--seed "$RSEM_SEED" \
 			--num-threads "$threads_to_use" \
+			${_no_bam_flag:+"$_no_bam_flag"} \
 			"$trimmed1" "$rsem_idx" "$out_dir/$SRR" 2>&1 | tee "$rsem_log"
 		rsem_exit_code=${PIPESTATUS[0]}
 	fi
@@ -841,9 +900,9 @@ _rsem_process_single_sample() {
 
 	log_file_size "$out_dir/${SRR}.genes.results" "RSEM gene results - $SRR"
 
-	# Cleanup BAM files
+	# Cleanup any residual BAM files (safety net — --no-bam-output should prevent creation)
 	if [[ "${keep_bam_global:-n}" != "y" ]]; then
-		log_info "[CLEANUP] Deleting RSEM BAM files for $SRR to save disk space"
+		log_info "[CLEANUP] Removing any residual RSEM BAM files for $SRR"
 		rm -f "$out_dir/${SRR}.transcript.bam" "$out_dir/${SRR}.genome.bam" \
 			  "$out_dir/${SRR}.transcript.sorted.bam" "$out_dir/${SRR}.transcript.sorted.bam.bai"
 	fi

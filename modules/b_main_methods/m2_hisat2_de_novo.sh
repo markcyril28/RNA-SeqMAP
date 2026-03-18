@@ -68,7 +68,7 @@ hisat2_de_novo_pipeline() {
 	#   FR (ligation):       read1 maps predominantly forward
 	#   Unstranded:          ~50/50 split
 	# The result is cached in the index dir so resume runs skip re-detection.
-	local hisat2_strand_opts="" stringtie_strand_opt=""
+	local hisat2_strand_opts="" stringtie_strand_opt="" _detected_strand=""
 	local _strand_cache="$HISAT2_DE_NOVO_INDEX_DIR/detected_strandness.txt"
 
 	if [[ -f "$_strand_cache" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
@@ -86,8 +86,9 @@ hisat2_de_novo_pipeline() {
 		done
 
 		if [[ -n "$_det_t1" ]]; then
-			# Align first sample using the standard output path so the main loop
-			# sees the BAM already exists and skips re-alignment.
+			# Align first sample for strandness detection.  If a stranded
+			# library is detected, the BAM is removed so the main loop
+			# re-aligns with proper --rna-strandness; otherwise it is kept.
 			local _det_dir="$HISAT2_DE_NOVO_ROOT/$_det_srr"
 			local _det_bam="$_det_dir/${_det_srr}_${fasta_tag}_trimmed_mapped_sorted.bam"
 
@@ -96,18 +97,19 @@ hisat2_de_novo_pipeline() {
 				log_step "Aligning $_det_srr for strandness auto-detection"
 				# Pipe directly into samtools sort — eliminates 10-50GB SAM intermediate
 				local _det_summary="$_det_dir/${_det_srr}_${fasta_tag}_detection_summary.txt"
-				local _det_sort_threads=$(( THREADS / 2 ))
-				(( _det_sort_threads < 2 )) && _det_sort_threads=2
+				# Cap sort threads: min(THREADS, 4); at least 1
+				local _det_sort_threads=$(( THREADS < 4 ? THREADS : 4 ))
+				(( _det_sort_threads < 1 )) && _det_sort_threads=1
 				local _det_sort_mem _det_wi_flag=""
 				_det_sort_mem=$(_samtools_sort_mem "$_det_sort_threads" 1)
 				_samtools_has_write_index && _det_wi_flag="--write-index"
 
 				if [[ -n "$_det_t2" && -f "$_det_t2" ]]; then
-					hisat2 -p "$THREADS" -x "$index_prefix" \
+					hisat2 -p "$THREADS" --dta -x "$index_prefix" \
 						-1 "$_det_t1" -2 "$_det_t2" 2>"$_det_summary" \
 						| samtools sort -@ "$_det_sort_threads" -m "$_det_sort_mem" $_det_wi_flag -o "$_det_bam"
 				else
-					hisat2 -p "$THREADS" -x "$index_prefix" \
+					hisat2 -p "$THREADS" --dta -x "$index_prefix" \
 						-U "$_det_t1" 2>"$_det_summary" \
 						| samtools sort -@ "$_det_sort_threads" -m "$_det_sort_mem" $_det_wi_flag -o "$_det_bam"
 				fi
@@ -118,12 +120,21 @@ hisat2_de_novo_pipeline() {
 					rm -f "$_det_bam"
 				elif [[ -z "$_det_wi_flag" ]]; then
 					local _idx_t=$THREADS; (( _idx_t > 4 )) && _idx_t=4
-				samtools index -@ "$_idx_t" "$_det_bam" 2>/dev/null
+					samtools index -@ "$_idx_t" "$_det_bam" 2>/dev/null
 				fi
+				# Symlink detection summary to standard alignment summary name so QC can find it
+				local _std_summary="$_det_dir/${_det_srr}_${fasta_tag}_alignment_summary.txt"
+				[[ -s "$_det_summary" && ! -f "$_std_summary" ]] && ln -sf "$(basename "$_det_summary")" "$_std_summary"
 			fi
 
 			if [[ -f "$_det_bam" ]]; then
 				_m2_infer_strand_from_bam "$_det_bam"
+				# If stranded library detected, remove detection BAM so the main
+				# loop re-aligns this sample with proper --rna-strandness options
+				if [[ -n "$hisat2_strand_opts" ]]; then
+					log_info "[STRANDNESS] Removing detection BAM — will re-align $_det_srr with $hisat2_strand_opts"
+					rm -f "$_det_bam" "${_det_bam}.bai" "${_det_bam}.csi"
+				fi
 			fi
 		else
 			log_warn "[STRANDNESS] No trimmed FASTQs found — running unstranded"
@@ -171,23 +182,25 @@ hisat2_de_novo_pipeline() {
 			mkdir -p "$HISAT2_DIR"
 			local bam="$HISAT2_DIR/${SRR}_${fasta_tag}_trimmed_mapped_sorted.bam"
 
-			if [[ -f "$bam" && -f "${bam}.bai" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
+			if [[ -f "$bam" && ( -f "${bam}.bai" || -f "${bam}.csi" ) && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 				_parallel_log HISAT2_DN "$SRR" INFO "BAM exists - skipping alignment"
 			else
 				_parallel_log HISAT2_DN "$SRR" INFO "Aligning with $threads_per_job threads"
 				# Pipe hisat2 directly into samtools sort — eliminates 10-50GB SAM intermediate per sample
-				local sort_threads=$(( threads_per_job / 2 ))
-				(( sort_threads < 2 )) && sort_threads=2
+				# Cap sort threads at 4: I/O-bound beyond that, and sort memory is per-thread
+				# Cap sort threads: min(threads_per_job, 4); at least 1
+				local sort_threads=$(( threads_per_job < 4 ? threads_per_job : 4 ))
+				(( sort_threads < 1 )) && sort_threads=1
 				local sort_mem _sort_wi_flag=""
 				sort_mem=$(_samtools_sort_mem "$sort_threads" "$parallel_jobs")
 				_samtools_has_write_index && _sort_wi_flag="--write-index"
 				local _align_log="$HISAT2_DIR/${SRR}_${fasta_tag}_alignment_summary.txt"
 				if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
-					hisat2 -p "$threads_per_job" $hisat2_strand_opts -x "$index_prefix" \
+					hisat2 -p "$threads_per_job" --dta $hisat2_strand_opts -x "$index_prefix" \
 						-1 "$trimmed1" -2 "$trimmed2" 2>"$_align_log" \
 						| samtools sort -@ "$sort_threads" -m "$sort_mem" $_sort_wi_flag -o "$bam"
 				else
-					hisat2 -p "$threads_per_job" $hisat2_strand_opts -x "$index_prefix" \
+					hisat2 -p "$threads_per_job" --dta $hisat2_strand_opts -x "$index_prefix" \
 						-U "$trimmed1" 2>"$_align_log" \
 						| samtools sort -@ "$sort_threads" -m "$sort_mem" $_sort_wi_flag -o "$bam"
 				fi
@@ -197,7 +210,9 @@ hisat2_de_novo_pipeline() {
 				[[ ${_ps[0]} -ne 0 ]] && { _parallel_log HISAT2_DN "$SRR" ERROR "HISAT2 failed (exit=${_ps[0]})"; rm -f "$bam"; return ${_ps[0]}; }
 				[[ ${_ps[1]} -ne 0 ]] && { _parallel_log HISAT2_DN "$SRR" ERROR "samtools sort failed"; rm -f "$bam"; return 1; }
 				if [[ -z "$_sort_wi_flag" ]]; then
-					samtools index -@ "$threads_per_job" "$bam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
+					# Cap index threads at 4 — samtools index is I/O-bound
+					local _idx_t=$threads_per_job; (( _idx_t > 4 )) && _idx_t=4
+					samtools index -@ "$_idx_t" "$bam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g'
 					[[ ${PIPESTATUS[0]} -ne 0 ]] && { _parallel_log HISAT2_DN "$SRR" ERROR "samtools index failed"; rm -f "$bam"; return 1; }
 				fi
 			fi
@@ -215,7 +230,7 @@ hisat2_de_novo_pipeline() {
 			fi
 
 			if [[ "$keep_bam_global" != "y" ]]; then
-				rm -f "$bam" "${bam}.bai"
+				rm -f "$bam" "${bam}.bai" "${bam}.csi"
 			fi
 			_parallel_log HISAT2_DN "$SRR" INFO "Completed successfully"
 			return 0
@@ -239,7 +254,10 @@ hisat2_de_novo_pipeline() {
 
 		local par_exit=$?
 		log_info "[PARALLEL] HISAT2 De Novo complete (exit=$par_exit)"
-		[[ $par_exit -ne 0 ]] && log_warn "[PARALLEL] Some jobs failed - check $HISAT2_DE_NOVO_ROOT/parallel_hisat2_denovo.log" && return $par_exit
+		if [[ $par_exit -ne 0 ]]; then
+			log_warn "[PARALLEL] Some jobs failed - check $HISAT2_DE_NOVO_ROOT/parallel_hisat2_denovo.log"
+			return $par_exit
+		fi
 	else
 		# Sequential fallback
 		local _seq_failures=0
@@ -263,45 +281,45 @@ hisat2_de_novo_pipeline() {
 
 			local bam="$HISAT2_DIR/${SRR}_${fasta_tag}_trimmed_mapped_sorted.bam"
 
-			if [[ -f "$bam" && -f "${bam}.bai" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
+			if [[ -f "$bam" && ( -f "${bam}.bai" || -f "${bam}.csi" ) && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 				log_info "[HISAT2 ALIGN] BAM exists for $SRR - skipping alignment"
 			else
 				log_step "Aligning $SRR using HISAT2 De Novo"
 
 				# Pipe hisat2 directly into samtools sort — eliminates 10-50GB SAM intermediate per sample
-				local sort_threads=$(( THREADS / 2 ))
-				(( sort_threads < 2 )) && sort_threads=2
+				# Cap sort threads at 4: I/O-bound beyond that, and sort memory is per-thread
+				# Cap sort threads: min(THREADS, 4); at least 1
+				local sort_threads=$(( THREADS < 4 ? THREADS : 4 ))
+				(( sort_threads < 1 )) && sort_threads=1
 				local sort_mem _sort_wi_flag=""
 				sort_mem=$(_samtools_sort_mem "$sort_threads" 1)
 				_samtools_has_write_index && _sort_wi_flag="--write-index"
 				local _align_log="$HISAT2_DIR/${SRR}_${fasta_tag}_alignment_summary.txt"
 				if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
-					hisat2 -p "${THREADS}" $hisat2_strand_opts -x "$index_prefix" \
+					hisat2 -p "${THREADS}" --dta $hisat2_strand_opts -x "$index_prefix" \
 						-1 "$trimmed1" -2 "$trimmed2" 2>"$_align_log" \
 						| samtools sort -@ "$sort_threads" -m "$sort_mem" $_sort_wi_flag -o "$bam"
 				else
-					hisat2 -p "${THREADS}" $hisat2_strand_opts -x "$index_prefix" \
+					hisat2 -p "${THREADS}" --dta $hisat2_strand_opts -x "$index_prefix" \
 						-U "$trimmed1" 2>"$_align_log" \
 						| samtools sort -@ "$sort_threads" -m "$sort_mem" $_sort_wi_flag -o "$bam"
 				fi
 				local _ps=("${PIPESTATUS[@]}")
 				# Display alignment summary
-				[[ -s "$_align_log" ]] && cat "$_align_log"
+				[[ -s "$_align_log" ]] && sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g' "$_align_log"
 				[[ ${_ps[0]} -ne 0 ]] && { log_error "[HISAT2] Alignment failed for $SRR (exit=${_ps[0]})"; rm -f "$bam"; ((_seq_failures++)) || true; continue; }
 				[[ ${_ps[1]} -ne 0 ]] && { log_error "[SAMTOOLS] sort failed for $SRR"; rm -f "$bam"; ((_seq_failures++)) || true; continue; }
 
 				# Only run separate index if --write-index was not used
 				if [[ -z "$_sort_wi_flag" ]]; then
 					local _idx_t=$THREADS; (( _idx_t > 4 )) && _idx_t=4
-				run_with_space_time_log samtools index -@ "$_idx_t" "$bam" \
+					run_with_space_time_log samtools index -@ "$_idx_t" "$bam" \
 						|| { log_error "[SAMTOOLS] index failed for $SRR"; rm -f "$bam"; ((_seq_failures++)) || true; continue; }
 				fi
 			fi
 
 			# StringTie assembly (de novo - no reference GTF)
-			local out_dir="$STRINGTIE_HISAT2_DE_NOVO_ROOT/$SRR"
-			local out_gtf="$out_dir/${SRR}_${fasta_tag}_trimmed_mapped_sorted_stringtie_assembled_de_novo.gtf"
-			local out_abund="$out_dir/${SRR}_${fasta_tag}_gene_abundances_de_novo.tsv"
+			# out_dir, out_gtf, out_abund already set above
 			mkdir -p "$out_dir"
 
 			if [[ -f "$out_gtf" && -f "$out_abund" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
@@ -316,7 +334,7 @@ hisat2_de_novo_pipeline() {
 
 			# Cleanup BAM files if configured
 			if [[ "$keep_bam_global" != "y" ]]; then
-				rm -f "$bam" "${bam}.bai"
+				rm -f "$bam" "${bam}.bai" "${bam}.csi"
 			fi
 
 			log_info "[STRINGTIE] Done processing $SRR (de novo)"
@@ -326,6 +344,40 @@ hisat2_de_novo_pipeline() {
 			log_warn "[SEQUENTIAL] $_seq_failures sample(s) failed during HISAT2 De Novo processing"
 			return 1
 		fi
+	fi
+
+	# POST-ALIGNMENT QC: batch-extract alignment rates from all summary files in single awk pass
+	# (replaces N separate awk spawns with 1 process for N samples)
+	local _qc_warn=0
+	local _summary_files=()
+	for SRR in "${rnaseq_list[@]}"; do
+		local _sumf="$HISAT2_DE_NOVO_ROOT/$SRR/${SRR}_${fasta_tag}_alignment_summary.txt"
+		[[ -f "$_sumf" ]] && _summary_files+=("$_sumf")
+	done
+	if [[ ${#_summary_files[@]} -gt 0 ]]; then
+		# Single awk pass extracts sample name and overall rate from all summary files
+		# Uses POSIX-compatible FNR==1 pattern (avoids gawk-only BEGINFILE)
+		local _qc_output
+		_qc_output=$(awk '
+			FNR==1 { sample = FILENAME; sub(/.*\//, "", sample); sub(/_[^_]*_alignment_summary\.txt$/, "", sample) }
+			/overall alignment rate/ { gsub(/%.*/, ""); print sample, $NF }
+		' "${_summary_files[@]}" 2>/dev/null) || true
+		while read -r _qc_srr _qc_rate; do
+			[[ -z "$_qc_rate" ]] && continue
+			local _ov_int=${_qc_rate%.*}
+			if (( _ov_int < 50 )); then
+				log_warn "[HISAT2 DN QC] $_qc_srr: Overall alignment ${_qc_rate}% — VERY LOW"
+				((_qc_warn++)) || true
+			elif (( _ov_int < 70 )); then
+				log_warn "[HISAT2 DN QC] $_qc_srr: Overall alignment ${_qc_rate}% — below 70% threshold"
+				((_qc_warn++)) || true
+			fi
+		done <<< "$_qc_output"
+	fi
+	if [[ $_qc_warn -gt 0 ]]; then
+		log_warn "[HISAT2 DN QC] $_qc_warn warning(s) — review sample quality"
+	else
+		log_info "[HISAT2 DN QC] All samples passed alignment rate checks"
 	fi
 
 	log_step "HISAT2 de novo pipeline completed for $fasta_tag"
@@ -343,25 +395,25 @@ hisat2_de_novo_pipeline() {
 # Usage: _m2_infer_strand_from_bam <bam>
 _m2_infer_strand_from_bam() {
 	local bam="$1"
-	local fwd_count rev_count total fwd_frac
+	local fwd_count rev_count total fwd_frac is_paired
 
 	# Single samtools view + awk pass replaces 3 separate samtools calls.
 	# Exclude unmapped (0x4), secondary (0x100), supplementary (0x800) = 0x904
 	# Paired-end: check read1 (0x40) strand via 0x10 flag
 	# Single-end: check overall strand via 0x10 flag
-	local is_paired
+	# Uses POSIX-compatible int(flag/N)%2 instead of gawk-specific and()
 	eval "$(samtools view -F 0x904 "$bam" 2>/dev/null | awk '
 		BEGIN { paired=0; fwd=0; rev=0 }
 		{
 			flag = $2
-			if (and(flag, 0x1)) {
+			if (int(flag/2) % 2) {
 				paired++
-				if (and(flag, 0x40)) {   # read1
-					if (and(flag, 0x10)) rev++
+				if (int(flag/64) % 2) {   # read1 (0x40)
+					if (int(flag/16) % 2) rev++
 					else fwd++
 				}
 			} else {
-				if (and(flag, 0x10)) rev++
+				if (int(flag/16) % 2) rev++
 				else fwd++
 			}
 		}
@@ -376,16 +428,27 @@ _m2_infer_strand_from_bam() {
 	fi
 
 	fwd_frac=$(awk "BEGIN{printf \"%.4f\", ${fwd_count:-0} / $total}")
-	log_info "[STRANDNESS] Read1 forward fraction: $fwd_frac ($total primary alignments)"
+	local _is_pe=$(( ${is_paired:-0} > 0 ? 1 : 0 ))
+	log_info "[STRANDNESS] Read1 forward fraction: $fwd_frac ($total primary alignments, PE=$_is_pe)"
 
 	if awk "BEGIN{exit !($fwd_frac > 0.7)}"; then
 		_detected_strand="FR"
-		hisat2_strand_opts="--rna-strandness FR"
+		# HISAT2 requires FR for paired-end, F for single-end
+		if [[ $_is_pe -eq 1 ]]; then
+			hisat2_strand_opts="--rna-strandness FR"
+		else
+			hisat2_strand_opts="--rna-strandness F"
+		fi
 		stringtie_strand_opt="--fr"
 		log_info "[STRANDNESS] Auto-detected: FR (ligation / forward-stranded)"
 	elif awk "BEGIN{exit !($fwd_frac < 0.3)}"; then
 		_detected_strand="RF"
-		hisat2_strand_opts="--rna-strandness RF"
+		# HISAT2 requires RF for paired-end, R for single-end
+		if [[ $_is_pe -eq 1 ]]; then
+			hisat2_strand_opts="--rna-strandness RF"
+		else
+			hisat2_strand_opts="--rna-strandness R"
+		fi
 		stringtie_strand_opt="--rf"
 		log_info "[STRANDNESS] Auto-detected: RF (dUTP / TruSeq / reverse-stranded)"
 	else

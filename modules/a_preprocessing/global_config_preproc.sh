@@ -16,8 +16,8 @@ export PREPROC_CONFIG_SOURCED="true"
 # IMPORTANT PARAMETERS (tweak here)
 # ==============================================================================
 
-# Total CPU threads available to the pipeline
-THREADS="${THREADS:-12}"
+# Total CPU threads available to the pipeline (auto-detect if not set)
+THREADS="${THREADS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 12)}"
 # Number of parallel jobs (GNU Parallel); THREADS_PER_JOB is auto-calculated
 JOBS="${JOBS:-2}"
 THREADS_PER_JOB="${THREADS_PER_JOB:-$((THREADS / JOBS))}"
@@ -139,7 +139,7 @@ get_trim_params() {
 show_trim_profile() {
 	local srr="$1"
 	local profile="${SRR_TRIM_PROFILE_MAP[$srr]:-$TRIM_PROFILE_DEFAULT}"
-	echo "Trim profile for $srr: $profile"
+	log_info "Trim profile for $srr: $profile"
 }
 
 # Initialize the mapping on source

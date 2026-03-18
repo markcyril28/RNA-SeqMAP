@@ -19,6 +19,7 @@ suppressPackageStartupMessages({
   library(ComplexHeatmap)
   library(circlize)
   library(grid)
+  library(matrixStats)
 })
 
 cat("\n=== STEP 3: Ranking Stability Analysis ===\n\n")
@@ -98,7 +99,6 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
   n_meth <- ncol(rank_matrix)
   rank_range <- matrixStats::rowMaxs(rank_matrix) - matrixStats::rowMins(rank_matrix)
   rank_sd <- sqrt(rowSums((rank_matrix - rank_row_means)^2) / (n_meth - 1))
-  rank_cv <- rank_sd / rank_row_means
   median_rank <- matrixStats::rowMedians(rank_matrix)
 
   # Fractional rank change: max rank shift / total genes
@@ -112,14 +112,25 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
   # For genes not in the original mapping (matched via suffix stripping), use the gene ID
   na_mask <- is.na(display_names)
   if (any(na_mask)) {
-    # Try matching base IDs
-    base_matched <- sub("\\.[0-9]+$", "", matched_genes[na_mask])
+    # Build reverse lookup: strip suffixes from gene_names keys so suffix-stripped
+    # harmonized IDs can find their shortened name (mirrors convert_to_shortened_names logic)
+    gn_keys <- names(gene_names)
+    gn_base <- sub("\\.[0-9]+\\.[0-9]+$", "", gn_keys)
+    gn_base <- sub("\\.[0-9]+$", "", gn_base)
+    reverse_map <- setNames(as.character(gene_names), gn_base)
+    # On duplicates the last value wins, which is acceptable for display names
+
     for (k in which(na_mask)) {
-      base_id <- sub("\\.[0-9]+$", "", matched_genes[k])
+      gene <- matched_genes[k]
+      base_id <- sub("\\.[0-9]+$", "", gene)
       if (base_id %in% names(gene_names)) {
         display_names[k] <- gene_names[base_id]
+      } else if (gene %in% names(reverse_map)) {
+        display_names[k] <- reverse_map[gene]
+      } else if (base_id %in% names(reverse_map)) {
+        display_names[k] <- reverse_map[base_id]
       } else {
-        display_names[k] <- matched_genes[k]
+        display_names[k] <- gene
       }
     }
   }
@@ -227,9 +238,10 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
 
   log2_mean_tpm <- log2(mean_tpm_matrix + 1)
   zscore_grp <- t(scale(t(log2_mean_tpm)))
-  zscore_grp[is.nan(zscore_grp)] <- 0
-  grp_row_mins <- apply(zscore_grp, 1, min, na.rm = TRUE)
-  grp_row_maxs <- apply(zscore_grp, 1, max, na.rm = TRUE)
+  zscore_grp[is.na(zscore_grp)] <- 0
+  # Vectorized: use matrixStats instead of apply() (consistent with lines 100-102)
+  grp_row_mins <- matrixStats::rowMins(zscore_grp, na.rm = TRUE)
+  grp_row_maxs <- matrixStats::rowMaxs(zscore_grp, na.rm = TRUE)
   grp_row_range <- grp_row_maxs - grp_row_mins
   zscore_grp_scaled <- (zscore_grp - grp_row_mins) / ifelse(grp_row_range == 0, 1, grp_row_range) * 10
   zscore_grp_scaled[grp_row_range == 0, ] <- 5.0
@@ -356,7 +368,15 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
 # Save combined flagged genes
 # -----------------------------------------------
 
-all_flagged_genes <- if (length(all_flagged_list) > 0) do.call(rbind, all_flagged_list) else data.frame()
+all_flagged_genes <- if (length(all_flagged_list) > 0) {
+  if (requireNamespace("data.table", quietly = TRUE)) {  # one-off check; not in hot path
+    as.data.frame(data.table::rbindlist(all_flagged_list, use.names = TRUE, fill = TRUE))
+  } else {
+    do.call(rbind, all_flagged_list)
+  }
+} else {
+  data.frame()
+}
 if (nrow(all_flagged_genes) > 0) {
   write.csv(all_flagged_genes,
             file.path(TABLES_DIR, "ranking_instability_flagged.csv"),

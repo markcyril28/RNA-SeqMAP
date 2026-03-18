@@ -16,8 +16,8 @@ export METHOD_CONFIG_SOURCED="true"
 # IMPORTANT PARAMETERS (tweak here)
 # ==============================================================================
 
-# Total CPU threads available to the pipeline
-THREADS="${THREADS:-12}"
+# Total CPU threads available to the pipeline (auto-detect if not set)
+THREADS="${THREADS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 12)}"
 # Base parallel job count; PARALLEL_JOBS inherits this if not set separately
 JOBS="${JOBS:-2}"
 

@@ -22,6 +22,14 @@
 
 set -euo pipefail
 
+# Source logging utilities for consistent pipeline logging (fallback to echo if unavailable)
+source "${BASE_DIR:-$PWD}/modules/logging/logging_utils.sh" 2>/dev/null || {
+    log_info()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] $*"; }
+    log_warn()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [WARN] $*" >&2; }
+    log_error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $*" >&2; }
+    log_step()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [STEP] $*"; }
+}
+
 # ===============================================
 # METHOD CONFIGURATION
 # ===============================================
@@ -46,7 +54,7 @@ case "$STRINGTIE_METHOD" in
         _METHOD_LABEL="M2 De Novo"
         ;;
     *)
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: Unknown STRINGTIE_METHOD='$STRINGTIE_METHOD' (expected M1 or M2)" >&2
+        log_error "Unknown STRINGTIE_METHOD='$STRINGTIE_METHOD' (expected M1 or M2)"
         exit 1
         ;;
 esac
@@ -89,13 +97,13 @@ UTILITIES_DIR="${UTILITIES_DIR:-$SCRIPT_DIR/../../utilities}"
 # Create output directory and logging
 mkdir -p "$OUT_DIR/logs"
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting StringTie Matrix Builder ($_METHOD_LABEL)"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Working directory: $BASE_DIR"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Input directory: $INPUTS_DIR"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Output directory: $OUT_DIR"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Master reference: $MASTER_REFERENCE"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Abundance suffix: $ABUNDANCE_SUFFIX"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gene name column: $GENENAME_COL"
+log_step "Starting StringTie Matrix Builder ($_METHOD_LABEL)"
+log_info "Working directory: $BASE_DIR"
+log_info "Input directory: $INPUTS_DIR"
+log_info "Output directory: $OUT_DIR"
+log_info "Master reference: $MASTER_REFERENCE"
+log_info "Abundance suffix: $ABUNDANCE_SUFFIX"
+log_info "Gene name column: $GENENAME_COL"
 
 # Fixed column indices for count types
 COVERAGE_COL=7
@@ -116,7 +124,7 @@ load_samples_from_csv() {
     local -n srr_to_organ_ref=$3
 
     if [[ ! -d "$csv_dir" ]]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: SRR_csv directory not found: $csv_dir"
+        log_warn "SRR_csv directory not found: $csv_dir"
         return 1
     fi
 
@@ -150,8 +158,8 @@ declare -A SRR_TO_ORGAN=()
 load_samples_from_csv "$SRR_CSV_DIR" SAMPLE_IDS SRR_TO_ORGAN || true
 
 if [[ ${#SAMPLE_IDS[@]} -eq 0 ]]; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: No samples loaded from CSV files"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Expected CSV files in: $SRR_CSV_DIR"
+    log_error "No samples loaded from CSV files"
+    log_info "Expected CSV files in: $SRR_CSV_DIR"
     exit 1
 fi
 
@@ -173,16 +181,16 @@ if [[ -n "${SRR_COMBINED_LIST_STR:-}" ]]; then
         fi
     done
     SAMPLE_IDS=("${FILTERED_SAMPLE_IDS[@]}")
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Filtered to ${#SAMPLE_IDS[@]} configured samples"
+    log_info "Filtered to ${#SAMPLE_IDS[@]} configured samples"
 
     if [[ ${#SAMPLE_IDS[@]} -eq 0 ]]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: No configured samples found in CSV data"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] SRR_COMBINED_LIST_STR entries did not match any SRR_IDs in: $SRR_CSV_DIR"
+        log_error "No configured samples found in CSV data"
+        log_info "SRR_COMBINED_LIST_STR entries did not match any SRR_IDs in: $SRR_CSV_DIR"
         exit 1
     fi
 fi
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Using ${#SAMPLE_IDS[@]} samples"
+log_info "Using ${#SAMPLE_IDS[@]} samples"
 
 # ===============================================
 # FUNCTIONS
@@ -208,7 +216,7 @@ merge_group_counts() {
     local group_name
     group_name=$(get_output_folder_name "$gene_group")
 
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Processing gene group: $gene_group -> Output: $group_name"
+    log_info "Processing gene group: $gene_group -> Output: $group_name"
 
     mkdir -p "$OUT_DIR/$group_name"
 
@@ -230,15 +238,15 @@ merge_group_counts() {
             processed_srrs+=("$srr")
             files_found=$((files_found + 1))
         else
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: File not found: $file_path"
+            log_warn "File not found: $file_path"
         fi
     done
 
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Found $files_found abundance files"
+    log_info "Found $files_found abundance files"
 
     if [[ $files_found -eq 0 ]]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: No abundance files found for gene group '$gene_group'"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Hint: MASTER_REFERENCE='$MASTER_REFERENCE' must match the fasta_tag used during alignment"
+        log_error "No abundance files found for gene group '$gene_group'"
+        log_info "Hint: MASTER_REFERENCE='$MASTER_REFERENCE' must match the fasta_tag used during alignment"
         rm -rf "$tmpdir"
         return 1
     fi
@@ -246,15 +254,15 @@ merge_group_counts() {
     # Extract gene names from reference CSV (first column is Gene_ID)
     # Single awk pass replaces tail|cut pipeline (1 process instead of 2)
     awk -F',' 'NR>1 && NF>0 {print $1}' "${ref_csv}" > "$tmpdir/gene_names.txt" \
-        || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: Failed to extract gene names from $ref_csv"; rm -rf "$tmpdir"; return 1; }
+        || { log_error "Failed to extract gene names from $ref_csv"; rm -rf "$tmpdir"; return 1; }
     local gene_name_count
     gene_name_count=$(wc -l < "$tmpdir/gene_names.txt")
     if [[ "$gene_name_count" -eq 0 ]]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: No genes found in reference CSV: $ref_csv"
+        log_error "No genes found in reference CSV: $ref_csv"
         rm -rf "$tmpdir"
         return 1
     fi
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gene names extracted: $gene_name_count lines."
+    log_info "Gene names extracted: $gene_name_count lines."
 
     # Extract ALL 3 count types (coverage, fpkm, tpm) in a SINGLE awk pass per sample.
     # Replaces 3 separate tail|cut pipelines per sample (was 3×N process spawns, now 1×N).
@@ -285,7 +293,7 @@ merge_group_counts() {
         done
 
         if [[ ${#sample_files[@]} -eq 0 ]]; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: No sample files for $count_type in $gene_group, skipping matrix"
+            log_warn "No sample files for $count_type in $gene_group, skipping matrix"
             continue
         fi
 
@@ -304,7 +312,7 @@ merge_group_counts() {
         local output_geneName_SRR_tsv="$OUT_DIR/$group_name/${group_name}_${count_type}_counts_geneName_SRR${MASTER_SUFFIX}.tsv"
         local output_geneName_Organ_tsv="$OUT_DIR/$group_name/${group_name}_${count_type}_counts_geneName_Organ${MASTER_SUFFIX}.tsv"
 
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Creating SRR + Organ matrices: $(basename "$output_geneName_SRR_tsv")"
+        log_info "Creating SRR + Organ matrices: $(basename "$output_geneName_SRR_tsv")"
 
         printf "%s\n" "${sample_files[@]}" > "$tmpdir/sample_files_list.txt"
 
@@ -312,7 +320,7 @@ merge_group_counts() {
         local matrix_body="$tmpdir/matrix_body_${count_type}.txt"
         python3 "$UTILITIES_DIR/matrix_builder.py" "$tmpdir/gene_names.txt" "$tmpdir/sample_files_list.txt" \
             > "$matrix_body" \
-            || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: matrix_builder.py failed for $group_name"; rm -rf "$tmpdir"; return 1; }
+            || { log_error "matrix_builder.py failed for $group_name"; rm -rf "$tmpdir"; return 1; }
 
         # SRR header + body (use matched_srrs to align with matrix body columns)
         {
@@ -332,11 +340,11 @@ merge_group_counts() {
 
         rm -f "$matrix_body"
         # sample_files are in $tmpdir; cleaned by rm -rf "$tmpdir" at function exit
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Completed $count_type matrix generation"
+        log_info "Completed $count_type matrix generation"
     done
 
     rm -rf "$tmpdir"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Completed processing for $group_name"
+    log_info "Completed processing for $group_name"
 }
 
 # ===============================================
@@ -349,8 +357,8 @@ merge_group_counts() {
 build_full_transcriptome_matrix() {
     local group_name
     group_name=$(get_output_folder_name "$MASTER_REFERENCE")
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ========================================"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Building full-transcriptome matrix: $group_name"
+    log_info "========================================"
+    log_info "Building full-transcriptome matrix: $group_name"
 
     # Collect the UNION of gene IDs from ALL sample abundance files.
     # In de novo mode, StringTie omits zero-coverage transcripts, so any single
@@ -374,7 +382,7 @@ build_full_transcriptome_matrix() {
     done
 
     if [[ "$files_found" -eq 0 ]]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: No abundance files found - skipping full-transcriptome matrix"
+        log_warn "No abundance files found - skipping full-transcriptome matrix"
         rm -f "$tmp_csv"
         return 1
     fi
@@ -387,13 +395,13 @@ build_full_transcriptome_matrix() {
 
     local gene_count
     gene_count=$(( $(wc -l < "$tmp_csv") - 1 ))
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Full transcriptome: $gene_count genes (union from $files_found samples)"
+    log_info "Full transcriptome: $gene_count genes (union from $files_found samples)"
 
     # Reuse merge_group_counts with MASTER_REFERENCE as the gene group name
     if merge_group_counts "$MASTER_REFERENCE" "$tmp_csv"; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Full-transcriptome matrix complete"
+        log_info "Full-transcriptome matrix complete"
     else
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Failed to build full-transcriptome matrix"
+        log_warn "Failed to build full-transcriptome matrix"
     fi
     rm -f "$tmp_csv"
 }
@@ -405,15 +413,15 @@ build_full_transcriptome_matrix() {
 # Centralized gene groups CSV directory
 GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-$SCRIPT_DIR/../../../../inputs/gene_groups_csv}}"
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gene groups CSV directory: $GENE_GROUPS_CSV_DIR"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting count matrix generation for ${#GENE_GROUPS[@]} gene groups"
+log_info "Gene groups CSV directory: $GENE_GROUPS_CSV_DIR"
+log_step "Starting count matrix generation for ${#GENE_GROUPS[@]} gene groups"
 
 # Build full-transcriptome matrix first (enables WGCNA and genome-wide analyses)
 build_full_transcriptome_matrix
 
 for gene_group in "${GENE_GROUPS[@]}"; do
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ========================================"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Processing gene group: $gene_group"
+    log_info "========================================"
+    log_info "Processing gene group: $gene_group"
 
     REF_CSV="${GENE_GROUPS_CSV_DIR}/${gene_group}.csv"
 
@@ -423,19 +431,19 @@ for gene_group in "${GENE_GROUPS[@]}"; do
     fi
 
     if [[ -z "$REF_CSV" || ! -f "$REF_CSV" ]]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Error: Reference CSV not found: ${GENE_GROUPS_CSV_DIR}/${gene_group}.csv, skipping $gene_group"
+        log_error "Reference CSV not found: ${GENE_GROUPS_CSV_DIR}/${gene_group}.csv, skipping $gene_group"
         continue
     fi
 
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Found reference CSV with $(tail -n +2 "$REF_CSV" | grep -c . || true) genes"
+    log_info "Found reference CSV with $(awk 'END{print NR-1}' "$REF_CSV") genes"
 
     if merge_group_counts "$gene_group" "$REF_CSV"; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Successfully processed $gene_group"
+        log_info "Successfully processed $gene_group"
     else
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Failed to process $gene_group"
+        log_warn "Failed to process $gene_group"
     fi
 done
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] ========================================"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] $_METHOD_LABEL matrix generation completed"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Output directory: $OUT_DIR"
+log_info "========================================"
+log_info "$_METHOD_LABEL matrix generation completed"
+log_info "Output directory: $OUT_DIR"

@@ -3,7 +3,7 @@
 # ==============================================================================
 # HPC FULL CONFIG: M4 — Salmon SAF (GPE001970_transcripts)
 # ==============================================================================
-# Purpose: Production post-processing for M4 (Salmon quasi-mapping).
+# Purpose: Production post-processing for M4 (Salmon Selective Alignment).
 #          Uses the full eggplant tissue atlas.
 #
 # Method:

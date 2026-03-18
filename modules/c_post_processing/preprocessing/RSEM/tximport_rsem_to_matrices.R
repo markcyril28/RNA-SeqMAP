@@ -16,6 +16,12 @@ source(file.path(SCRIPT_DIR, "0_shared_config.R"))
 source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
 source(file.path(SCRIPT_DIR, "3_Matrix_Creation_utils.R"))
 
+# Ensure match_gene_ids is available (fallback to standalone utility if not in 1_utility_functions.R)
+if (!exists("match_gene_ids", mode = "function")) {
+  .match_ids_path <- file.path(dirname(SCRIPT_DIR), "utilities", "match_gene_ids.R")
+  if (file.exists(.match_ids_path)) source(.match_ids_path)
+}
+
 # Thin wrapper around shared save_count_matrices() for backward compatibility.
 # Converts the legacy level_suffix (e.g., "_gene_level") to a plain level name.
 save_count_matrix <- function(counts_matrix, output_dir, base_name, master_ref, level_suffix,
@@ -30,12 +36,22 @@ save_count_matrix <- function(counts_matrix, output_dir, base_name, master_ref, 
 # ===============================================
 
 base_dir <- Sys.getenv("BASE_DIR", "")
-QUANT_DIR <- if (nzchar(base_dir)) {
+# Use RSEM_QUANT_ROOT env var (set by setup_method_env) when available;
+# it already includes the fasta_tag as a subdir — no MASTER_REFERENCE suffix needed.
+RSEM_QUANT_ROOT_ENV <- Sys.getenv("RSEM_QUANT_ROOT", unset = "")
+QUANT_DIR_INCLUDES_REF <- nzchar(RSEM_QUANT_ROOT_ENV)
+QUANT_DIR <- if (QUANT_DIR_INCLUDES_REF) {
+  RSEM_QUANT_ROOT_ENV
+} else if (nzchar(base_dir)) {
   file.path(base_dir, "2_ALIGNMENT_RESULTs", "M5_RSEM_Bowtie2", "RSEM_Quant_WD")
 } else {
   "RSEM_Quant_WD"  # fallback for standalone execution
 }
-MATRICES_OUTPUT_DIR <- "count_matrices_from_RSEM_Quant"
+MATRICES_OUTPUT_DIR <- if (nzchar(base_dir)) {
+  file.path(base_dir, "3_POST_PROC", "M5_RSEM_Bowtie2", "count_matrices_from_RSEM_Quant")
+} else {
+  "count_matrices_from_RSEM_Quant"  # relative fallback when called from pushd context
+}
 # Use shared GENE_GROUPS_DIR from 0_shared_config.R (already sourced)
 
 # Toggle to generate both gene-level and isoform-level matrices
@@ -100,7 +116,7 @@ for (level_name in names(processing_levels)) {
   
   cat("Step 1: Locating RSEM", level_config$label, "output files...\n")
   
-  rsem_quant_dir <- file.path(QUANT_DIR, MASTER_REFERENCE)
+  rsem_quant_dir <- if (QUANT_DIR_INCLUDES_REF) QUANT_DIR else file.path(QUANT_DIR, MASTER_REFERENCE)
   
   # Build paths to RSEM files
   files <- file.path(rsem_quant_dir, SAMPLE_IDS, paste0(SAMPLE_IDS, level_config$file_type))
@@ -135,8 +151,8 @@ for (level_name in names(processing_levels)) {
   txi <- tryCatch(
     tximport(files, type = "rsem", txIn = level_config$tx_in, txOut = level_config$tx_out),
     error = function(e) {
-      cat("ERROR: tximport failed for", level_config$label, ":", e$message, "\n")
-      cat("  Check RSEM output files for corruption or format issues\n")
+      message("ERROR: tximport failed for ", level_config$label, ": ", e$message)
+      message("  Check RSEM output files for corruption or format issues")
       return(NULL)
     }
   )
@@ -209,6 +225,10 @@ for (level_name in names(processing_levels)) {
       txi$abundance <- txi$abundance[!zero_length_mask, , drop = FALSE]
       txi$length    <- txi$length[!zero_length_mask, , drop = FALSE]
       cat("  Remaining", entity_type, ":", nrow(txi$counts), "\n")
+      if (nrow(txi$counts) == 0) {
+        cat("  ERROR: All", entity_type, "removed after zero-length filtering — skipping level\n")
+        next
+      }
     }
   }
 
@@ -258,7 +278,17 @@ for (level_name in names(processing_levels)) {
   cat("Step 7: Processing gene groups...\n")
   
   gene_group_files <- list.files(GENE_GROUPS_DIR, pattern = "\\.(csv|txt|tsv)$", recursive = TRUE, full.names = TRUE)
-  
+
+  # Deduplicate by basename — recursive search may find the same gene group in multiple
+  # subdirectories (e.g. gene_sets/ and experimental/Eggplant_V4.1/); keep the first match.
+  if (length(gene_group_files) > 1) {
+    dup_idx <- duplicated(basename(gene_group_files))
+    if (any(dup_idx)) {
+      cat("  Note: removing", sum(dup_idx), "duplicate gene group file(s) by basename\n")
+      gene_group_files <- gene_group_files[!dup_idx]
+    }
+  }
+
   # Filter to only process gene groups specified in GENE_GROUPS_STR (from bash config)
   gene_groups_str <- Sys.getenv("GENE_GROUPS_STR", unset = "")
   if (nzchar(gene_groups_str)) {

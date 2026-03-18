@@ -13,8 +13,15 @@ source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_confi
 cat("\n=== STEP 4: Generating Concordance Report ===\n\n")
 
 # Load all results
+if (!file.exists(HARMONIZED_RDS)) {
+  stop("Harmonized data not found: ", HARMONIZED_RDS, "\n  Run 1_load_matrices.R first.")
+}
+concordance_rds <- file.path(OUTPUT_DIR, "concordance_results.rds")
+if (!file.exists(concordance_rds)) {
+  stop("Concordance results not found: ", concordance_rds, "\n  Run 2_quantification_concordance.R first.")
+}
 data <- readRDS(HARMONIZED_RDS)
-concordance <- readRDS(file.path(OUTPUT_DIR, "concordance_results.rds"))
+concordance <- readRDS(concordance_rds)
 ranking_results <- if (file.exists(file.path(OUTPUT_DIR, "ranking_results.rds"))) {
   readRDS(file.path(OUTPUT_DIR, "ranking_results.rds"))
 } else {
@@ -127,8 +134,12 @@ sp_full[lower.tri(sp_full)] <- NA
 sp_best_idx <- which(sp_full == max(sp_full, na.rm = TRUE), arr.ind = TRUE)
 sp_worst_idx <- which(sp_full == min(sp_full, na.rm = TRUE), arr.ind = TRUE)
 
-sp_best_name <- paste0(rownames(sp_full)[sp_best_idx[1,1]], " & ", colnames(sp_full)[sp_best_idx[1,2]])
-sp_worst_name <- paste0(rownames(sp_full)[sp_worst_idx[1,1]], " & ", colnames(sp_full)[sp_worst_idx[1,2]])
+sp_best_name <- if (nrow(sp_best_idx) > 0) {
+  paste0(rownames(sp_full)[sp_best_idx[1,1]], " & ", colnames(sp_full)[sp_best_idx[1,2]])
+} else { "N/A" }
+sp_worst_name <- if (nrow(sp_worst_idx) > 0) {
+  paste0(rownames(sp_full)[sp_worst_idx[1,1]], " & ", colnames(sp_full)[sp_worst_idx[1,2]])
+} else { "N/A" }
 
 add("#### Interpretation")
 add("")

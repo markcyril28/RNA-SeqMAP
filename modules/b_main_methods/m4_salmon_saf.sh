@@ -69,17 +69,21 @@ salmon_saf_pipeline() {
 		# orphan directory on runs where the index already exists.
 		mkdir -p "$work"
 		log_step "Building decoy-aware Salmon index for $tag"
-		# Single-pass: extract decoy names while copying genome, then prepend transcriptome
-		# (replaces grep|awk + cat which reads genome twice)
-		awk '/^>/{print substr($1,2)}' "$genome" > "$work/decoys.txt"
-		cat "$fasta" "$genome" > "$work/gentrome.fa"
+		# Single-pass: awk processes both files sequentially — prints every line to stdout
+		# (for gentrome) while extracting decoy names from the genome to a side file.
+		# Eliminates the cat subprocess; awk handles both files natively via ARGV.
+		awk 'FNR==NR{print;next} /^>/{print substr($1,2) > d} 1' "$fasta" d="$work/decoys.txt" "$genome" > "$work/gentrome.fa"
 		log_file_size "$work/gentrome.fa" "Gentrome FASTA for Salmon - $tag"
 		log_file_size "$work/decoys.txt" "Decoy list for Salmon - $tag"
+		# Cap index threads at 12: Salmon index build is hash-table construction
+		# with diminishing returns beyond ~12 threads
+		local _idx_threads=$THREADS
+		(( _idx_threads > 12 )) && _idx_threads=12
 		run_with_space_time_log --input "$work" --output "$idx_dir" salmon index \
 			-t "$work/gentrome.fa" \
 			-d "$work/decoys.txt" \
 			-i "$idx_dir" \
-			-k "$SALMON_KMER_SIZE" -p "$THREADS"
+			-k "$SALMON_KMER_SIZE" -p "$_idx_threads"
 		log_file_size "$idx_dir" "Salmon index output - $tag"
 		# Only clean up the temporary gentrome directory if the index was built successfully.
 		# If salmon index failed, versionInfo.json will be absent; keep $work for debugging.
@@ -247,20 +251,22 @@ _create_manual_salmon_matrix() {
 	fi
 
 	# Fallback: discover samples from quant.sf files if SRR list is empty
+	# Single awk extracts parent directory name (avoids N basename+dirname subshells)
 	if [[ ${#srr_list[@]} -eq 0 ]]; then
-		while IFS= read -r _qf; do
-			srr_list+=("$(basename "$(dirname "$_qf")")");
-		done < <(find "$quant_root" -name "quant.sf" 2>/dev/null | sort)
+		mapfile -t srr_list < <(find "$quant_root" -name "quant.sf" 2>/dev/null | awk -F'/' '{print $(NF-1)}' | sort -u)
 	fi
 
 	local temp_gene_ids="$matrix_dir/temp_gene_ids.txt"
 	local temp_counts="$matrix_dir/temp_counts.txt"
 
-	# Single loop: extract gene IDs from first valid sample AND counts from all samples
-	# (was 3 separate loops over srr_list)
+	# Two-pass approach: first find a valid sample to determine gene count,
+	# then build columns for all samples (zero-fill for missing ones).
 	local first_sample=""
 	local _paste_args=()
+	local _header_srrs=()   # Track samples that actually contribute data columns
 	local num_genes=0
+	local _skipped_before_first=()
+
 	for SRR in "${srr_list[@]}"; do
 		if [[ -f "$quant_root/$SRR/quant.sf" ]]; then
 			if [[ -z "$first_sample" ]]; then
@@ -270,16 +276,34 @@ _create_manual_salmon_matrix() {
 					ids="$temp_gene_ids" counts="$matrix_dir/${SRR}_counts.tmp" \
 					"$quant_root/$SRR/quant.sf"
 				num_genes=$(awk 'END{print NR}' "$temp_gene_ids")
+				# Retroactively zero-fill samples that appeared before first valid sample
+				for _prev in "${_skipped_before_first[@]}"; do
+					awk -v n="$num_genes" 'BEGIN{for(i=0;i<n;i++)print 0}' > "$matrix_dir/${_prev}_counts.tmp"
+					_paste_args+=("$matrix_dir/${_prev}_counts.tmp")
+					_header_srrs+=("$_prev")
+				done
+				unset _skipped_before_first
 			else
 				awk 'NR>1 {print int($5 + 0.5)}' "$quant_root/$SRR/quant.sf" > "$matrix_dir/${SRR}_counts.tmp"
 			fi
 			_paste_args+=("$matrix_dir/${SRR}_counts.tmp")
+			_header_srrs+=("$SRR")
 		elif [[ -n "$first_sample" ]]; then
 			# Generate zero-fill without spawning yes+head (pure awk, single process)
 			awk -v n="$num_genes" 'BEGIN{for(i=0;i<n;i++)print 0}' > "$matrix_dir/${SRR}_counts.tmp"
 			_paste_args+=("$matrix_dir/${SRR}_counts.tmp")
+			_header_srrs+=("$SRR")
+		else
+			# Track missing samples before first valid — will be zero-filled retroactively
+			_skipped_before_first+=("$SRR")
 		fi
 	done
+
+	if [[ -z "$first_sample" ]]; then
+		log_warn "[SALMON MATRIX] No valid quant.sf files found — cannot create count matrix"
+	elif [[ ${#_header_srrs[@]} -lt ${#srr_list[@]} ]]; then
+		log_warn "[SALMON MATRIX] ${#_header_srrs[@]}/${#srr_list[@]} samples have quant.sf — missing samples zero-filled"
+	fi
 
 	if [[ -n "$first_sample" ]]; then
 		paste "$temp_gene_ids" "${_paste_args[@]}" > "$temp_counts"
@@ -289,8 +313,8 @@ _create_manual_salmon_matrix() {
 		# matrices are produced by tximport_salmon_to_matrices.R (uses tximport aggregation).
 		# When abundance_estimates_to_matrix.pl is available it applies --gene_trans_map
 		# to produce true gene-level output; this manual path does not.
-		# Single printf header (was N+1 echo calls)
-		{ printf 'transcript_id%s\n' "$(printf '\t%s' "${srr_list[@]}")"; cat "$temp_counts"; } > "$matrix_dir/genes.counts.matrix"
+		# Use _header_srrs (not srr_list) so header columns match data columns exactly
+		{ printf 'transcript_id%s\n' "$(printf '\t%s' "${_header_srrs[@]}")"; cat "$temp_counts"; } > "$matrix_dir/genes.counts.matrix"
 
 		rm -f "$temp_gene_ids" "$temp_counts" "$matrix_dir"/*_counts.tmp
 	fi

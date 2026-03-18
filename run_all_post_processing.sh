@@ -9,11 +9,21 @@ set -o pipefail   # -e/-u omitted intentionally (sourced functions use boolean r
 # SYSTEM RESOURCES
 # ==============================================================================
 
-THREADS=$(nproc)
+THREADS=$(nproc 2>/dev/null || echo 12)
 ENABLE_GPU="FALSE"
 ENABLE_GNU_PARALLEL="TRUE"
 DESIRED_CPU_PER_JOB=1
-AVAILABLE_RAM_GB=24
+
+# Auto-detect available RAM (fallback: 24 GB)
+if [[ -f /proc/meminfo ]]; then
+    AVAILABLE_RAM_GB=$(awk '/MemAvailable/ {printf "%d", $2/1048576}' /proc/meminfo)
+elif command -v sysctl &>/dev/null; then
+    AVAILABLE_RAM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1/1073741824}')
+fi
+AVAILABLE_RAM_GB="${AVAILABLE_RAM_GB:-24}"
+# Floor: ensure at least 4 GB to avoid starving R scripts
+(( AVAILABLE_RAM_GB < 4 )) && AVAILABLE_RAM_GB=4
+
 GPU_VRAM_GB=8
 
 # ==============================================================================
@@ -57,25 +67,35 @@ UTILITIES_DIR="$BASE_DIR/modules/c_post_processing/utilities"
 source "$BASE_DIR/modules/logging/logging_utils.sh"
 source "$UTILITIES_DIR/pipeline_utils.sh"
 
+if [[ ! -d "$ANALYSIS_MODULES_DIR" ]]; then
+    log_warn "Analysis modules directory not found: $ANALYSIS_MODULES_DIR"
+    log_warn "R analysis scripts (Basic_Heatmap, Differential_Expression, etc.) will not run."
+    log_warn "Restore from z_archive/modules/c_post_processing/analysis_modules/ if needed."
+fi
+
 
 #===============================================================================
 # FUNCTIONS
 #===============================================================================
 
+# Associative array for O(1) folder name lookup without subshell spawns.
+# Usage: folder="${_OUTPUT_FOLDERS[$analysis]:-}" instead of folder=$(get_output_folder_name "$analysis")
+declare -A _OUTPUT_FOLDERS=(
+    ["Matrix_Creation"]="0_Matrix_Creation"
+    ["Basic_Heatmap"]="I_Basic_Heatmap"
+    ["Heatmap_with_CV"]="II_Heatmap_with_CV"
+    ["BarGraph"]="III_Bar_Graphs"
+    ["Coexpression_using_WGCNA"]="IV_Coexpression_WGCNA"
+    ["Differential_Expression"]="V_Differential_Expression"
+    ["Gene_Set_Enrichment"]="VI_Gene_Set_Enrichment"
+    ["PCA_Dimensionality_Reduction"]="VII_PCA"
+    ["Sample_Correlation_Clustering"]="VIII_Sample_Clustering"
+    ["Tissue_Specificity"]="IX_Tissue_Specificity"
+)
+
+# Legacy function wrapper (still used by pipeline_utils.sh export)
 get_output_folder_name() {
-    case "$1" in
-        "Matrix_Creation")               echo "0_Matrix_Creation" ;;
-        "Basic_Heatmap")                 echo "I_Basic_Heatmap" ;;
-        "Heatmap_with_CV")               echo "II_Heatmap_with_CV" ;;
-        "BarGraph")                      echo "III_Bar_Graphs" ;;
-        "Coexpression_using_WGCNA")      echo "IV_Coexpression_WGCNA" ;;
-        "Differential_Expression")       echo "V_Differential_Expression" ;;
-        "Gene_Set_Enrichment")           echo "VI_Gene_Set_Enrichment" ;;
-        "PCA_Dimensionality_Reduction")  echo "VII_PCA" ;;
-        "Sample_Correlation_Clustering") echo "VIII_Sample_Clustering" ;;
-        "Tissue_Specificity")            echo "IX_Tissue_Specificity" ;;
-        *)                               echo "" ;;
-    esac
+    echo "${_OUTPUT_FOLDERS[$1]:-}"
 }
 
 #===============================================================================
@@ -113,6 +133,13 @@ log_step "Starting Post-Processing Pipeline (${#PIPELINE_CONFIGS[@]} config(s) e
 _HAS_PARALLEL=false
 command -v parallel &>/dev/null && _HAS_PARALLEL=true
 
+# Pre-compute parallel job count (THREADS and DESIRED_CPU_PER_JOB are set once at top)
+JOBS=1
+if [[ "$ENABLE_GNU_PARALLEL" == "TRUE" ]]; then
+    JOBS=$((THREADS / DESIRED_CPU_PER_JOB))
+    (( JOBS < 1 )) && JOBS=1
+fi
+
 #===============================================================================
 # CONFIG LOOP
 #===============================================================================
@@ -131,9 +158,13 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
 
     # Snapshot error/warning line count so we can report per-config delta
     _err_baseline=0
-    [[ -f "$ERROR_WARN_FILE" ]] && _err_baseline=$(wc -l < "$ERROR_WARN_FILE")
+    [[ -f "$ERROR_WARN_FILE" && -s "$ERROR_WARN_FILE" ]] && _err_baseline=$(wc -l < "$ERROR_WARN_FILE")
 
     MASTER_REFERENCE="${MASTER_REFERENCES[0]}"
+    if [[ ${#MASTER_REFERENCES[@]} -gt 1 ]]; then
+        log_warn "MASTER_REFERENCES has ${#MASTER_REFERENCES[@]} entries but only the first ('$MASTER_REFERENCE') is used."
+        log_warn "Use separate per-reference configs to process multiple references."
+    fi
     [[ "$CLEAR_OUTPUT_FOLDER" == "TRUE" ]] && OVERWRITE_EXISTING="TRUE" || OVERWRITE_EXISTING="FALSE"
     export AVAILABLE_RAM_GB GPU_VRAM_GB OVERWRITE_EXISTING
 
@@ -144,8 +175,12 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
         csv_file="$SRR_CSV_DIR/${dataset}.csv"
         if [[ -f "$csv_file" ]]; then
             _cached=$(parse_srr_csv "$csv_file")
-            _CACHED_SRR_LISTS["$dataset"]="$_cached"
-            mapfile -t -O "${#SRR_COMBINED_LIST[@]}" SRR_COMBINED_LIST <<< "$_cached"
+            if [[ -n "$_cached" ]]; then
+                _CACHED_SRR_LISTS["$dataset"]="$_cached"
+                mapfile -t -O "${#SRR_COMBINED_LIST[@]}" SRR_COMBINED_LIST <<< "$_cached"
+            else
+                log_warn "No valid SRR entries in: $csv_file"
+            fi
         else
             log_warn "SRR CSV not found: $csv_file"
         fi
@@ -157,14 +192,7 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
     [[ ${#GENE_GROUPS[@]} -eq 0 ]]        && { log_error "No gene groups in $CONFIG_FILE"; continue; }
     [[ ${#SRR_COMBINED_LIST[@]} -eq 0 ]]  && { log_error "No SRR samples loaded from $CONFIG_FILE"; continue; }
 
-    # Parallel job count
-    JOBS=1
-    if [[ "$ENABLE_GNU_PARALLEL" == "TRUE" ]]; then
-        JOBS=$((THREADS / DESIRED_CPU_PER_JOB))
-        (( JOBS < 1 )) && JOBS=1
-    fi
-
-    # Clear output folders if requested (batch find+delete instead of per-folder rm)
+    # Clear output folders if requested (rm -rf + mkdir is faster than find -delete on deep trees)
     if [[ "$CLEAR_OUTPUT_FOLDER" == "TRUE" ]]; then
         log_info "Clearing output folders for $MASTER_REFERENCE..."
         _cleared=0
@@ -172,10 +200,11 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
             output_base="$BASE_DIR/3_POST_PROC/$method/Figure_Outputs"
             [[ -d "$output_base" ]] || continue
             for analysis in "${ANALYSES[@]}"; do
-                folder_name=$(get_output_folder_name "$analysis")
+                folder_name="${_OUTPUT_FOLDERS[$analysis]:-}"
                 target="$output_base/$folder_name/$MASTER_REFERENCE"
                 if [[ -n "$folder_name" && -d "$target" ]]; then
-                    find "$target" -mindepth 1 -delete 2>/dev/null || true
+                    rm -rf "$target"
+                    mkdir -p "$target"
                     ((_cleared++)) || true
                 fi
             done
@@ -228,7 +257,7 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
             log_info "Phase 1: Preprocessing (parallel across ${#METHODS[@]} methods)"
             printf '%s\n' "${METHODS[@]}" | parallel \
                 -j "${#METHODS[@]}" \
-                --halt soon,fail=1 \
+                --halt soon,fail=30% \
                 --joblog "$LOG_DIR/parallel_preproc_${dataset}.log" \
                 run_method_preprocessing {} "$MASTER_REFERENCE"
         else
@@ -273,7 +302,7 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
                 export _threads_per_method
                 printf '%s\n' "${METHODS[@]}" | parallel \
                     -j "$_n_methods" \
-                    --halt soon,fail=1 \
+                    --halt soon,fail=30% \
                     --joblog "$LOG_DIR/parallel_heavy_${dataset}.log" \
                     _run_heavy_for_method {} "$MASTER_REFERENCE" "${HEAVY_ANALYSES[@]}"
             else
@@ -303,7 +332,7 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
                 printf '%s\n' "${PARALLEL_TASKS[@]}" | parallel \
                     -j "$JOBS" \
                     --colsep '\t' \
-                    --halt soon,fail=1 \
+                    --halt soon,fail=30% \
                     --joblog "$LOG_DIR/parallel_figures_${dataset}.log" \
                     run_single_analysis {1} "$MASTER_REFERENCE" {2}
             else
@@ -321,7 +350,7 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
     log_step "Config Complete: $(basename "$CONFIG_FILE")"
     log_info "Datasets: ${SRR_DATASETS[*]} | Methods: ${#METHODS[@]} per dataset"
     _err_total=0
-    [[ -f "$ERROR_WARN_FILE" ]] && _err_total=$(wc -l < "$ERROR_WARN_FILE")
+    [[ -f "$ERROR_WARN_FILE" && -s "$ERROR_WARN_FILE" ]] && _err_total=$(wc -l < "$ERROR_WARN_FILE")
     _err_delta=$(( _err_total - _err_baseline ))
     if [[ $_err_delta -gt 0 ]]; then
         log_info "Errors/Warnings this config: $_err_delta (total: $_err_total, see $ERROR_WARN_FILE)"

@@ -5,6 +5,10 @@
 # Note: Logging functions are provided by logging_utils.sh
 #===============================================================================
 
+# Guard against double-sourcing
+[[ "${PIPELINE_UTILS_SOURCED:-}" == "true" ]] && return 0
+export PIPELINE_UTILS_SOURCED="true"
+
 #===============================================================================
 # CSV PARSING
 #===============================================================================
@@ -16,7 +20,7 @@ parse_srr_csv() {
     [[ ! -f "$csv_file" ]] && { log_warn "CSV not found: $csv_file" >&2; return 1; }
     
     while IFS=',' read -r srr_id organ notes || [[ -n "$srr_id" ]]; do
-        [[ "$srr_id" =~ ^#.*$ || "$srr_id" == "SRR_ID" || -z "$srr_id" ]] && continue
+        [[ -z "$srr_id" || "$srr_id" == "#"* || "$srr_id" == "SRR_ID" ]] && continue
         echo "${srr_id}:${organ}"
     done < "$csv_file"
 }
@@ -30,8 +34,11 @@ parse_srr_csv() {
 # Guard: skip if already rebuilt in this process (saves ~100 redundant splits in large runs).
 _rebuild_exported_arrays() {
     [[ "${_ARRAYS_REBUILT:-}" == "$$" ]] && return 0
-    [[ -n "${GENE_GROUPS_STR:-}" ]] && IFS=' ' read -ra GENE_GROUPS <<< "$GENE_GROUPS_STR"
-    [[ -n "${ANALYSES_STR:-}" ]]    && IFS=' ' read -ra ANALYSES    <<< "$ANALYSES_STR"
+    # Save/restore IFS so inline IFS=' ' does not leak into caller's environment.
+    local _saved_ifs="${IFS:-}"
+    [[ -n "${GENE_GROUPS_STR:-}" ]] && { IFS=' ' read -ra GENE_GROUPS <<< "$GENE_GROUPS_STR"; }
+    [[ -n "${ANALYSES_STR:-}" ]]    && { IFS=' ' read -ra ANALYSES    <<< "$ANALYSES_STR"; }
+    IFS="$_saved_ifs"
     _ARRAYS_REBUILT="$$"
 }
 
@@ -146,6 +153,8 @@ setup_method_env() {
     # Export method-specific quant directory so R preprocessing scripts use the exact path
     if [[ "$method" == "M4_Salmon_Saf" ]]; then
         export SALMON_QUANT_ROOT="$BASE_DIR/2_ALIGNMENT_RESULTs/M4_Salmon_Saf/Salmon_Quant/$master_ref"
+    elif [[ "$method" == "M5_RSEM_Bowtie2" ]]; then
+        export RSEM_QUANT_ROOT="$BASE_DIR/2_ALIGNMENT_RESULTs/M5_RSEM_Bowtie2/RSEM_Quant_WD/$master_ref"
     fi
 
     export GENE_GROUPS_DIR="$BASE_DIR/inputs/gene_groups_csv"
@@ -154,9 +163,9 @@ setup_method_env() {
     _rebuild_exported_arrays
 
     # Setup temp config files for R scripts (written to the method's post-proc dir)
-    printf '%s\n' "${GENE_GROUPS[@]}" > ".gene_groups_temp.txt"
-    echo "$master_ref"                > ".master_reference_temp.txt"
-    echo "${OVERWRITE_EXISTING:-FALSE}" > ".overwrite_temp.txt"
+    printf '%s\n' "${GENE_GROUPS[@]}" > ".gene_groups_temp.txt" || { log_error "Failed to write .gene_groups_temp.txt in $method_dir"; popd > /dev/null; return 1; }
+    echo "$master_ref"                > ".master_reference_temp.txt" || { log_error "Failed to write .master_reference_temp.txt in $method_dir"; popd > /dev/null; return 1; }
+    echo "${OVERWRITE_EXISTING:-FALSE}" > ".overwrite_temp.txt" || { log_error "Failed to write .overwrite_temp.txt in $method_dir"; popd > /dev/null; return 1; }
 
     export SRR_COMBINED_LIST_STR="${SRR_COMBINED_LIST_STR:-}"
 
@@ -180,7 +189,9 @@ run_method_preprocessing() {
     # the method-specific 3_Matrix_Creation_*.R script supersedes the tximport step.
     local skip_preprocess=false
     if [[ "$method" =~ ^(M3_STAR_Align|M4_Salmon_Saf|M5_RSEM_Bowtie2)$ ]]; then
-        printf '%s\n' "${ANALYSES[@]}" | grep -q "^Matrix_Creation$" && skip_preprocess=true
+        for _a in "${ANALYSES[@]}"; do
+            [[ "$_a" == "Matrix_Creation" ]] && { skip_preprocess=true; break; }
+        done
     fi
 
     local preprocess_path
@@ -190,12 +201,14 @@ run_method_preprocessing() {
     elif [[ -n "$preprocess_path" && -f "$preprocess_path" ]]; then
         log_info "Running preprocessing: $(basename "$preprocess_path")"
         if [[ "$preprocess_path" == *.R ]]; then
-            run_with_error_capture Rscript "$preprocess_path" || log_error "Failed: preprocessing ($method)"
+            run_with_error_capture Rscript "$preprocess_path" || { log_error "Failed: preprocessing ($method)"; popd > /dev/null; return 1; }
         else
-            run_with_error_capture bash "$preprocess_path" || log_error "Failed: preprocessing ($method)"
+            run_with_error_capture bash "$preprocess_path" || { log_error "Failed: preprocessing ($method)"; popd > /dev/null; return 1; }
         fi
     elif [[ -n "$preprocess_path" ]]; then
         log_warn "Preprocessing script not found: $preprocess_path"
+        popd > /dev/null
+        return 1
     fi
 
     popd > /dev/null

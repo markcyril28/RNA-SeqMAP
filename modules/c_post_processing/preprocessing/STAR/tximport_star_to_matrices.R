@@ -28,10 +28,24 @@ source(file.path(SCRIPT_DIR, "0_shared_config.R"))
 source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
 source(file.path(SCRIPT_DIR, "3_Matrix_Creation_utils.R"))
 
+# Ensure match_gene_ids is available (fallback to standalone utility if not in 1_utility_functions.R)
+if (!exists("match_gene_ids", mode = "function")) {
+  .match_ids_path <- file.path(dirname(SCRIPT_DIR), "utilities", "match_gene_ids.R")
+  if (file.exists(.match_ids_path)) source(.match_ids_path)
+}
+
 # Salmon quant output is in the alignment results directory, NOT post-proc.
 # Path includes MASTER_REFERENCE (= fasta_tag) to isolate per-reference outputs.
-QUANT_DIR     <- file.path("..", "..", "2_ALIGNMENT_RESULTs", "M3_STAR_Align",
-                           MASTER_REFERENCE, "6_salmon", "quant")
+# Use BASE_DIR (absolute path set by run_all_post_processing.sh) when available;
+# fall back to relative path for standalone usage (script runs from 3_POST_PROC/M3_STAR_Align/).
+.base_dir     <- Sys.getenv("BASE_DIR", unset = "")
+QUANT_DIR     <- if (nzchar(.base_dir)) {
+  file.path(.base_dir, "2_ALIGNMENT_RESULTs", "M3_STAR_Align",
+            MASTER_REFERENCE, "6_salmon", "quant")
+} else {
+  file.path("..", "..", "2_ALIGNMENT_RESULTs", "M3_STAR_Align",
+            MASTER_REFERENCE, "6_salmon", "quant")
+}
 MATRICES_DIR  <- "count_matrices_from_STAR"
 # Note: MASTER_REFERENCE is already set by 0_shared_config.R above; no re-assignment needed.
 
@@ -235,7 +249,7 @@ for (level_name in names(processing_levels)) {
                ignoreTxVersion = FALSE, ignoreAfterBar = FALSE)
     }
   }, error = function(e) {
-    cat("ERROR in tximport:", conditionMessage(e), "\n")
+    message("ERROR in tximport: ", conditionMessage(e))
     NULL
   })
 
@@ -244,8 +258,8 @@ for (level_name in names(processing_levels)) {
     next
   }
   if (nrow(txi$counts) == 0 || ncol(txi$counts) == 0) {
-    cat("ERROR: tximport returned empty counts matrix (",
-        nrow(txi$counts), "rows x", ncol(txi$counts), "cols)\n")
+    message("ERROR: tximport returned empty counts matrix (",
+            nrow(txi$counts), " rows x ", ncol(txi$counts), " cols)")
     cat("Skipping level:", level_name, "\n\n")
     next
   }
@@ -254,11 +268,14 @@ for (level_name in names(processing_levels)) {
   cat("Imported:", ncol(txi$counts), "samples,", nrow(txi$counts), entity_type, "\n\n")
 
   # Save full tximport object for DESeq2 (preserves transcript-length offsets)
+  txi_rds_dir <- file.path(MATRICES_DIR, MASTER_REFERENCE, level_name)
+  dir.create(txi_rds_dir, recursive = TRUE, showWarnings = FALSE)
   if (!level_config$tx_out) {
-    txi_rds_dir <- file.path(MATRICES_DIR, MASTER_REFERENCE, level_name)
-    dir.create(txi_rds_dir, recursive = TRUE, showWarnings = FALSE)
     saveRDS(txi, file.path(txi_rds_dir, "tximport_gene_level.rds"))
     cat("Saved tximport RDS for DESeq2: tximport_gene_level.rds\n\n")
+  } else {
+    saveRDS(txi, file.path(txi_rds_dir, "tximport_isoform_level.rds"))
+    cat("Saved tximport RDS for isoform-level DESeq2: tximport_isoform_level.rds\n\n")
   }
 
   # -------------------------------------------------

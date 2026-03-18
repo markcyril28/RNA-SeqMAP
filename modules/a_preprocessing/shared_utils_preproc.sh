@@ -18,6 +18,25 @@ source "$SCRIPT_DIR/global_config_preproc.sh"
 source "$SCRIPT_DIR/../logging/logging_utils.sh"
 
 # ==============================================================================
+# SHARED COMPRESSION DETECTION (preprocessing)
+# ==============================================================================
+# Detect pigz once at module load so download.sh/trimming.sh can use it without
+# spawning `command -v pigz` per sample.  shared_utils_method.sh has its own
+# detection — both export the same variable names so whichever loads first wins.
+if [[ -z "${_SHARED_GZIP_C:-}" ]]; then
+	if command -v pigz &>/dev/null; then
+		_SHARED_HAS_PIGZ="true"
+		_SHARED_GZIP_DC="pigz -dc"
+		_SHARED_GZIP_C="pigz"
+	else
+		_SHARED_HAS_PIGZ="false"
+		_SHARED_GZIP_DC="gzip -dc"
+		_SHARED_GZIP_C="gzip"
+	fi
+	export _SHARED_HAS_PIGZ _SHARED_GZIP_DC _SHARED_GZIP_C
+fi
+
+# ==============================================================================
 # FASTQ FILE DETECTION FUNCTIONS
 # ==============================================================================
 
@@ -117,15 +136,10 @@ detect_read_length() {
 	
 	[[ ! -f "$fastq" ]] && { echo "$default_length"; return 1; }
 	
+	# Use cached pigz detection (set at module load) instead of per-call command -v
 	local decompress_cmd="cat"
 	case "$fastq" in
-		*.gz)
-			if command -v pigz &>/dev/null; then
-				decompress_cmd="pigz -dc -p ${THREADS_PER_JOB:-4}"
-			else
-				decompress_cmd="zcat"
-			fi
-			;;
+		*.gz) decompress_cmd="${_SHARED_GZIP_DC:-zcat}" ;;
 		*.bz2) decompress_cmd="bzcat" ;;
 	esac
 	
@@ -165,14 +179,26 @@ should_use_parallel() {
 
 gzip_trimmed_fastq_files() {
 	log_info "Compressing trimmed FASTQ files in $TRIM_DIR_ROOT..."
-	local _compress_cmd="gzip"
-	if command -v pigz &>/dev/null; then
+	local _compress_cmd="gzip" _parallel_jobs
+	# Use cached pigz detection (set at module load) instead of per-call command -v
+	if [[ "${_SHARED_HAS_PIGZ:-false}" == "true" ]]; then
 		_compress_cmd="pigz -p ${THREADS_PER_JOB:-4}"
-		log_info "Using pigz for multi-threaded compression"
+		_parallel_jobs="${JOBS:-2}"
+		log_info "Using pigz for multi-threaded compression (${_parallel_jobs} jobs x ${THREADS_PER_JOB:-4} threads)"
+	else
+		# gzip is single-threaded: use all available threads as parallel jobs
+		_parallel_jobs="${THREADS:-$(nproc 2>/dev/null || echo 4)}"
+		log_info "Using gzip with ${_parallel_jobs} parallel jobs"
 	fi
+	local _compress_rc=0
+	# No -I {}: lets xargs batch multiple files per invocation (fewer process spawns)
 	find "$TRIM_DIR_ROOT" -type f -name "*.fq" -print0 | \
-		xargs -0 -P "${JOBS:-2}" -I {} $_compress_cmd {} 2>/dev/null || true
-	log_info "Compression completed."
+		xargs -0 -P "$_parallel_jobs" $_compress_cmd 2>/dev/null || _compress_rc=$?
+	if [[ $_compress_rc -ne 0 ]]; then
+		log_warn "Compression finished with errors (exit code: $_compress_rc) — some .fq files may not have been compressed."
+	else
+		log_info "Compression completed successfully."
+	fi
 }
 
 # ==============================================================================
@@ -193,7 +219,7 @@ delete_trimmed_fastq_by_srr_list() {
 		if [[ -d "$trim_dir" ]]; then
 			log_info "Deleting trimmed files for $SRR..."
 			rm -rf "$trim_dir"
-			((deleted_count++))
+			((deleted_count++)) || true
 		else
 			log_warn "Trimmed directory not found for $SRR: $trim_dir"
 		fi
@@ -216,7 +242,7 @@ delete_raw_srr_by_srr_list() {
 		if [[ -d "$raw_dir" ]]; then
 			log_info "Deleting raw files for $SRR..."
 			rm -rf "$raw_dir"
-			((deleted_count++))
+			((deleted_count++)) || true
 		else
 			log_warn "Raw directory not found for $SRR: $raw_dir"
 		fi

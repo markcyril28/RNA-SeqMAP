@@ -25,6 +25,12 @@ source(file.path(SCRIPT_DIR, "0_shared_config.R"))
 source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
 source(file.path(SCRIPT_DIR, "3_Matrix_Creation_utils.R"))
 
+# Ensure match_gene_ids is available (fallback to standalone utility if not in 1_utility_functions.R)
+if (!exists("match_gene_ids", mode = "function")) {
+  .match_ids_path <- file.path(dirname(SCRIPT_DIR), "utilities", "match_gene_ids.R")
+  if (file.exists(.match_ids_path)) source(.match_ids_path)
+}
+
 # Wrapper to adapt the shared save_count_matrices() signature to the call sites
 # below, which pass a level_suffix like "_gene_level".
 save_count_matrix <- function(counts_matrix, output_dir, base_name, master_ref, level_suffix,
@@ -130,6 +136,13 @@ for (level_name in names(processing_levels)) {
   # Otherwise append MASTER_REFERENCE (which equals the fasta_tag in the normal run).
   salmon_quant_dir <- if (QUANT_DIR_INCLUDES_REF) QUANT_DIR else file.path(QUANT_DIR, MASTER_REFERENCE)
 
+  if (!dir.exists(salmon_quant_dir)) {
+    cat("ERROR: Salmon quantification directory not found:", salmon_quant_dir, "\n")
+    cat("Run the M4 Salmon SAF alignment stage first, or check SALMON_QUANT_ROOT / MASTER_REFERENCE.\n")
+    cat("Skipping this level...\n\n")
+    next
+  }
+
   # Build paths to Salmon quant.sf files
   files <- file.path(salmon_quant_dir, SAMPLE_IDS, "quant.sf")
   names(files) <- SAMPLE_IDS
@@ -172,7 +185,9 @@ for (level_name in names(processing_levels)) {
     Sys.getenv("GENE_TRANS_MAP_FILE", unset = ""),
     file.path(INPUT_FASTAS_DIR, "mapping", paste0(MASTER_REFERENCE, ".fa.gene_trans_map")),
     file.path(INPUT_FASTAS_DIR, "mapping", paste0(MASTER_REFERENCE, ".fasta.gene_trans_map")),
-    file.path(INPUT_FASTAS_DIR, "fasta", paste0(MASTER_REFERENCE, ".fa.gene_trans_map"))
+    file.path(INPUT_FASTAS_DIR, "fasta", paste0(MASTER_REFERENCE, ".fa.gene_trans_map")),
+    file.path(INPUT_FASTAS_DIR, "fasta", "reference_genomes", paste0(MASTER_REFERENCE, ".fa.gene_trans_map")),
+    file.path(INPUT_FASTAS_DIR, "fasta", "reference_genomes", paste0(MASTER_REFERENCE, ".fasta.gene_trans_map"))
   )
 
   tx2gene_file <- NULL
@@ -212,15 +227,38 @@ for (level_name in names(processing_levels)) {
     # This correctly recomputes gene-level TPM (not a simple rowsum of per-transcript TPMs)
     # and computes the isoform-usage-weighted effective length required by DESeq2 offsets.
     cat("  Importing at transcript level and aggregating to genes via tximport...\n")
-    txi <- tximport(files, type = "salmon",
-                    txIn = TRUE, txOut = FALSE,
-                    tx2gene = tx2gene,
-                    ignoreTxVersion = FALSE, ignoreAfterBar = FALSE)
+    txi <- tryCatch(
+      tximport(files, type = "salmon",
+               txIn = TRUE, txOut = FALSE,
+               tx2gene = tx2gene,
+               ignoreTxVersion = FALSE, ignoreAfterBar = FALSE),
+      error = function(e) {
+        message("ERROR: tximport failed for ", level_config$label, ": ", conditionMessage(e))
+        NULL
+      }
+    )
   } else {
     # Isoform-level: no tx2gene needed
     cat("  Importing at transcript level...\n")
-    txi <- tximport(files, type = "salmon", txIn = TRUE, txOut = TRUE,
-                   ignoreTxVersion = FALSE, ignoreAfterBar = FALSE)
+    txi <- tryCatch(
+      tximport(files, type = "salmon", txIn = TRUE, txOut = TRUE,
+               ignoreTxVersion = FALSE, ignoreAfterBar = FALSE),
+      error = function(e) {
+        message("ERROR: tximport failed for ", level_config$label, ": ", conditionMessage(e))
+        NULL
+      }
+    )
+  }
+
+  if (is.null(txi)) {
+    cat("Skipping level:", level_name, "\n\n")
+    next
+  }
+  if (nrow(txi$counts) == 0 || ncol(txi$counts) == 0) {
+    message("ERROR: tximport returned empty counts matrix (",
+            nrow(txi$counts), " rows x ", ncol(txi$counts), " cols)")
+    cat("Skipping level:", level_name, "\n\n")
+    next
   }
 
   entity_type <- if (level_config$tx_out) "transcripts" else "genes"
@@ -332,6 +370,16 @@ for (level_name in names(processing_levels)) {
   cat("Step 7: Processing gene groups...\n")
 
   gene_group_files <- list.files(GENE_GROUPS_DIR, pattern = "\\.(csv|txt|tsv)$", recursive = TRUE, full.names = TRUE)
+
+  # Deduplicate by basename — recursive search may find the same gene group in multiple
+  # subdirectories (e.g. gene_sets/ and experimental/Eggplant_V4.1/); keep the first match.
+  if (length(gene_group_files) > 1) {
+    dup_idx <- duplicated(basename(gene_group_files))
+    if (any(dup_idx)) {
+      cat("  Note: removing", sum(dup_idx), "duplicate gene group file(s) by basename\n")
+      gene_group_files <- gene_group_files[!dup_idx]
+    }
+  }
 
   # Filter to only process gene groups specified in GENE_GROUPS_STR (from bash config)
   gene_groups_str <- Sys.getenv("GENE_GROUPS_STR", unset = "")

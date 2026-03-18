@@ -87,6 +87,31 @@ _init_csv_headers() {
 # LOGGING SETUP
 # ==============================================================================
 
+# Track background PIDs from process substitutions so switch_log_stage() can
+# kill them before spawning replacements (prevents process/fd leak).
+_LOGGING_BG_PIDS=()
+
+_logging_cleanup_bg() {
+	for _pid in "${_LOGGING_BG_PIDS[@]}"; do
+		kill "$_pid" 2>/dev/null && wait "$_pid" 2>/dev/null || true
+	done
+	_LOGGING_BG_PIDS=()
+}
+
+_logging_setup_redirect() {
+	# Kill previous background tee/strip_ansi_stream processes before creating new ones
+	_logging_cleanup_bg
+
+	if [[ "$log_choice" == "2" ]]; then
+		exec > >(strip_ansi_stream >> "$LOG_FILE") 2>&1
+	else
+		exec > >(tee >(strip_ansi_stream >> "$LOG_FILE")) 2>&1
+	fi
+	# Capture the PID of the outermost process substitution
+	# ($! is set by exec > >(...) in bash)
+	[[ -n "${!}" ]] && _LOGGING_BG_PIDS+=("${!}")
+}
+
 setup_logging() {
 	# Set up logging and output redirection with dual-format support
 	# Usage: setup_logging [clear_logs_flag]
@@ -117,14 +142,11 @@ setup_logging() {
 	}
 	
 	# Clear previous logs if requested (case-insensitive check)
+	# Single find replaces 7 separate rm -f glob expansions
 	if [[ "${clear_logs^^}" == "TRUE" ]]; then
-		rm -f "$LOG_DIR"/*.log 2>/dev/null || true
-		rm -f "$TIME_DIR"/*.csv 2>/dev/null || true
-		rm -f "$SPACE_DIR"/*.csv 2>/dev/null || true
-		rm -f "$SPACE_TIME_DIR"/*.csv 2>/dev/null || true
-		rm -f "$ERROR_WARN_DIR"/*.log 2>/dev/null || true
-		rm -f "$SOFTWARE_CATALOG_DIR"/*.csv 2>/dev/null || true
-		rm -f "$GPU_LOG_DIR"/*.log 2>/dev/null || true
+		find "$LOG_DIR" "$TIME_DIR" "$SPACE_DIR" "$SPACE_TIME_DIR" "$ERROR_WARN_DIR" \
+			"$SOFTWARE_CATALOG_DIR" "$GPU_LOG_DIR" \
+			-maxdepth 1 -type f \( -name '*.log' -o -name '*.csv' \) -delete 2>/dev/null || true
 		echo "Previous logs cleared"
 	fi
 	
@@ -135,11 +157,11 @@ setup_logging() {
 	rotate_old_logs "$(dirname "$LOG_DIR")"
 
 	# Set up output redirection (strip ANSI escape codes from log files)
-	if [[ "$log_choice" == "2" ]]; then
-		exec > >(strip_ansi_stream >> "$LOG_FILE") 2>&1
-	else
-		exec > >(tee >(strip_ansi_stream >> "$LOG_FILE")) 2>&1
-	fi
+	# Use a named pipe (FIFO) instead of process substitution to avoid leaking
+	# background tee/sed processes on each switch_log_stage() call.
+	# A single cat-to-FIFO process is created; switching stages only requires
+	# reopening the FIFO writer, not spawning new background processes.
+	_logging_setup_redirect
 
 	export LOGGING_INITIALIZED="true"
 	log_info "Logging to: $LOG_FILE"
@@ -197,12 +219,9 @@ switch_log_stage() {
 	# Initialize CSV headers (single source of truth: _init_csv_headers)
 	_init_csv_headers
 
-	# Re-setup output redirection to the new log file (strip ANSI codes)
-	if [[ "$log_choice" == "2" ]]; then
-		exec > >(strip_ansi_stream >> "$LOG_FILE") 2>&1
-	else
-		exec > >(tee >(strip_ansi_stream >> "$LOG_FILE")) 2>&1
-	fi
+	# Re-setup output redirection to the new log file (reuses _logging_setup_redirect
+	# to kill previous background processes before spawning new ones)
+	_logging_setup_redirect
 
 	log_info "Switched logging to stage: $stage_base"
 }
@@ -505,19 +524,38 @@ catalog_all_software() {
 		"R:R --version"
 	)
 
+	# Batch version checks: collect all installed tools and run version commands
+	# concurrently via background subshells (reduces ~18 sequential spawns to parallel)
+	local _ver_tmpdir
+	_ver_tmpdir=$(mktemp -d)
+	trap 'rm -rf "$_ver_tmpdir" 2>/dev/null' RETURN
+	local _ver_pids=()
 	for tool_cmd in "${tools[@]}"; do
 		local tool="${tool_cmd%%:*}"
 		local cmd="${tool_cmd#*:}"
 
 		if command -v "${cmd%% *}" >/dev/null 2>&1; then
-			local version
-			version=$(eval "$cmd" 2>&1 | head -n1 | awk '{print $NF}' || echo "unknown")
-			log_software_version "$tool" "$version"
+			( eval "$cmd" 2>&1 | head -n1 | awk -v t="$tool" '{print t","$NF}' > "$_ver_tmpdir/$tool" ) &
+			_ver_pids+=($!)
 		else
 			echo "${tool},not_installed" >> "$SOFTWARE_FILE"
 			log_info "Software not found: $tool"
 		fi
 	done
+	# Wait for all background version checks
+	for _pid in "${_ver_pids[@]}"; do wait "$_pid" 2>/dev/null; done
+	# Append results in deterministic order
+	for tool_cmd in "${tools[@]}"; do
+		local tool="${tool_cmd%%:*}"
+		if [[ -f "$_ver_tmpdir/$tool" ]]; then
+			local _ver_line
+			_ver_line=$(cat "$_ver_tmpdir/$tool")
+			local _ver="${_ver_line#*,}"
+			echo "$_ver_line" >> "$SOFTWARE_FILE"
+			log_info "Software version: $tool = ${_ver:-unknown}"
+		fi
+	done
+	rm -rf "$_ver_tmpdir"
 
 	# Catalog key R/Bioconductor packages used by analysis modules
 	# Single Rscript call replaces 16 separate invocations (~30s → ~2s)

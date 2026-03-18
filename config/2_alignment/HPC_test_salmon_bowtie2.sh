@@ -63,8 +63,10 @@ export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 # INPUT FILES AND DATA SOURCES
 # ==============================================================================
 
+gtf_file="inputs/gtf/reference/GPE001970_genome.gtf"
+
+# Genome file used as decoy for Salmon SAF (M4)
 decoy="inputs/fasta/experimental/TEST.fasta"
-gtf_file="inputs/gtf/reference/GPE001970_transcripts.gtf"
 
 # FASTA Files for Analysis (transcripts, required for M4 and M5)
 ALL_FASTA_FILES=(

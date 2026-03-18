@@ -154,8 +154,10 @@ load_m2_tpm <- function() {
       next
     }
     # Map STRG.N -> reference gene ID via the Reference column
+    # Filter out unmapped de novo transcripts (Reference == "." or "-" or empty)
     gene_ids <- sub("\\.[0-9]+$", "", df$Reference)
-    agg <- tapply(df$TPM, gene_ids, sum, na.rm = TRUE)
+    valid <- nzchar(gene_ids) & !gene_ids %in% c(".", "-")
+    agg <- tapply(df$TPM[valid], gene_ids[valid], sum, na.rm = TRUE)
     tpm_list[[srr]] <- agg
   }
 
@@ -199,6 +201,16 @@ load_m3_tpm <- function() {
 
   sample_dirs <- list.dirs(quant_base, recursive = FALSE, full.names = TRUE)
   sample_dirs <- sample_dirs[grepl("^SRR", basename(sample_dirs))]
+
+  # Tissue-specific fallback: quant/{tissue}/{SRR}/quant.sf layout
+  if (length(sample_dirs) == 0) {
+    tissue_dirs <- list.dirs(quant_base, recursive = FALSE, full.names = TRUE)
+    for (td in tissue_dirs) {
+      sub_dirs <- list.dirs(td, recursive = FALSE, full.names = TRUE)
+      sub_dirs <- sub_dirs[grepl("^SRR", basename(sub_dirs))]
+      sample_dirs <- c(sample_dirs, sub_dirs)
+    }
+  }
 
   if (length(sample_dirs) == 0) {
     cat("[M3] No sample directories found\n")
@@ -271,12 +283,18 @@ load_m4_tpm <- function() {
 
   if (length(tpm_list) == 0) {
     # Fallback: try pre-built TPM matrix from tximport
-    tpm_file <- file.path(POST_PROC_BASE, method,
-                          "count_matrices_from_Salmon_Quant", ref_dir,
-                          "deseq2_input", "gene_tpm_matrix.csv")
-    if (file.exists(tpm_file)) {
+    # tximport_salmon_to_matrices.R saves as {prefix}_tpm_Gene_ID_from_{ref}_gene_level.tsv
+    tpm_search_base <- file.path(POST_PROC_BASE, method,
+                                 "count_matrices_from_Salmon_Quant", ref_dir)
+    tpm_files <- list.files(tpm_search_base, pattern = "_tpm_Gene_ID_.*\\.tsv$",
+                            recursive = TRUE, full.names = TRUE)
+    if (length(tpm_files) > 0) {
+      tpm_file <- tpm_files[1]
       cat("[M4] Using pre-built TPM matrix:", tpm_file, "\n")
-      df <- if (.use_dt) as.data.frame(data.table::fread(tpm_file)) else read.csv(tpm_file, check.names = FALSE)
+      df <- if (.use_dt) as.data.frame(data.table::fread(tpm_file)) else {
+        read.table(tpm_file, header = TRUE, sep = "\t", stringsAsFactors = FALSE,
+                   check.names = FALSE)
+      }
       rownames(df) <- df[[1]]; df <- df[, -1, drop = FALSE]
       return(as.matrix(df))
     }
@@ -343,15 +361,28 @@ load_m5_tpm <- function() {
       cat("[M5] TPM matrix not found\n")
       return(NULL)
     }
-    df <- read.csv(tpm_file, row.names = 1, check.names = FALSE)
+    df <- if (.use_dt) {
+      as.data.frame(data.table::fread(tpm_file, header = TRUE), check.names = FALSE)
+    } else {
+      read.csv(tpm_file, row.names = 1, check.names = FALSE)
+    }
+    if (.use_dt) { rownames(df) <- df[[1]]; df <- df[, -1, drop = FALSE] }
     # Strip transcript suffix to get gene-level IDs
     rownames(df) <- sub("\\.[0-9]+$", "", rownames(df))
     # Aggregate duplicates (same gene from different transcripts)
     if (any(duplicated(rownames(df)))) {
       gene_names <- rownames(df)
-      df_agg <- aggregate(as.matrix(df), by = list(gene = gene_names), FUN = sum)
-      rownames(df_agg) <- df_agg$gene
-      df_agg$gene <- NULL
+      if (.use_dt) {
+        dt <- data.table::as.data.table(as.matrix(df))
+        dt[, gene := gene_names]
+        agg <- dt[, lapply(.SD, sum), by = gene]
+        df_agg <- as.data.frame(agg[, -1, with = FALSE])
+        rownames(df_agg) <- agg$gene
+      } else {
+        df_agg <- aggregate(as.matrix(df), by = list(gene = gene_names), FUN = sum)
+        rownames(df_agg) <- df_agg$gene
+        df_agg$gene <- NULL
+      }
       df <- df_agg
     }
     cat("[M5] Loaded:", nrow(df), "genes x", ncol(df), "samples (CSV)\n")
@@ -359,8 +390,13 @@ load_m5_tpm <- function() {
   }
 
   # TSV format: gene_id\tSRR1\tSRR2\t...
-  df <- read.table(tpm_file, header = TRUE, sep = "\t", row.names = 1,
-                   stringsAsFactors = FALSE, check.names = FALSE)
+  df <- if (.use_dt) {
+    .tmp <- as.data.frame(data.table::fread(tpm_file, header = TRUE, sep = "\t"))
+    rownames(.tmp) <- .tmp[[1]]; .tmp[, -1, drop = FALSE]
+  } else {
+    read.table(tpm_file, header = TRUE, sep = "\t", row.names = 1,
+               stringsAsFactors = FALSE, check.names = FALSE)
+  }
 
   # Handle duplicate sample columns (e.g., same SRR from multiple datasets)
   if (any(duplicated(colnames(df)))) {
@@ -386,9 +422,17 @@ load_m5_tpm <- function() {
   rownames(df) <- sub("\\.[0-9]+$", "", rownames(df))
   if (any(duplicated(rownames(df)))) {
     gene_names <- rownames(df)
-    df_agg <- aggregate(as.matrix(df), by = list(gene = gene_names), FUN = sum)
-    rownames(df_agg) <- df_agg$gene
-    df_agg$gene <- NULL
+    if (.use_dt) {
+      dt <- data.table::as.data.table(as.matrix(df))
+      dt[, gene := gene_names]
+      agg <- dt[, lapply(.SD, sum), by = gene]
+      df_agg <- as.data.frame(agg[, -1, with = FALSE])
+      rownames(df_agg) <- agg$gene
+    } else {
+      df_agg <- aggregate(as.matrix(df), by = list(gene = gene_names), FUN = sum)
+      rownames(df_agg) <- df_agg$gene
+      df_agg$gene <- NULL
+    }
     df <- df_agg
   }
 
@@ -409,7 +453,9 @@ loader_map <- list(
 )
 
 tpm_matrices <- list()
-stats_list <- list()  # pre-allocate list; single do.call(rbind) at end
+# Pre-allocate stats list to avoid O(n^2) list growth
+stats_list <- vector("list", length(CONCORDANCE_METHODS))
+stats_idx <- 0L
 
 for (method in CONCORDANCE_METHODS) {
   cat("\nLoading", method, "...\n")
@@ -426,7 +472,8 @@ for (method in CONCORDANCE_METHODS) {
 
   if (!is.null(mat) && nrow(mat) > 0 && ncol(mat) > 0) {
     tpm_matrices[[method]] <- mat
-    stats_list[[length(stats_list) + 1]] <- data.frame(
+    stats_idx <- stats_idx + 1L
+    stats_list[[stats_idx]] <- data.frame(
       method = method,
       short_name = get_short_name(method),
       n_genes_raw = nrow(mat),
@@ -437,7 +484,12 @@ for (method in CONCORDANCE_METHODS) {
     cat("  [WARN] No data loaded for", method, "\n")
   }
 }
-method_stats <- do.call(rbind, stats_list)
+stats_list <- stats_list[seq_len(stats_idx)]
+method_stats <- if (.use_dt) {
+  as.data.frame(data.table::rbindlist(stats_list, use.names = TRUE, fill = TRUE))
+} else {
+  do.call(rbind, stats_list)
+}
 
 if (length(tpm_matrices) < 2) {
   stop("Need at least 2 methods with data for concordance analysis. Found: ",
@@ -459,9 +511,14 @@ cat("\n--- Harmonizing gene IDs ---\n")
 for (method in names(tpm_matrices)) {
   mat <- tpm_matrices[[method]]
   rn <- rownames(mat)
-  # Only strip if IDs look like they have transcript suffixes (SMEL5_XXgXXXXXX.N)
-  if (any(grepl("^SMEL[0-9].*\\.[0-9]+$", rn))) {
+  # Only strip if IDs look like they have transcript suffixes
+  # Handles both GPE001970 (SMEL5_XXgXXXXXX.N) and Eggplant_V4.1 (Sme2.5_XXgXXXXXX.N)
+  if (any(grepl("^(SMEL|Sme)[0-9].*\\.[0-9]+$", rn))) {
+    # Two-round suffix stripping to handle double-suffixed IDs
+    # (e.g., SMEL4.1_06g023900.1.01 -> SMEL4.1_06g023900.1 -> SMEL4.1_06g023900)
+    # Matches the two-round logic in match_gene_ids() from 1_utility_functions.R
     new_rn <- sub("\\.[0-9]+$", "", rn)
+    new_rn <- sub("\\.[0-9]+$", "", new_rn)
     if (any(duplicated(new_rn))) {
       # Aggregate duplicates by summing — use data.table when available for speed
       if (.use_dt) {
@@ -526,9 +583,13 @@ for (method in names(tpm_matrices)) {
       ncol(tpm_matrices[[method]]), "\n")
 }
 
-# Update stats with harmonized counts
-method_stats$n_genes_harmonized <- sapply(names(tpm_matrices), function(m) nrow(tpm_matrices[[m]]))[method_stats$method]
-method_stats$n_samples_harmonized <- sapply(names(tpm_matrices), function(m) ncol(tpm_matrices[[m]]))[method_stats$method]
+# Update stats with harmonized counts (only for methods that loaded successfully)
+method_stats$n_genes_harmonized <- sapply(method_stats$method, function(m) {
+  if (!is.null(tpm_matrices[[m]])) nrow(tpm_matrices[[m]]) else NA_integer_
+})
+method_stats$n_samples_harmonized <- sapply(method_stats$method, function(m) {
+  if (!is.null(tpm_matrices[[m]])) ncol(tpm_matrices[[m]]) else NA_integer_
+})
 
 # -----------------------------------------------
 # Filter lowly-expressed genes
@@ -557,6 +618,10 @@ for (method in names(tpm_matrices)) {
 }
 
 cat("  Final gene count:", length(filtered_genes), "\n")
+
+# Free intermediate objects before saving (prevents memory bloat during concordance analysis)
+rm(gene_sets, sample_sets, expressed_genes_per_method, expressed_union)
+gc(verbose = FALSE)
 
 # -----------------------------------------------
 # Save harmonized data

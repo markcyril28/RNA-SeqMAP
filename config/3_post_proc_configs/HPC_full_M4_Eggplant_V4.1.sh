@@ -3,7 +3,7 @@
 # ==============================================================================
 # HPC FULL CONFIG: M4 — Salmon SAF (Eggplant_V4.1_transcripts.function)
 # ==============================================================================
-# Purpose: Production post-processing for M4 (Salmon quasi-mapping).
+# Purpose: Production post-processing for M4 (Salmon Selective Alignment).
 #          Uses the full eggplant tissue atlas.
 #
 # Method:

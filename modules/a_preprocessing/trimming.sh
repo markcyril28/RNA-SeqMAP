@@ -27,12 +27,9 @@ MINLEN="${MINLEN:-36}"
 SW_SIZE="${SW_SIZE:-4}"
 SW_QUAL="${SW_QUAL:-20}"
 
-# Cache pigz availability once at module load (avoids repeated command -v spawns per SRR)
-if command -v pigz &>/dev/null; then
-	_TRIMMING_HAS_PIGZ="true"
-else
-	_TRIMMING_HAS_PIGZ="false"
-fi
+# Reuse pigz detection from shared_utils_preproc.sh (already sourced above)
+# _SHARED_HAS_PIGZ is set at module load in shared_utils_preproc.sh
+_TRIMMING_HAS_PIGZ="${_SHARED_HAS_PIGZ:-false}"
 export _TRIMMING_HAS_PIGZ
 
 # ==============================================================================
@@ -286,12 +283,11 @@ download_and_trim_srrs_parallel() {
 			[[ -f "${tg_r2}.gz" ]] && $_dcmd "${tg_r2}.gz"
 		fi
 		
-		# Deserialize trim profiles and get HEADCROP for this SRR
-		local profile="$TRIM_PROFILE_DEFAULT"
-		while IFS='=' read -r key val; do
-			[[ "$key" == "$SRR" ]] && { profile="$val"; break; }
-		done <<< "${SERIALIZED_TRIM_PROFILES//;/$'\n'}"
-		
+		# Deserialize trim profiles: O(1) awk lookup replaces O(n) while-read scan
+		local profile
+		profile=$(awk -F'=' -v srr="$SRR" 'BEGIN{RS=";"} $1==srr{print $2; exit}' <<< "$SERIALIZED_TRIM_PROFILES")
+		profile="${profile:-$TRIM_PROFILE_DEFAULT}"
+
 		local HEADCROP_BASES TAILCROP_BASES MINLEN SW_SIZE SW_QUAL
 		IFS=':' read -r HEADCROP_BASES TAILCROP_BASES MINLEN SW_SIZE SW_QUAL <<< "$profile"
 		
@@ -378,12 +374,11 @@ trim_srrs_trimmomatic_parallel() {
 		find_raw_fastq "$SRR"
 		[[ -z "$raw1" ]] && { log_warn "Raw FASTQ not found for $SRR"; return 1; }
 
-		# Deserialize trim profiles and get params for this SRR
-		local profile="$TRIM_PROFILE_DEFAULT"
-		while IFS='=' read -r key val; do
-			[[ "$key" == "$SRR" ]] && { profile="$val"; break; }
-		done <<< "${SERIALIZED_TRIM_PROFILES//;/$'\n'}"
-		
+		# Deserialize trim profiles: O(1) awk lookup replaces O(n) while-read scan
+		local profile
+		profile=$(awk -F'=' -v srr="$SRR" 'BEGIN{RS=";"} $1==srr{print $2; exit}' <<< "$SERIALIZED_TRIM_PROFILES")
+		profile="${profile:-$TRIM_PROFILE_DEFAULT}"
+
 		IFS=':' read -r HEADCROP_BASES TAILCROP_BASES MINLEN SW_SIZE SW_QUAL <<< "$profile"
 		
 		log_info "Trimming $SRR with Trimmomatic (HEADCROP:$HEADCROP_BASES, TAILCROP:$TAILCROP_BASES, MINLEN:$MINLEN, SW:$SW_SIZE:$SW_QUAL)..."

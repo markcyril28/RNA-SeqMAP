@@ -33,8 +33,17 @@ BASE_DIR="${SCRIPT_DIR}"
 # CONDA ENVIRONMENT
 #===============================================================================
 
-eval "$(conda shell.bash hook)"
-conda activate gea 2>/dev/null || echo "Warning: conda env 'gea' not found, using current env"
+eval "$(conda shell.bash hook 2>/dev/null)" 2>/dev/null || true
+conda activate gea 2>/dev/null || true
+
+# Source logging utilities for consistent output
+source "${SCRIPT_DIR}/modules/logging/logging_utils.sh" 2>/dev/null || {
+    # Minimal fallback if logging module unavailable
+    log_info()  { echo "[INFO]  $*"; }
+    log_warn()  { echo "[WARN]  $*"; }
+    log_error() { echo "[ERROR] $*" >&2; }
+    log_step()  { echo ""; echo "==> $*"; }
+}
 
 #===============================================================================
 # CONFIGURATION (override via env, config file, or associative array below)
@@ -42,14 +51,18 @@ conda activate gea 2>/dev/null || echo "Warning: conda env 'gea' not found, usin
 
 # Load optional config file (first positional argument)
 if [[ -n "${1:-}" && -f "$1" ]]; then
-    echo "[CONFIG] Loading config from: $1"
+    log_info "Loading config from: $1"
     source "$1"
 fi
 
 # Reference genome to compare across methods
 MASTER_REFERENCE="${MASTER_REFERENCE:-GPE001970_genome}"
 
-# Methods to compare (space-separated)
+# Methods to compare (space-separated string).
+# If a sourced config set METHODS as an array, flatten it to a string.
+if [[ "$(declare -p METHODS 2>/dev/null)" == "declare -a"* ]]; then
+    METHODS="${METHODS[*]}"
+fi
 METHODS="${METHODS:-M1_HISAT2_RefGuided M2_HISAT2_DeNovo M3_STAR_Align M4_Salmon_Saf M5_RSEM_Bowtie2}"
 
 # Method-specific reference directory names
@@ -62,17 +75,31 @@ METHOD_REF_DIRS[M4_Salmon_Saf]="${M4_REF_DIR:-GPE001970_transcripts}"
 METHOD_REF_DIRS[M5_RSEM_Bowtie2]="${M5_REF_DIR:-GPE001970_transcripts}"
 
 # Gene groups for ranking stability (comma-separated basenames without .csv)
-GENE_GROUPS="${GENE_GROUPS:-SmelDMPs_v5,SmelGRF-GIF_with_Control}"
+GENE_GROUPS="${GENE_GROUPS:-SmelDMPs_v5_with_18s_and_HAP2,Selected_SmelGRF-GIF_with_two_GIF}"
 
-# Gene groups directory (reference-specific)
-GENE_GROUPS_DIR="${GENE_GROUPS_DIR:-${BASE_DIR}/inputs/gene_groups_csv/experimental/GPE001970}"
+# Gene groups directory (reference-specific — strip _genome/_transcripts suffix to match dir name)
+_GG_REF_TAG="${MASTER_REFERENCE%%_genome}"
+_GG_REF_TAG="${_GG_REF_TAG%%_transcripts}"
+_GG_REF_DIR="${BASE_DIR}/inputs/gene_groups_csv/experimental/${_GG_REF_TAG}"
+if [[ ! -d "$_GG_REF_DIR" ]]; then
+    _GG_REF_DIR="${BASE_DIR}/inputs/gene_groups_csv"
+fi
+GENE_GROUPS_DIR="${GENE_GROUPS_DIR:-$_GG_REF_DIR}"
+unset _GG_REF_TAG _GG_REF_DIR
 
 # SRR CSV directory for sample labels
 SRR_CSV_DIR="${SRR_CSV_DIR:-${BASE_DIR}/inputs/SRR_csv}"
 
-# System resources
-THREADS="${THREADS:-12}"
+# System resources (auto-detect with sane fallbacks)
+THREADS="${THREADS:-$(nproc 2>/dev/null || echo 12)}"
 ENABLE_GPU="${ENABLE_GPU:-FALSE}"
+if [[ -z "${AVAILABLE_RAM_GB:-}" ]]; then
+    if [[ -f /proc/meminfo ]]; then
+        AVAILABLE_RAM_GB=$(awk '/MemAvailable/ {printf "%d", $2/1048576}' /proc/meminfo)
+    elif command -v sysctl &>/dev/null; then
+        AVAILABLE_RAM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1/1073741824}')
+    fi
+fi
 AVAILABLE_RAM_GB="${AVAILABLE_RAM_GB:-24}"
 GPU_VRAM_GB="${GPU_VRAM_GB:-8}"
 
@@ -84,9 +111,13 @@ OUTPUT_DIR="${OUTPUT_DIR:-${BASE_DIR}/3_POST_PROC/cross_method_concordance}"
 ALIGNMENT_BASE="${ALIGNMENT_BASE:-${BASE_DIR}/2_ALIGNMENT_RESULTs}"
 POST_PROC_BASE="${POST_PROC_BASE:-${BASE_DIR}/3_POST_PROC}"
 ANALYSIS_MODULES_DIR="${BASE_DIR}/modules/c_post_processing/analysis_modules"
+UTILITIES_DIR="${BASE_DIR}/modules/c_post_processing/utilities"
 CONCORDANCE_SCRIPT_DIR="${BASE_DIR}/modules/c_post_processing/cross_method_concordance"
 
-mkdir -p "${OUTPUT_DIR}/figures" "${OUTPUT_DIR}/tables"
+mkdir -p "${OUTPUT_DIR}/figures" "${OUTPUT_DIR}/tables" || {
+    log_error "Failed to create output directories under ${OUTPUT_DIR}"
+    exit 1
+}
 
 #===============================================================================
 # EXPORT ENVIRONMENT FOR R SCRIPTS
@@ -105,50 +136,69 @@ done
 export BASE_DIR MASTER_REFERENCE METHODS METHOD_REF_DIRS_STR
 export GENE_GROUPS GENE_GROUPS_DIR SRR_CSV_DIR
 export THREADS ENABLE_GPU AVAILABLE_RAM_GB GPU_VRAM_GB
-export CONCORDANCE_SCRIPT_DIR ANALYSIS_MODULES_DIR
+export CONCORDANCE_SCRIPT_DIR ANALYSIS_MODULES_DIR UTILITIES_DIR
 export OUTPUT_DIR ALIGNMENT_BASE POST_PROC_BASE
 
 #===============================================================================
 # RUN ANALYSIS PIPELINE
 #===============================================================================
 
-echo "============================================================"
-echo "  CROSS-METHOD CONCORDANCE ANALYSIS"
-echo "============================================================"
-echo "  Reference:    ${MASTER_REFERENCE}"
-echo "  Methods:      ${METHODS}"
-echo "  Gene groups:  ${GENE_GROUPS}"
-echo "  Output:       ${OUTPUT_DIR}"
-echo "  Threads:      ${THREADS}"
-echo "============================================================"
-echo ""
+log_step "CROSS-METHOD CONCORDANCE ANALYSIS"
+log_info "Reference:    ${MASTER_REFERENCE}"
+log_info "Methods:      ${METHODS}"
+log_info "Gene groups:  ${GENE_GROUPS}"
+log_info "Output:       ${OUTPUT_DIR}"
+log_info "Threads:      ${THREADS}"
 
 run_step() {
     local step_num="$1"
     local step_name="$2"
     local script="$3"
 
-    echo "------------------------------------------------------------"
-    echo "  [STEP ${step_num}/4] ${step_name}"
-    echo "------------------------------------------------------------"
+    log_step "[STEP ${step_num}/4] ${step_name}"
 
     if ! Rscript "${CONCORDANCE_SCRIPT_DIR}/${script}"; then
-        echo "[ERROR] Step ${step_num} (${step_name}) failed!"
+        log_error "Step ${step_num} (${step_name}) failed!"
         exit 1
     fi
-    echo ""
 }
 
+# Step 1 must complete first (produces HARMONIZED_RDS consumed by steps 2-4)
 run_step 1 "Load & Harmonize Matrices"    "1_load_matrices.R"
-run_step 2 "Quantification Concordance"   "2_quantification_concordance.R"
-run_step 3 "Ranking Stability"            "3_ranking_stability.R"
+
+# Steps 2 and 3 are independent (both read HARMONIZED_RDS, write separate outputs).
+# Run them in parallel to halve wall-clock time for this phase.
+log_step "[STEPS 2+3] Quantification Concordance & Ranking Stability (parallel)"
+_step2_log="${OUTPUT_DIR}/step2.log"
+_step3_log="${OUTPUT_DIR}/step3.log"
+
+Rscript "${CONCORDANCE_SCRIPT_DIR}/2_quantification_concordance.R" > "$_step2_log" 2>&1 &
+_pid2=$!
+Rscript "${CONCORDANCE_SCRIPT_DIR}/3_ranking_stability.R" > "$_step3_log" 2>&1 &
+_pid3=$!
+
+_step2_rc=0; _step3_rc=0
+wait "$_pid2" || _step2_rc=$?
+wait "$_pid3" || _step3_rc=$?
+
+# Stream logs to stdout for visibility
+cat "$_step2_log" "$_step3_log" 2>/dev/null
+rm -f "$_step2_log" "$_step3_log"
+
+if [[ $_step2_rc -ne 0 ]]; then
+    log_error "Step 2 (Quantification Concordance) failed (exit=$_step2_rc)!"
+    exit 1
+fi
+if [[ $_step3_rc -ne 0 ]]; then
+    log_error "Step 3 (Ranking Stability) failed (exit=$_step3_rc)!"
+    exit 1
+fi
+log_info "Steps 2 and 3 completed successfully"
+
+# Step 4 reads outputs from both steps 2 and 3
 run_step 4 "Generate Report"              "4_generate_report.R"
 
-echo ""
-echo "============================================================"
-echo "  CONCORDANCE ANALYSIS COMPLETE"
-echo "============================================================"
-echo "  Report:  ${POST_PROC_BASE}/cross_method_concordance_report.md"
-echo "  Figures: ${OUTPUT_DIR}/figures/"
-echo "  Tables:  ${OUTPUT_DIR}/tables/"
-echo "============================================================"
+log_step "CONCORDANCE ANALYSIS COMPLETE"
+log_info "Report:  ${POST_PROC_BASE}/cross_method_concordance_report.md"
+log_info "Figures: ${OUTPUT_DIR}/figures/"
+log_info "Tables:  ${OUTPUT_DIR}/tables/"

@@ -46,6 +46,8 @@ _hisat2_check_alignment_rates() {
 		#   <X>% overall alignment rate
 		# Single awk pass extracts all 3 metrics (replaces 5-7 grep|grep pipelines)
 		local overall conc1 concm
+		# Reset before eval — bash 'local' doesn't re-initialize already-local vars
+		overall="" conc1="" concm=""
 		# Uses POSIX-portable match()+substr() instead of gawk-only capture groups
 		eval "$(awk '
 			/overall alignment rate/ { gsub(/%.*/, ""); printf "overall=%s ", $NF }
@@ -323,9 +325,16 @@ hisat2_ref_guided_pipeline() {
 			local _ss_chr _ss_pos _ss_seq_len
 			read -r _ss_chr _ss_pos _ < "$splice_sites"
 			if [[ -n "$_ss_chr" ]]; then
-				_ss_seq_len=$(awk -v t="$_ss_chr" \
-					'/^>/{if(f){print l; f=0; exit} n=$1; sub(/^>/,"",n); if(n==t){f=1; l=0}; next}
-					 f{l+=length} END{if(f) print l}' "$fasta")
+				# Use samtools faidx index for O(1) lookup when available (avoids scanning entire FASTA)
+				if [[ -f "${fasta}.fai" ]] || (command -v samtools >/dev/null 2>&1 && samtools faidx "$fasta" 2>/dev/null); then
+					_ss_seq_len=$(awk -v t="$_ss_chr" '$1==t{print $2;exit}' "${fasta}.fai" 2>/dev/null)
+				fi
+				# Fallback: scan FASTA directly (for small FASTAs or if samtools unavailable)
+				if [[ -z "${_ss_seq_len:-}" ]]; then
+					_ss_seq_len=$(awk -v t="$_ss_chr" \
+						'/^>/{if(f){print l; f=0; exit} n=$1; sub(/^>/,"",n); if(n==t){f=1; l=0}; next}
+						 f{l+=length} END{if(f) print l}' "$fasta")
+				fi
 				if [[ -n "$_ss_seq_len" && "$_ss_pos" -gt "$_ss_seq_len" ]]; then
 					log_warn "[INDEX] Splice site coords exceed FASTA sequence lengths (pos $_ss_pos > seq len $_ss_seq_len for $_ss_chr)"
 					log_warn "[INDEX] Transcriptome FASTA detected - skipping --ss/--exon (not applicable)"
@@ -384,18 +393,19 @@ hisat2_ref_guided_pipeline() {
 			local bam="$HISAT2_DIR/${SRR}_${fasta_tag}_ref_guided_mapped_sorted.bam"
 			local out_gtf="$abs_stringtie_rg_root/$SRR/${SRR}_${fasta_tag}_ref_guided_stringtie_assembled.gtf"
 
-			if [[ -f "$bam" && -f "${bam}.bai" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
+			if [[ -f "$bam" && ( -f "${bam}.bai" || -f "${bam}.csi" ) && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 				_parallel_log HISAT2_RG "$SRR" INFO "BAM exists - skipping alignment"
-			elif [[ ! -f "$bam" && -f "$out_gtf" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
-				_parallel_log HISAT2_RG "$SRR" INFO "GTF exists, BAM already cleaned for $SRR - skipping alignment"
+			elif [[ -f "$out_gtf" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
+				_parallel_log HISAT2_RG "$SRR" INFO "GTF exists for $SRR - skipping alignment"
 			else
 				_parallel_log HISAT2_RG "$SRR" INFO "Aligning with $threads_per_job threads"
 				local summary_file="$HISAT2_DIR/${SRR}_${fasta_tag}_ref_guided_alignment_summary.txt"
 				# Pipe hisat2 directly into samtools sort — eliminates 10-50GB SAM intermediate per sample
-				# Scale sort threads with available resources (was hardcoded 4)
-				# Use --write-index when available to eliminate separate samtools index step
-				local sort_threads=$(( threads_per_job / 2 ))
-				(( sort_threads < 2 )) && sort_threads=2
+				# Cap sort threads at 4: samtools sort is I/O-bound beyond ~4 threads,
+				# and sort memory is per-thread, so capping saves RAM without losing speed.
+				# Cap sort threads: min(threads_per_job, 4); at least 1
+				local sort_threads=$(( threads_per_job < 4 ? threads_per_job : 4 ))
+				(( sort_threads < 1 )) && sort_threads=1
 				local sort_mem _sort_wi_flag=""
 				sort_mem=$(_samtools_sort_mem "$sort_threads" "$parallel_jobs")
 				_samtools_has_write_index && _sort_wi_flag="--write-index"
@@ -414,7 +424,13 @@ hisat2_ref_guided_pipeline() {
 				[[ ${_ps[0]} -ne 0 ]] && { _parallel_log HISAT2_RG "$SRR" ERROR "HISAT2 failed (exit=${_ps[0]})"; rm -f "$bam"; return ${_ps[0]}; }
 				[[ ${_ps[1]} -ne 0 ]] && { _parallel_log HISAT2_RG "$SRR" ERROR "samtools sort failed"; rm -f "$bam"; return 1; }
 				# Only run separate index if --write-index was not used
-				[[ -z "$_sort_wi_flag" ]] && { samtools index -@ "$threads_per_job" "$bam" 2>&1 | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g' || true; }
+				# Cap index threads at 4 — samtools index is I/O-bound
+				if [[ -z "$_sort_wi_flag" ]]; then
+					local _idx_t=$threads_per_job; (( _idx_t > 4 )) && _idx_t=4
+					if ! samtools index -@ "$_idx_t" "$bam"; then
+						_parallel_log HISAT2_RG "$SRR" WARN "samtools index failed — BAM may need re-indexing"
+					fi
+				fi
 
 				# Infer strandness once (lock-file ensures only first worker runs it)
 				[[ -z "$hisat2_strand_opts" ]] && \
@@ -423,8 +439,7 @@ hisat2_ref_guided_pipeline() {
 
 			# StringTie quantification (ref-guided, single pass)
 			local out_dir="$abs_stringtie_rg_root/$SRR"
-			local ballgown_dir="$out_dir/ballgown"
-			mkdir -p "$out_dir" "$ballgown_dir"
+			mkdir -p "$out_dir"
 
 			if [[ -f "$out_gtf" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 				_parallel_log HISAT2_RG "$SRR" INFO "Assembly exists - skipping"
@@ -441,13 +456,13 @@ hisat2_ref_guided_pipeline() {
 
 			if [[ "$keep_bam_global" != "y" && -f "$bam" ]]; then
 				_parallel_log HISAT2_RG "$SRR" WARN "Deleting BAM to save disk (set keep_bam_global=y to retain): $(basename "$bam")"
-				rm -f "$bam" "${bam}.bai"
+				rm -f "$bam" "${bam}.bai" "${bam}.csi"
 			fi
 
 			_parallel_log HISAT2_RG "$SRR" INFO "Completed successfully"
 			return 0
 		}
-		export -f _m1_align_parallel_worker _m1_infer_strandness _hisat2_check_alignment_rates _m1_collect_bam_metrics
+		export -f _m1_align_parallel_worker _m1_infer_strandness _m1_collect_bam_metrics
 		# Pre-detect capabilities so parallel workers don't each test independently
 		_samtools_has_write_index || true
 		_get_available_ram_mb > /dev/null
@@ -479,17 +494,19 @@ hisat2_ref_guided_pipeline() {
 			local bam="$HISAT2_DIR/${SRR}_${fasta_tag}_ref_guided_mapped_sorted.bam"
 			local out_gtf="$STRINGTIE_HISAT2_REF_GUIDED_ROOT/$SRR/${SRR}_${fasta_tag}_ref_guided_stringtie_assembled.gtf"
 
-			if [[ -f "$bam" && -f "${bam}.bai" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
+			if [[ -f "$bam" && ( -f "${bam}.bai" || -f "${bam}.csi" ) && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 				log_info "[ALIGN] BAM exists for $SRR/$fasta_tag - skipping"
-			elif [[ ! -f "$bam" && -f "$out_gtf" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
-				log_info "[ALIGN] GTF exists, BAM already cleaned for $SRR - skipping alignment"
+			elif [[ -f "$out_gtf" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
+				log_info "[ALIGN] GTF exists for $SRR - skipping alignment"
 			else
 				log_step "Aligning: $SRR -> $fasta_tag (HISAT2 Ref-Guided)"
 				local summary_file="$HISAT2_DIR/${SRR}_${fasta_tag}_ref_guided_alignment_summary.txt"
 
 				# Pipe hisat2 directly into samtools sort — eliminates 10-50GB SAM intermediate per sample
-				local sort_threads=$(( THREADS / 2 ))
-				(( sort_threads < 2 )) && sort_threads=2
+				# Cap sort threads at 4: I/O-bound beyond that, and sort memory is per-thread
+				# Cap sort threads: min(THREADS, 4); at least 1
+				local sort_threads=$(( THREADS < 4 ? THREADS : 4 ))
+				(( sort_threads < 1 )) && sort_threads=1
 				local sort_mem _sort_wi_flag=""
 				sort_mem=$(_samtools_sort_mem "$sort_threads" 1)
 				_samtools_has_write_index && _sort_wi_flag="--write-index"
@@ -533,8 +550,7 @@ hisat2_ref_guided_pipeline() {
 
 			# StringTie quantification (ref-guided, single pass)
 			local out_dir="$STRINGTIE_HISAT2_REF_GUIDED_ROOT/$SRR"
-			local ballgown_dir="$out_dir/ballgown"
-			mkdir -p "$out_dir" "$ballgown_dir"
+			mkdir -p "$out_dir"
 
 			if [[ -f "$out_gtf" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 				log_info "[STRINGTIE] Quantification exists for $SRR/$fasta_tag - skipping"
@@ -551,7 +567,7 @@ hisat2_ref_guided_pipeline() {
 
 			if [[ "$keep_bam_global" != "y" && -f "$bam" ]]; then
 				log_warn "[BAM] Deleting $SRR BAM to save disk (set keep_bam_global=y to retain)"
-				rm -f "$bam" "${bam}.bai"
+				rm -f "$bam" "${bam}.bai" "${bam}.csi"
 			fi
 		done
 	fi

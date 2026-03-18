@@ -35,6 +35,10 @@ n_methods <- length(methods)
 cat("Methods:", paste(sapply(methods, get_short_name), collapse = ", "), "\n")
 cat("Genes:", length(common_genes), "| Samples:", length(common_samples), "\n\n")
 
+if (n_methods < 2) {
+  stop("Need at least 2 methods for pairwise concordance. Found: ", n_methods)
+}
+
 # -----------------------------------------------
 # 2.1 Pairwise correlations (per sample)
 # -----------------------------------------------
@@ -63,7 +67,7 @@ for (i in seq_along(method_pairs)) {
   nonzero_per_sample <- colSums(nonzero_mask)
 
   for (s in common_samples) {
-    if (nonzero_per_sample[s] < 10) next
+    if (nonzero_per_sample[s] < CORRELATION_MIN_GENES) next
     nz <- nonzero_mask[, s]
     spearman_per_sample[s, i] <- cor(mat1[nz, s], mat2[nz, s], method = "spearman",
                                       use = "pairwise.complete.obs")
@@ -111,8 +115,10 @@ print(round(median_spearman, 3))
 
 cat("\n--- Generating Median Spearman concordance heatmap ---\n")
 
+min_cor <- min(median_spearman, na.rm = TRUE)
+if (is.na(min_cor) || min_cor >= 1) min_cor <- 0.9
 col_fun <- colorRamp2(
-  seq(min(median_spearman, na.rm = TRUE), 1, length.out = 100),
+  seq(min_cor, 1, length.out = 100),
   colorRampPalette(c("#FEE090", "#E0F3F8", "#91BFDB", "#4575B4"))(100)
 )
 
