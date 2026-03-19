@@ -117,7 +117,14 @@ for (level_name in names(processing_levels)) {
   cat("Step 1: Locating RSEM", level_config$label, "output files...\n")
   
   rsem_quant_dir <- if (QUANT_DIR_INCLUDES_REF) QUANT_DIR else file.path(QUANT_DIR, MASTER_REFERENCE)
-  
+
+  if (!dir.exists(rsem_quant_dir)) {
+    cat("ERROR: RSEM quantification directory not found:", rsem_quant_dir, "\n")
+    cat("  Check RSEM_QUANT_ROOT env var or alignment output at:\n")
+    cat("  ", file.path(base_dir, "2_ALIGNMENT_RESULTs", "M5_RSEM_Bowtie2", "RSEM_Quant_WD"), "\n")
+    next
+  }
+
   # Build paths to RSEM files
   files <- file.path(rsem_quant_dir, SAMPLE_IDS, paste0(SAMPLE_IDS, level_config$file_type))
   names(files) <- SAMPLE_IDS
