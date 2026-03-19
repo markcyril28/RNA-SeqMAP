@@ -171,10 +171,7 @@ trim_srrs_trimmomatic() {
 download_and_trim_srrs() {
 	local SRR_LIST=("$@")
 	[[ ${#SRR_LIST[@]} -eq 0 ]] && { log_error "No SRR IDs provided"; return 1; }
-	
-	# Source download functions
-	source "$_TRIMMING_SCRIPT_DIR/download.sh"
-	
+
 	for SRR in "${SRR_LIST[@]}"; do
 		local raw_dir="$RAW_DIR_ROOT/$SRR"
 		local trim_dir="$TRIM_DIR_ROOT/$SRR"
@@ -275,8 +272,10 @@ download_and_trim_srrs_parallel() {
 		local _dcmd="gunzip"
 		[[ "$_TRIMMING_HAS_PIGZ" == "true" ]] && _dcmd="pigz -d -p ${THREADS_PER_JOB:-2}"
 		if [[ -f "${tg_r1}.gz" && -f "${tg_r2}.gz" ]]; then
-			$_dcmd "${tg_r1}.gz" & local _p1=$!
-			$_dcmd "${tg_r2}.gz" & local _p2=$!
+			$_dcmd "${tg_r1}.gz" &
+			local _p1=$!
+			$_dcmd "${tg_r2}.gz" &
+			local _p2=$!
 			wait $_p1 $_p2
 		else
 			[[ -f "${tg_r1}.gz" ]] && $_dcmd "${tg_r1}.gz"
