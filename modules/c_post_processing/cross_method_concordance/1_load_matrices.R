@@ -11,7 +11,7 @@
 #   M2 (HISAT2+StringTie de novo):    per-sample gene_abundances.tsv -> TPM column (STRG.N -> Reference mapping)
 #   M3 (STAR+Salmon):                 per-sample quant.sf -> TPM column (transcript -> gene aggregation)
 #   M4 (Salmon pseudo-align):         pre-built gene_count_matrix.csv or genes.counts.matrix + tximport for TPM
-#   M5 (Bowtie2+RSEM):                pre-built genes.TPM.not_cross_norm (gene-level TPM matrix)
+#   M5 (Bowtie2+RSEM):                per-sample .genes.results -> TPM column (fallback: tximport _tpm_Gene_ID_*.tsv)
 #
 # Output: HARMONIZED_RDS containing a list with:
 #   $tpm_matrices  - named list of gene x sample TPM matrices (one per method)
@@ -97,20 +97,18 @@ load_m1_tpm <- function() {
     return(NULL)
   }
 
-  tpm_list <- list()
-  for (sdir in sample_dirs) {
-    srr <- basename(sdir)
+  # Vectorized sample loading via lapply (replaces sequential for-loop)
+  tpm_list <- setNames(lapply(sample_dirs, function(sdir) {
     abundance_files <- list.files(sdir, pattern = "gene_abundances.*\\.tsv$", full.names = TRUE)
-    if (length(abundance_files) == 0) next
-
-    df <- .fast_read_tsv(abundance_files[1])
-    if (!"TPM" %in% colnames(df)) {
-      cat("[M1] Warning: No TPM column in", basename(abundance_files[1]), "for", srr, "\n")
-      next
-    }
-    # Use column index: fread keeps "Gene ID" (space) while read.table converts to "Gene.ID"
-    tpm_list[[srr]] <- setNames(df$TPM, df[[1]])
-  }
+    if (length(abundance_files) == 0) return(NULL)
+    df <- tryCatch(.fast_read_tsv(abundance_files[1]), error = function(e) {
+      cat("  Warning: failed to read", abundance_files[1], ":", e$message, "\n")
+      return(NULL)
+    })
+    if (is.null(df) || !"TPM" %in% colnames(df)) return(NULL)
+    setNames(df$TPM, df[[1]])
+  }), basename(sample_dirs))
+  tpm_list <- Filter(Negate(is.null), tpm_list)
 
   tpm_matrix <- .assemble_tpm_matrix(tpm_list, filter_genes = TRUE)
   if (!is.null(tpm_matrix))
@@ -143,25 +141,21 @@ load_m2_tpm <- function() {
     return(NULL)
   }
 
-  tpm_list <- list()
-  for (sdir in sample_dirs) {
+  # Vectorized sample loading via lapply (matches M1/M4/M5 pattern)
+  tpm_list <- setNames(lapply(sample_dirs, function(sdir) {
     srr <- basename(sdir)
     abundance_files <- list.files(sdir, pattern = "gene_abundances.*\\.tsv$", full.names = TRUE)
-    if (length(abundance_files) == 0) next
+    if (length(abundance_files) == 0) return(NULL)
 
     df <- .fast_read_tsv(abundance_files[1])
 
     if (!all(c("TPM", "Reference") %in% colnames(df))) {
       cat("[M2] Warning: Missing TPM/Reference column in", basename(abundance_files[1]), "for", srr, "\n")
-      next
+      return(NULL)
     }
     # Map STRG.N -> reference gene ID via the Reference column
-    # Filter out unmapped de novo transcripts (Reference == "." or "-" or empty)
     # Two-round suffix stripping to reach gene-level IDs for double-suffixed
     # transcript IDs (e.g., Sme2.5_01g005840.1.01 -> .1 -> gene-level).
-    # Without the second round, isoform-level entries (.1 vs .2) remain separate
-    # and get SUM-aggregated in harmonization instead of MAX-aggregated here,
-    # inflating M2 TPM for multi-isoform genes.
     gene_ids <- sub("\\.[0-9]+$", "", df$Reference)
     gene_ids <- sub("\\.[0-9]+$", "", gene_ids)
     valid <- nzchar(gene_ids) & !gene_ids %in% c(".", "-")
@@ -174,12 +168,10 @@ load_m2_tpm <- function() {
         cat("[M2] WARNING: >50% unmapped transcripts in", srr, "— check assembly quality\n")
     }
     # Use MAX (not SUM) to aggregate multiple STRG.N entries mapping to the same
-    # reference gene. In de novo mode, StringTie can produce multiple gene assemblies
-    # (e.g., sense/antisense) for the same locus — summing would inflate TPM relative
-    # to other methods. MAX matches matrix_builder.py's visualization aggregation.
-    agg <- tapply(df$TPM[valid], gene_ids[valid], max, na.rm = TRUE)
-    tpm_list[[srr]] <- agg
-  }
+    # reference gene. MAX matches matrix_builder.py's visualization aggregation.
+    tapply(df$TPM[valid], gene_ids[valid], max, na.rm = TRUE)
+  }), basename(sample_dirs))
+  tpm_list <- Filter(Negate(is.null), tpm_list)
 
   tpm_matrix <- .assemble_tpm_matrix(tpm_list, filter_genes = TRUE)
   if (!is.null(tpm_matrix))
@@ -209,9 +201,11 @@ load_m3_tpm <- function() {
                             paste0("tx2gene_", ref_dir, ".tsv"))
   tx2gene <- NULL
   if (file.exists(tx2gene_file)) {
-    # Detect header: check if first line looks like gene IDs or column names
+    # Detect header: check if first line contains known column-name keywords.
+    # Use word-boundary anchors to avoid matching real transcript IDs that happen
+    # to start with "tx" (e.g., "tx_12345" or "txSMEL_001").
     first_line <- readLines(tx2gene_file, n = 1)
-    has_header <- grepl("^(transcript|tx|TXNAME)", first_line, ignore.case = TRUE)
+    has_header <- grepl("^(transcript_id|tx_id|TXNAME|transcript\t|tx\t)", first_line, ignore.case = TRUE)
     tx2gene <- read.table(tx2gene_file, header = has_header, sep = "\t",
                           stringsAsFactors = FALSE)
     # Keep only first 2 columns (transcript_id, gene_id)
@@ -224,11 +218,15 @@ load_m3_tpm <- function() {
 
   # Tissue-specific fallback: quant/{tissue}/{SRR}/quant.sf layout
   if (length(sample_dirs) == 0) {
+    cat("[M3] No SRR directories at top level; trying tissue-specific layout...\n")
     tissue_dirs <- list.dirs(quant_base, recursive = FALSE, full.names = TRUE)
     for (td in tissue_dirs) {
       sub_dirs <- list.dirs(td, recursive = FALSE, full.names = TRUE)
       sub_dirs <- sub_dirs[grepl("^SRR", basename(sub_dirs))]
       sample_dirs <- c(sample_dirs, sub_dirs)
+    }
+    if (length(sample_dirs) > 0) {
+      cat("[M3] Found", length(sample_dirs), "samples via tissue-specific layout\n")
     }
   }
 
@@ -252,11 +250,10 @@ load_m3_tpm <- function() {
     return(NULL)
   }
 
-  tpm_list <- list()
-  for (sdir in sample_dirs) {
-    srr <- basename(sdir)
+  # Vectorized sample loading via lapply (matches M1/M4/M5 pattern)
+  tpm_list <- setNames(lapply(sample_dirs, function(sdir) {
     qsf <- file.path(sdir, "quant.sf")
-    if (!file.exists(qsf)) next
+    if (!file.exists(qsf)) return(NULL)
 
     df <- .fast_read_tsv(qsf)
 
@@ -265,14 +262,16 @@ load_m3_tpm <- function() {
       unmapped <- is.na(df$gene_id)
       if (any(unmapped)) {
         df$gene_id[unmapped] <- sub("\\.[0-9]+$", "", df$Name[unmapped])
+        df$gene_id[unmapped] <- sub("\\.[0-9]+$", "", df$gene_id[unmapped])
       }
     } else {
       df$gene_id <- sub("\\.[0-9]+$", "", df$Name)
+      df$gene_id <- sub("\\.[0-9]+$", "", df$gene_id)
     }
 
-    agg <- tapply(df$TPM, df$gene_id, sum, na.rm = TRUE)
-    tpm_list[[srr]] <- agg
-  }
+    tapply(df$TPM, df$gene_id, sum, na.rm = TRUE)
+  }), basename(sample_dirs))
+  tpm_list <- Filter(Negate(is.null), tpm_list)
 
   tpm_matrix <- .assemble_tpm_matrix(tpm_list, filter_genes = TRUE)
   if (!is.null(tpm_matrix))
@@ -304,17 +303,18 @@ load_m4_tpm <- function() {
     return(NULL)
   }
 
-  tpm_list <- list()
-  for (sdir in sample_dirs) {
-    srr <- basename(sdir)
+  # Vectorized sample loading via lapply (replaces sequential for-loop)
+  tpm_list <- setNames(lapply(sample_dirs, function(sdir) {
     qsf <- file.path(sdir, "quant.sf")
-    if (!file.exists(qsf)) next
-
+    if (!file.exists(qsf)) return(NULL)
     df <- .fast_read_tsv(qsf)
+    # Two-round suffix stripping to reach gene-level IDs from double-suffixed
+    # transcript IDs (e.g., SMEL4.1_06g023900.1.01 -> .1 -> gene-level).
     df$gene_id <- sub("\\.[0-9]+$", "", df$Name)
-    agg <- tapply(df$TPM, df$gene_id, sum, na.rm = TRUE)
-    tpm_list[[srr]] <- agg
-  }
+    df$gene_id <- sub("\\.[0-9]+$", "", df$gene_id)
+    tapply(df$TPM, df$gene_id, sum, na.rm = TRUE)
+  }), basename(sample_dirs))
+  tpm_list <- Filter(Negate(is.null), tpm_list)
 
   if (length(tpm_list) == 0) {
     # Fallback: try pre-built TPM matrix from tximport
@@ -345,7 +345,8 @@ load_m4_tpm <- function() {
 # -----------------------------------------------
 # M5: Bowtie2 + RSEM
 # -----------------------------------------------
-# Pre-built genes.TPM.not_cross_norm (TSV, gene_id + sample columns)
+# Primary: per-sample .genes.results from RSEM alignment output
+# Fallback: pre-built TPM matrix from tximport (_tpm_Gene_ID_*.tsv)
 
 load_m5_tpm <- function() {
   method <- "M5_RSEM_Bowtie2"
@@ -359,17 +360,17 @@ load_m5_tpm <- function() {
     sample_dirs <- sample_dirs[grepl("^SRR", basename(sample_dirs))]
 
     if (length(sample_dirs) > 0) {
-      tpm_list <- list()
-      for (sdir in sample_dirs) {
+      # Vectorized sample loading via lapply (replaces sequential for-loop)
+      tpm_list <- setNames(lapply(sample_dirs, function(sdir) {
         srr <- basename(sdir)
         results_file <- file.path(sdir, paste0(srr, ".genes.results"))
-        if (!file.exists(results_file)) next
-
+        if (!file.exists(results_file)) return(NULL)
         df <- .fast_read_tsv(results_file)
         gene_ids <- sub("\\.[0-9]+$", "", df$gene_id)
-        agg <- tapply(df$TPM, gene_ids, sum, na.rm = TRUE)
-        tpm_list[[srr]] <- agg
-      }
+        gene_ids <- sub("\\.[0-9]+$", "", gene_ids)
+        tapply(df$TPM, gene_ids, sum, na.rm = TRUE)
+      }), basename(sample_dirs))
+      tpm_list <- Filter(Negate(is.null), tpm_list)
 
       if (length(tpm_list) > 0) {
         tpm_matrix <- .assemble_tpm_matrix(tpm_list, filter_genes = TRUE)
@@ -382,97 +383,26 @@ load_m5_tpm <- function() {
     }
   }
 
-  # Fallback 1: pre-built genes.TPM.not_cross_norm
-  tpm_file <- file.path(POST_PROC_BASE, method,
-                        "count_matrices_from_RSEM_Quant", ref_dir,
-                        "genes.TPM.not_cross_norm")
-
-  if (!file.exists(tpm_file)) {
-    # Fallback to CSV version
-    tpm_file <- file.path(POST_PROC_BASE, method,
-                          "count_matrices_from_RSEM_Quant", ref_dir,
-                          "deseq2_input", "gene_tpm_matrix.csv")
-    if (!file.exists(tpm_file)) {
-      cat("[M5] TPM matrix not found\n")
-      return(NULL)
+  # Fallback: try pre-built TPM matrix from tximport
+  # tximport_rsem_to_matrices.R saves as {prefix}_tpm_Gene_ID_from_{ref}_gene_level.tsv
+  # under count_matrices_from_RSEM_Quant/{ref}/gene_level/
+  tpm_search_base <- file.path(POST_PROC_BASE, method,
+                               "count_matrices_from_RSEM_Quant", ref_dir)
+  tpm_files <- list.files(tpm_search_base, pattern = "_tpm_Gene_ID_.*\\.tsv$",
+                          recursive = TRUE, full.names = TRUE)
+  if (length(tpm_files) > 0) {
+    tpm_file <- tpm_files[1]
+    cat("[M5] Using pre-built TPM matrix:", tpm_file, "\n")
+    df <- if (.use_dt) as.data.frame(data.table::fread(tpm_file)) else {
+      read.table(tpm_file, header = TRUE, sep = "\t", stringsAsFactors = FALSE,
+                 check.names = FALSE)
     }
-    df <- if (.use_dt) {
-      as.data.frame(data.table::fread(tpm_file, header = TRUE))
-    } else {
-      read.csv(tpm_file, row.names = 1, check.names = FALSE)
-    }
-    if (.use_dt) { rownames(df) <- df[[1]]; df <- df[, -1, drop = FALSE] }
-    # Strip transcript suffix to get gene-level IDs
-    rownames(df) <- sub("\\.[0-9]+$", "", rownames(df))
-    # Aggregate duplicates (same gene from different transcripts)
-    if (any(duplicated(rownames(df)))) {
-      gene_names <- rownames(df)
-      if (.use_dt) {
-        dt <- data.table::as.data.table(as.matrix(df))
-        dt[, gene := gene_names]
-        agg <- dt[, lapply(.SD, sum), by = gene]
-        df_agg <- as.data.frame(agg[, -1, with = FALSE])
-        rownames(df_agg) <- agg$gene
-      } else {
-        df_agg <- aggregate(as.matrix(df), by = list(gene = gene_names), FUN = sum)
-        rownames(df_agg) <- df_agg$gene
-        df_agg$gene <- NULL
-      }
-      df <- df_agg
-    }
-    cat("[M5] Loaded:", nrow(df), "genes x", ncol(df), "samples (CSV)\n")
+    rownames(df) <- df[[1]]; df <- df[, -1, drop = FALSE]
     return(as.matrix(df))
   }
 
-  # TSV format: gene_id\tSRR1\tSRR2\t...
-  df <- if (.use_dt) {
-    .tmp <- as.data.frame(data.table::fread(tpm_file, header = TRUE, sep = "\t"))
-    rownames(.tmp) <- .tmp[[1]]; .tmp[, -1, drop = FALSE]
-  } else {
-    read.table(tpm_file, header = TRUE, sep = "\t", row.names = 1,
-               stringsAsFactors = FALSE, check.names = FALSE)
-  }
-
-  # Handle duplicate sample columns (e.g., same SRR from multiple datasets)
-  if (any(duplicated(colnames(df)))) {
-    dup_samples <- unique(colnames(df)[duplicated(colnames(df))])
-    cat("[M5] Merging", length(dup_samples), "duplicate sample column(s):",
-        paste(dup_samples, collapse = ", "), "\n")
-    unique_cols <- unique(colnames(df))
-    deduped <- matrix(NA, nrow = nrow(df), ncol = length(unique_cols),
-                       dimnames = list(rownames(df), unique_cols))
-    for (col in unique_cols) {
-      idx <- which(colnames(df) == col)
-      if (length(idx) == 1) {
-        deduped[, col] <- df[, idx]
-      } else {
-        # Average duplicates (same sample quantified from multiple runs)
-        deduped[, col] <- rowMeans(df[, idx, drop = FALSE], na.rm = TRUE)
-      }
-    }
-    df <- as.data.frame(deduped, check.names = FALSE)
-  }
-
-  # Strip transcript suffix for gene-level comparison
-  rownames(df) <- sub("\\.[0-9]+$", "", rownames(df))
-  if (any(duplicated(rownames(df)))) {
-    gene_names <- rownames(df)
-    if (.use_dt) {
-      dt <- data.table::as.data.table(as.matrix(df))
-      dt[, gene := gene_names]
-      agg <- dt[, lapply(.SD, sum), by = gene]
-      df_agg <- as.data.frame(agg[, -1, with = FALSE])
-      rownames(df_agg) <- agg$gene
-    } else {
-      df_agg <- aggregate(as.matrix(df), by = list(gene = gene_names), FUN = sum)
-      rownames(df_agg) <- df_agg$gene
-      df_agg$gene <- NULL
-    }
-    df <- df_agg
-  }
-
-  cat("[M5] Loaded:", nrow(df), "genes x", ncol(df), "samples\n")
-  return(as.matrix(df))
+  cat("[M5] TPM matrix not found\n")
+  return(NULL)
 }
 
 # -----------------------------------------------
@@ -555,19 +485,9 @@ for (method in names(tpm_matrices)) {
     new_rn <- sub("\\.[0-9]+$", "", rn)
     new_rn <- sub("\\.[0-9]+$", "", new_rn)
     if (any(duplicated(new_rn))) {
-      # Aggregate duplicates by summing — use data.table when available for speed
-      if (.use_dt) {
-        dt <- data.table::as.data.table(mat, keep.rownames = FALSE)
-        dt[, gene := new_rn]
-        agg <- dt[, lapply(.SD, sum), by = gene]
-        mat_agg <- as.matrix(agg[, -1, with = FALSE])
-        rownames(mat_agg) <- agg$gene
-      } else {
-        mat_agg <- aggregate(as.data.frame(mat), by = list(gene = new_rn), FUN = sum)
-        rownames(mat_agg) <- mat_agg$gene
-        mat_agg$gene <- NULL
-        mat_agg <- as.matrix(mat_agg)
-      }
+      # rowsum() is a base-R C routine optimized for grouped column sums on matrices
+      # — faster than data.table for this use case (avoids matrix→DT→matrix round-trip)
+      mat_agg <- rowsum(mat, group = new_rn, reorder = FALSE)
       tpm_matrices[[method]] <- mat_agg
     } else {
       rownames(mat) <- new_rn
@@ -580,6 +500,15 @@ for (method in names(tpm_matrices)) {
 gene_sets <- lapply(tpm_matrices, rownames)
 common_genes <- Reduce(intersect, gene_sets)
 cat("  Common genes across all methods:", length(common_genes), "\n")
+
+if (length(common_genes) == 0) {
+  cat("\n  [ERROR] Zero common genes across methods. Per-method gene counts:\n")
+  for (m in names(gene_sets)) {
+    cat("    ", get_short_name(m), ":", length(gene_sets[[m]]), "genes",
+        "(sample IDs:", paste(head(gene_sets[[m]], 3), collapse = ", "), "...)\n")
+  }
+  stop("No common genes found across methods. Check gene ID formats (suffix stripping may be too aggressive).")
+}
 
 # Pairwise gene overlaps for reporting
 n_mat <- length(tpm_matrices)
