@@ -244,7 +244,7 @@ read_count_matrix <- function(file_path) {
     # Vectorized type coercion: identify non-numeric columns in one pass, convert in bulk
     non_num <- which(!vapply(data, is.numeric, logical(1)))
     if (length(non_num) > 0) {
-      data[non_num] <- lapply(data[non_num], function(x) suppressWarnings(as.numeric(as.character(x))))
+      data[non_num] <- lapply(data[non_num], function(x) suppressWarnings(as.numeric(x)))
     }
     data_matrix <- as.matrix(data)
     data_matrix[is.na(data_matrix)] <- 0
@@ -344,8 +344,6 @@ match_gene_ids <- function(gene_list, data_rownames) {
     if (is.null(idx)) return(NULL)
     data_rownames[idx]
   }
-  rowname_set <- new.env(hash = TRUE, parent = emptyenv(), size = length(data_rownames))
-  for (rn in data_rownames) rowname_set[[rn]] <- TRUE
 
   # Vectorized: exact matches first
   exact_mask <- gene_list %in% data_rownames
@@ -368,7 +366,7 @@ match_gene_ids <- function(gene_list, data_rownames) {
           hits2 <- .resolve_rows(gene_base)
           if (!is.null(hits2)) {
             ne_results[[i]] <- hits2
-          } else if (!is.null(rowname_set[[gene_base]])) {
+          } else if (gene_base %in% data_rownames) {
             ne_results[[i]] <- gene_base
           }
         }
@@ -501,23 +499,32 @@ preprocess_for_deseq2_normalized <- function(data_matrix, count_type = "expected
     return(preprocess_for_count_type_normalized(data_matrix, count_type))
   }
   
-  # Replace zeros/NAs with small value for geometric mean calculation
+  # Exclude genes with any zeros from size factor estimation (matches DESeq2 behavior).
+  # DESeq2 computes geometric means only for genes with nonzero counts in ALL samples;
+  # including zero-containing genes would inflate geometric means via pseudocounts.
   data_clean <- data_matrix
-  data_clean[data_clean == 0 | is.na(data_clean)] <- 0.5
-  
-  # Calculate geometric mean per gene (row)
-  log_data <- log(data_clean)
+  data_clean[is.na(data_clean)] <- 0
+  has_zero <- rowSums(data_clean == 0) > 0
+  nonzero_genes <- data_clean[!has_zero, , drop = FALSE]
+
+  if (nrow(nonzero_genes) == 0) {
+    # Fallback to simple log2 if no all-nonzero genes exist
+    return(preprocess_for_count_type_normalized(data_matrix, count_type))
+  }
+
+  # Calculate geometric mean per gene (row) using only all-nonzero genes
+  log_data <- log(nonzero_genes)
   geo_means <- exp(rowMeans(log_data, na.rm = TRUE))
-  
-  # Remove genes with zero geometric mean
+
+  # Remove genes with invalid geometric mean
   valid_genes <- geo_means > 0 & is.finite(geo_means)
   if (sum(valid_genes) == 0) {
     # Fallback to simple log2 if no valid genes
     return(preprocess_for_count_type_normalized(data_matrix, count_type))
   }
-  
+
   # Calculate size factors (median of ratios for each sample)
-  ratios <- sweep(data_clean[valid_genes, , drop = FALSE], 1, geo_means[valid_genes], FUN = "/")
+  ratios <- sweep(nonzero_genes[valid_genes, , drop = FALSE], 1, geo_means[valid_genes], FUN = "/")
   size_factors <- if (requireNamespace("matrixStats", quietly = TRUE)) {
     matrixStats::colMedians(ratios, na.rm = TRUE)
   } else {
@@ -644,8 +651,13 @@ convert_to_organ_labels <- function(counts_matrix) {
 #   - Gene_ID,Shortened_Name,...
 #   - Gene,Shortened_Name,...
 #   - Gene_ID,Name,... (for reference gene_info.csv files)
+#
+# Performance: two-level cache — in-memory (within session) + .rds on disk
+# (across sessions). Each analysis module invokes a fresh Rscript, so the
+# in-memory cache only avoids repeated reads within one script. The .rds
+# cache avoids re-parsing the same CSV across ~2500 analysis-module invocations.
 load_gene_name_mapping <- function(gene_group, gene_groups_dir = GENE_GROUPS_DIR) {
-  # Return cached mapping if available (avoids re-reading CSV per call)
+  # Return in-memory cached mapping if available (avoids re-reading CSV per call)
   cache_key <- paste0(gene_group, "|", gene_groups_dir)
   cached <- .gene_name_mapping_cache[[cache_key]]
   if (!is.null(cached)) return(cached)
@@ -683,6 +695,18 @@ load_gene_name_mapping <- function(gene_group, gene_groups_dir = GENE_GROUPS_DIR
 
   if (!file.exists(csv_file)) return(NULL)
 
+  # Check cross-session RDS cache (keyed on CSV mtime to auto-invalidate on changes)
+  .rds_cache_path <- paste0(csv_file, ".namemap.rds")
+  if (file.exists(.rds_cache_path)) {
+    tryCatch({
+      if (file.mtime(.rds_cache_path) >= file.mtime(csv_file)) {
+        result <- readRDS(.rds_cache_path)
+        .gene_name_mapping_cache[[cache_key]] <- result
+        return(result)
+      }
+    }, error = function(e) NULL)
+  }
+
   tryCatch({
     # data.table::fread is 5-10x faster than read.csv for larger gene group files
     df <- if (.HAS_DATATABLE) {
@@ -698,6 +722,8 @@ load_gene_name_mapping <- function(gene_group, gene_groups_dir = GENE_GROUPS_DIR
     if (!is.null(gene_col) && !is.null(name_col)) {
       result <- setNames(trimws(df[[name_col]]), trimws(df[[gene_col]]))
       .gene_name_mapping_cache[[cache_key]] <- result
+      # Persist RDS cache for subsequent R sessions
+      tryCatch(saveRDS(result, .rds_cache_path), error = function(e) NULL)
       return(result)
     }
     return(NULL)
