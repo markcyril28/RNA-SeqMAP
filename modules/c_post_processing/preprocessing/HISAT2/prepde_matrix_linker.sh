@@ -108,7 +108,7 @@ for fname in gene_count_matrix.csv transcript_count_matrix.csv sample_metadata.c
     dst="$TARGET_DESEQ2_DIR/$fname"
     if [[ ! -f "$src" ]]; then
         log_warn "$fname not found in source, skipping"
-    elif [[ -f "$dst" && "${OVERWRITE_EXISTING:-FALSE}" != "TRUE" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
+    elif [[ -f "$dst" && "${OVERWRITE_EXISTING:-FALSE}" != "TRUE" ]]; then
         log_info "Already staged (skip): $fname"
     else
         cp "$src" "$dst"

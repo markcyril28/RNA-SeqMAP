@@ -242,13 +242,18 @@ merge_group_counts() {
         fi
     done
 
-    log_info "Found $files_found abundance files"
+    log_info "Found $files_found/${#SAMPLE_IDS[@]} abundance files"
 
     if [[ $files_found -eq 0 ]]; then
         log_error "No abundance files found for gene group '$gene_group'"
         log_info "Hint: MASTER_REFERENCE='$MASTER_REFERENCE' must match the fasta_tag used during alignment"
         rm -rf "$tmpdir"
         return 1
+    fi
+
+    if [[ $files_found -lt ${#SAMPLE_IDS[@]} ]]; then
+        local missing=$(( ${#SAMPLE_IDS[@]} - files_found ))
+        log_warn "$missing/${#SAMPLE_IDS[@]} samples missing abundance files for '$gene_group' — matrices will be incomplete"
     fi
 
     # Extract gene names from reference CSV (first column is Gene_ID)
@@ -267,14 +272,37 @@ merge_group_counts() {
     # Extract ALL 3 count types (coverage, fpkm, tpm) in a SINGLE awk pass per sample.
     # Replaces 3 separate tail|cut pipelines per sample (was 3×N process spawns, now 1×N).
     # Write to $tmpdir (not alongside input) so cleanup is guaranteed on error.
+    #
+    # Parallel extraction: launch up to THREADS background awk jobs concurrently.
+    # Each awk invocation is I/O-bound (reads one TSV, writes 3 small files), so
+    # parallelism yields near-linear speedup until disk bandwidth saturates.
+    local _max_jobs="${THREADS:-4}"
+    local _running=0
+    local _awk_failed=0
     for srr in "${processed_srrs[@]}"; do
         awk -F'\t' -v gc="$GENENAME_COL" -v cov="$COVERAGE_COL" -v fpkm="$FPKM_COL" -v tpm="$TPM_COL" \
             -v outdir="$tmpdir" -v srr="$srr" 'NR > 1 && $gc != "" && $gc != "." && $gc != "-" {
             print $gc "\t" $cov > outdir "/" srr ".cov"
             print $gc "\t" $fpkm > outdir "/" srr ".fpkm"
             print $gc "\t" $tpm > outdir "/" srr ".tpm"
-        }' "${srr_to_file[$srr]}"
+        }' "${srr_to_file[$srr]}" &
+        _running=$((_running + 1))
+        if (( _running >= _max_jobs )); then
+            wait -n 2>/dev/null || _awk_failed=$((_awk_failed + 1))
+            _running=$((_running - 1))
+        fi
     done
+    # Wait for remaining background jobs individually (bare `wait` returns 0
+    # even if children failed, so drain with `wait -n` to catch each exit status)
+    while (( _running > 0 )); do
+        wait -n 2>/dev/null || _awk_failed=$((_awk_failed + 1))
+        _running=$((_running - 1))
+    done
+    if (( _awk_failed > 0 )); then
+        log_error "awk extraction failed for $_awk_failed sample(s)"
+        rm -rf "$tmpdir"
+        return 1
+    fi
 
     for count_type in coverage fpkm tpm; do
         local -a sample_files=()
@@ -364,15 +392,20 @@ build_full_transcriptome_matrix() {
     # below, and nested RETURN traps clobber each other in bash. Use explicit rm.
     echo "Gene_ID" > "$tmp_csv"
 
-    local files_found=0
+    # Collect existing abundance file paths (avoids spawning awk on missing files)
+    local -a _abund_files=()
     for srr in "${SAMPLE_IDS[@]}"; do
         local file_path="$INPUTS_DIR/$MASTER_REFERENCE/$srr/${srr}_${MASTER_REFERENCE}${ABUNDANCE_SUFFIX}"
-        if [[ -f "$file_path" ]]; then
-            # Single awk replaces tail|cut pipeline (1 process instead of 2 per sample)
-            awk -F'\t' -v c="$GENENAME_COL" 'NR>1 && $c!="" && $c!="." && $c!="-" {print $c}' "$file_path" >> "$tmp_csv"
-            files_found=$((files_found + 1))
-        fi
+        [[ -f "$file_path" ]] && _abund_files+=("$file_path")
     done
+    local files_found=${#_abund_files[@]}
+
+    if (( files_found > 0 )); then
+        # Single awk invocation across ALL files (replaces N separate awk spawns)
+        awk -F'\t' -v c="$GENENAME_COL" 'NR>1 && FNR>1 && $c!="" && $c!="." && $c!="-" {print $c}' \
+            "${_abund_files[@]}" >> "$tmp_csv" \
+            || { log_error "awk gene extraction failed"; rm -f "$tmp_csv"; return 1; }
+    fi
 
     if [[ "$files_found" -eq 0 ]]; then
         log_warn "No abundance files found - skipping full-transcriptome matrix"
@@ -380,11 +413,18 @@ build_full_transcriptome_matrix() {
         return 1
     fi
 
+    if [[ $files_found -lt ${#SAMPLE_IDS[@]} ]]; then
+        local missing=$(( ${#SAMPLE_IDS[@]} - files_found ))
+        log_warn "Full-transcriptome: $missing/${#SAMPLE_IDS[@]} samples missing abundance files"
+    fi
+
     # De-duplicate the collected gene IDs — single awk pass (replaces head/tail|sort -u pipeline)
     local tmp_dedup
     tmp_dedup=$(mktemp --suffix=.csv)
-    awk 'NR==1{print; next} !seen[$0]++' "$tmp_csv" > "$tmp_dedup"
-    mv "$tmp_dedup" "$tmp_csv"
+    awk 'NR==1{print; next} !seen[$0]++' "$tmp_csv" > "$tmp_dedup" \
+        || { log_error "awk dedup failed"; rm -f "$tmp_csv" "$tmp_dedup"; return 1; }
+    mv "$tmp_dedup" "$tmp_csv" \
+        || { log_error "mv dedup failed"; rm -f "$tmp_csv" "$tmp_dedup"; return 1; }
 
     local gene_count
     gene_count=$(( $(wc -l < "$tmp_csv") - 1 ))
