@@ -77,15 +77,23 @@ for (.cand in .candidates) {
 if (is.null(.tx2gene_file) && nzchar(.input_fastas_dir)) {
   .all_maps <- list.files(.input_fastas_dir, pattern = "\\.gene_trans_map$",
                           recursive = TRUE, full.names = TRUE)
-  .hits <- .all_maps[grepl(MASTER_REFERENCE, .all_maps, fixed = TRUE)]
+  # Match on basename to avoid substring false positives (e.g., "V4" matching "V4.1")
+  .hits <- .all_maps[grepl(paste0("(^|[/\\\\])", MASTER_REFERENCE, "\\."), .all_maps)]
   if (length(.hits) > 0) .tx2gene_file <- .hits[1]
 }
 
 .tx2gene <- if (!is.null(.tx2gene_file)) {
-  .t2g <- read.table(.tx2gene_file, header = FALSE, sep = "\t", stringsAsFactors = FALSE,
-                     colClasses = c("character", "character"), strip.white = TRUE)
-  colnames(.t2g) <- c("GENEID", "TXNAME")
-  .t2g[, c("TXNAME", "GENEID")]
+  tryCatch({
+    .t2g <- read.table(.tx2gene_file, header = FALSE, sep = "\t", stringsAsFactors = FALSE,
+                       strip.white = TRUE)
+    .t2g <- .t2g[, 1:2, drop = FALSE]
+    colnames(.t2g) <- c("GENEID", "TXNAME")
+    .t2g[, c("TXNAME", "GENEID")]
+  }, error = function(e) {
+    cat("  Warning: Failed to read tx2gene file:", e$message, "\n")
+    cat("  Gene-level import will be skipped\n")
+    NULL
+  })
 } else {
   cat("  Warning: tx2gene mapping not found for M4 — gene-level import will be skipped\n")
   NULL
@@ -115,7 +123,11 @@ quant_dir <- if (nzchar(salmon_quant_root_env)) {
 } else {
   "Salmon_Quant"  # fallback for standalone execution
 }
-output_dir  <- "count_matrices_from_Salmon_Quant"
+output_dir  <- if (nzchar(base_dir)) {
+  file.path(base_dir, "3_POST_PROC", "M4_Salmon_Saf", "count_matrices_from_Salmon_Quant")
+} else {
+  "count_matrices_from_Salmon_Quant"  # relative fallback for pushd context
+}
 count_label <- "NumReads"
 
 cat("Quantification directory:", quant_dir, "\n")
@@ -145,8 +157,8 @@ if (GENERATE_GENE_LEVEL) {
               "% — transcript IDs may not match. Check gene_trans_map file.\n")
         }
       }
-      rm(list = intersect(c(".sample_qsf", ".qsf_ids", ".match_rate"), ls(all.names = TRUE)))
     }
+    rm(list = intersect(c(".sample_qsf", ".qsf_ids", ".match_rate"), ls(all.names = TRUE)))
     txi <- tryCatch(
       import_salmon(quant_dir, SAMPLE_IDS, tx2gene = .tx2gene),
       error = function(e) { cat("  Gene-level import error:", e$message, "\n"); NULL })
@@ -159,7 +171,10 @@ if (GENERATE_GENE_LEVEL) {
       # Save full tximport object for DESeq2 (preserves transcript-length offsets)
       txi_rds_dir <- file.path(output_dir, MASTER_REFERENCE, "gene_level")
       ensure_output_dir(txi_rds_dir)
-      saveRDS(txi, file.path(txi_rds_dir, "tximport_gene_level.rds"))
+      tryCatch(
+        saveRDS(txi, file.path(txi_rds_dir, "tximport_gene_level.rds")),
+        error = function(e) cat("  Warning: Failed to save tximport RDS:", e$message, "\n")
+      )
       cat("Saved tximport RDS for DESeq2: tximport_gene_level.rds\n")
       }
     }
@@ -176,6 +191,14 @@ if (GENERATE_ISOFORM_LEVEL) {
     } else {
       results$isoform_level     <- txi$counts
       results$isoform_level_tpm <- txi$abundance
+      # Save tximport RDS for isoform-level DESeq2 (preserves transcript-length offsets)
+      txi_iso_rds_dir <- file.path(output_dir, MASTER_REFERENCE, "isoform_level")
+      ensure_output_dir(txi_iso_rds_dir)
+      tryCatch(
+        saveRDS(txi, file.path(txi_iso_rds_dir, "tximport_isoform_level.rds")),
+        error = function(e) cat("  Warning: Failed to save isoform tximport RDS:", e$message, "\n")
+      )
+      cat("Saved tximport RDS for isoform-level DESeq2: tximport_isoform_level.rds\n")
     }
   }
 }
