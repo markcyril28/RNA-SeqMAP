@@ -33,7 +33,7 @@ if (ncol(coldata) == 1) {
 # Accept "sample", "SampleID", or "sampleID" as the sample column name
 sample_col <- intersect(c("sample", "SampleID", "sampleID"), colnames(coldata))[1]
 if (is.na(sample_col)) {
-  stop("metadata file must have a 'sample' or 'SampleID' column. Found: ",
+  stop("metadata file must have a 'sample', 'SampleID', or 'sampleID' column. Found: ",
        paste(colnames(coldata), collapse = ", "))
 }
 samples <- coldata[[sample_col]]
@@ -55,7 +55,31 @@ if (!all(file.exists(files))) {
 
 # Import with tximport
 if (tolower(method) == "salmon") {
-  txi <- tximport(files, type = "salmon", txOut = TRUE)
+  # Check for tx2gene mapping file (enables gene-level aggregation)
+  # Look for GENE_TRANS_MAP_FILE env var, or auto-discover near quant_dir
+  tx2gene_file <- Sys.getenv("GENE_TRANS_MAP_FILE", unset = "")
+  if (!nzchar(tx2gene_file)) {
+    parent_dir <- dirname(quant_dir)
+    candidates <- list.files(parent_dir, pattern = "\\.gene_trans_map$",
+                             recursive = TRUE, full.names = TRUE)
+    if (length(candidates) > 0) tx2gene_file <- candidates[1]
+  }
+  if (nzchar(tx2gene_file) && file.exists(tx2gene_file)) {
+    cat("Using tx2gene mapping for gene-level aggregation:", tx2gene_file, "\n")
+    tx2gene <- read.table(tx2gene_file, header = FALSE, sep = "\t",
+                          stringsAsFactors = FALSE, colClasses = c("character", "character"),
+                          strip.white = TRUE)
+    colnames(tx2gene) <- c("GENEID", "TXNAME")
+    tx2gene$GENEID <- trimws(tx2gene$GENEID)
+    tx2gene$TXNAME <- trimws(tx2gene$TXNAME)
+    tx2gene <- tx2gene[, c("TXNAME", "GENEID")]
+    txi <- tximport(files, type = "salmon", txIn = TRUE, txOut = FALSE,
+                    tx2gene = tx2gene, ignoreTxVersion = FALSE, ignoreAfterBar = FALSE)
+  } else {
+    cat("No tx2gene mapping found — producing transcript-level output\n")
+    cat("Set GENE_TRANS_MAP_FILE env var for gene-level aggregation\n")
+    txi <- tximport(files, type = "salmon", txOut = TRUE)
+  }
 } else if (tolower(method) == "rsem") {
   txi <- tximport(files, type = "rsem", txIn = FALSE, txOut = FALSE)
 }
@@ -78,9 +102,11 @@ saveRDS(txi, file.path(output_dir, paste0("tximport_", tolower(method), ".rds"))
 saveRDS(dds, file.path(output_dir, paste0("deseq2_dataset_", tolower(method), ".rds")))
 
 # Export count matrices with explicit GeneID column (consistent with other preprocessing scripts)
-# Salmon txOut=TRUE produces transcript-level data; RSEM produces gene-level
-id_label <- if (tolower(method) == "salmon") "TranscriptID" else "GeneID"
-level <- if (tolower(method) == "salmon") "transcript" else "gene"
+# Salmon with tx2gene produces gene-level data; Salmon without produces transcript-level
+# RSEM always produces gene-level data
+is_gene_level <- tolower(method) == "rsem" || exists("tx2gene", inherits = FALSE)
+id_label <- if (is_gene_level) "GeneID" else "TranscriptID"
+level <- if (is_gene_level) "gene" else "transcript"
 
 save_tximport_tsv <- function(mat, filename) {
   df <- as.data.frame(mat, check.names = FALSE)
