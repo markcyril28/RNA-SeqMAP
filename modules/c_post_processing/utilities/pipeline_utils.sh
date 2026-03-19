@@ -58,13 +58,6 @@ get_analysis_script() {
         "Matrix_Creation")                echo "3_Matrix_Creation.R" ;;
         "Basic_Heatmap")                  echo "4_Basic_Heatmap.R" ;;
         "Heatmap_with_CV")               echo "5_Heatmap_with_CV.R" ;;
-        "BarGraph")                       echo "6_BarGraph.R" ;;
-        "Coexpression_using_WGCNA")      echo "7_Coexpression_WGCNA.R" ;;
-        "Differential_Expression")        echo "8_Differential_Expression.R" ;;
-        "Gene_Set_Enrichment")            echo "9_Gene_Set_Enrichment.R" ;;
-        "PCA_Dimensionality_Reduction")  echo "10_PCA_Dimensionality_Reduction.R" ;;
-        "Sample_Correlation_Clustering") echo "11_Sample_Correlation_Clustering.R" ;;
-        "Tissue_Specificity")             echo "12_Tissue_Specificity.R" ;;
         *)                                echo "" ;;
     esac
 }
@@ -120,15 +113,13 @@ get_preprocessing_script() {
 #===============================================================================
 
 # Check whether an analysis belongs to the parallelisable (figure) set.
-# Thread-intensive analyses (Matrix_Creation, Differential_Expression,
-# Coexpression_using_WGCNA, Gene_Set_Enrichment, PCA_Dimensionality_Reduction)
-# are NOT figure analyses and run sequentially with full THREADS.
+# Matrix_Creation remains a thread-intensive (non-figure) analysis.
 # Note: list is inlined because bash cannot export arrays to GNU Parallel subshells.
 # Uses case for O(1) pattern match instead of O(n) loop.
 # Usage: is_figure_analysis "Basic_Heatmap" && echo yes
 is_figure_analysis() {
     case "$1" in
-        Basic_Heatmap|Heatmap_with_CV|BarGraph|Sample_Correlation_Clustering|Tissue_Specificity) return 0 ;;
+        Basic_Heatmap|Heatmap_with_CV) return 0 ;;
         *) return 1 ;;
     esac
 }
