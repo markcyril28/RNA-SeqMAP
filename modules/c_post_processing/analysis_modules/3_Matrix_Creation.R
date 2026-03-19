@@ -143,7 +143,8 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
         } else {
         txi_gene <- tryCatch(
           tximport(.m3_quant_files,
-                   type = "salmon", tx2gene = tx2gene, ignoreTxVersion = FALSE),
+                   type = "salmon", tx2gene = tx2gene,
+                   ignoreTxVersion = FALSE, ignoreAfterBar = FALSE),
           error = function(e) { cat("  M3 gene-level import error:", e$message, "\n"); NULL })
         if (!is.null(txi_gene)) {
           if (nrow(txi_gene$counts) == 0 || ncol(txi_gene$counts) == 0) {
@@ -353,7 +354,8 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
     if (GENERATE_ISOFORM_LEVEL) {
       txi_iso <- tryCatch(
         tximport(setNames(file.path(quant_dir, sample_ids, "quant.sf"), sample_ids),
-                 type = "salmon", txOut = TRUE),
+                 type = "salmon", txOut = TRUE,
+                 ignoreTxVersion = FALSE, ignoreAfterBar = FALSE),
         error = function(e) { cat("  M4 isoform-level import error:", e$message, "\n"); NULL })
       if (!is.null(txi_iso)) {
         if (nrow(txi_iso$counts) == 0 || ncol(txi_iso$counts) == 0) {

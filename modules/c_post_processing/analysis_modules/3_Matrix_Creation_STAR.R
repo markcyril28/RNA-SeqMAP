@@ -156,20 +156,21 @@ if (GENERATE_GENE_LEVEL) {
           cat("    Skipping gene-level import.\n\n")
         } else {
           txi_gene <- tryCatch(
-            tximport(quant_files, type = "salmon", tx2gene = tx2gene, ignoreTxVersion = FALSE),
+            tximport(quant_files, type = "salmon", tx2gene = tx2gene,
+                     ignoreTxVersion = FALSE, ignoreAfterBar = FALSE),
             error = function(e) { cat("  Gene-level import error:", e$message, "\n"); NULL })
 
           if (!is.null(txi_gene)) {
             if (nrow(txi_gene$counts) == 0 || ncol(txi_gene$counts) == 0) {
               cat("WARNING: Gene-level import produced empty matrix — skipping\n")
             } else {
-            results$gene_level     <- txi_gene$counts
-            results$gene_level_tpm <- txi_gene$abundance
-            # Save full tximport object for DESeq2 (preserves transcript-length offsets)
-            txi_rds_dir <- file.path(output_dir, MASTER_REFERENCE, "gene_level")
-            ensure_output_dir(txi_rds_dir)
-            saveRDS(txi_gene, file.path(txi_rds_dir, "tximport_gene_level.rds"))
-            cat("Saved tximport RDS for DESeq2: tximport_gene_level.rds\n")
+              results$gene_level     <- txi_gene$counts
+              results$gene_level_tpm <- txi_gene$abundance
+              # Save full tximport object for DESeq2 (preserves transcript-length offsets)
+              txi_rds_dir <- file.path(output_dir, MASTER_REFERENCE, "gene_level")
+              ensure_output_dir(txi_rds_dir)
+              saveRDS(txi_gene, file.path(txi_rds_dir, "tximport_gene_level.rds"))
+              cat("Saved tximport RDS for DESeq2: tximport_gene_level.rds\n")
             }
           }
         }
