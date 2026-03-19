@@ -95,8 +95,9 @@ generate_heatmap_violet <- function(data_matrix, output_path, title,
     # quantile approach ensures identical color patterns between the two.
     # For zscore_scaled_to_ten: show a complete 0-10 legend (increment of 2) so the
     # reader sees the full intuitive scale, even though colors are quantile-mapped.
-    is_zscore_scaled <- grepl("zscore.*scaled.*ten|z-score.*scaled.*ten",
-                              normalization_type, ignore.case = TRUE)
+    # Use norm_scheme (internal name) instead of normalization_type (display name)
+    # for reliable detection — display names can change without breaking this logic.
+    is_zscore_scaled <- !is.null(norm_scheme) && norm_scheme == "zscore_scaled_to_ten"
     if (is_zscore_scaled) {
       legend_breaks <- seq(0, 10, by = 2)
       legend_labels <- as.character(legend_breaks)
