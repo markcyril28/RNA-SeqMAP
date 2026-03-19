@@ -76,6 +76,9 @@ GENERATE_ISOFORM_LEVEL <- as.logical(Sys.getenv("SALMON_GENERATE_ISOFORM_LEVEL",
 
 # Use SAMPLE_IDS from shared config (0_shared_config.R)
 # Override here if needed for method-specific samples
+if (length(SAMPLE_IDS) == 0) {
+  stop("No samples loaded. Check SRR_COMBINED_LIST_STR and SRR_csv files.")
+}
 
 # Create output directories
 output_dir <- file.path(MATRICES_OUTPUT_DIR, MASTER_REFERENCE)
@@ -194,7 +197,8 @@ for (level_name in names(processing_levels)) {
   if (is.null(tx2gene_file) && nzchar(INPUT_FASTAS_DIR)) {
     all_maps <- list.files(INPUT_FASTAS_DIR, pattern = "\\.gene_trans_map$",
                            recursive = TRUE, full.names = TRUE)
-    ref_maps <- all_maps[grepl(MASTER_REFERENCE, all_maps, fixed = TRUE)]
+    # Match on basename to avoid substring false positives (e.g., "V4" matching "V4.1")
+    ref_maps <- all_maps[grepl(paste0("(^|[/\\\\])", MASTER_REFERENCE, "\\."), all_maps)]
     if (length(ref_maps) > 0) tx2gene_file <- ref_maps[1]
   }
   rm(.cand)
@@ -211,7 +215,15 @@ for (level_name in names(processing_levels)) {
 
     # Read tx2gene mapping (columns: GENEID, TXNAME → reorder to TXNAME, GENEID for tximport)
     tx2gene <- read.table(tx2gene_file, header = FALSE, sep = "\t", stringsAsFactors = FALSE,
-                         colClasses = c("character", "character"))
+                         strip.white = TRUE)
+    if (ncol(tx2gene) < 2) {
+      cat("ERROR: tx2gene file must have at least 2 tab-separated columns, found", ncol(tx2gene), "\n")
+      cat("  File:", tx2gene_file, "\n")
+      cat("Skipping gene-level processing...\n\n")
+      next
+    }
+    # Keep only first 2 columns (gene_id, transcript_id)
+    tx2gene <- tx2gene[, 1:2, drop = FALSE]
     colnames(tx2gene) <- c("GENEID", "TXNAME")
     tx2gene$GENEID <- trimws(tx2gene$GENEID)
     tx2gene$TXNAME <- trimws(tx2gene$TXNAME)
@@ -262,11 +274,15 @@ for (level_name in names(processing_levels)) {
   cat("Total", entity_type, ":", nrow(txi$counts), "\n\n")
 
   # Save full tximport object for DESeq2 (preserves transcript-length offsets)
-  if (!level_config$tx_out) {
+  {
     txi_rds_dir <- file.path(output_dir, level_name)
     dir.create(txi_rds_dir, recursive = TRUE, showWarnings = FALSE)
-    saveRDS(txi, file.path(txi_rds_dir, "tximport_gene_level.rds"))
-    cat("Saved tximport RDS for DESeq2: tximport_gene_level.rds\n\n")
+    rds_name <- if (level_config$tx_out) "tximport_isoform_level.rds" else "tximport_gene_level.rds"
+    tryCatch(
+      saveRDS(txi, file.path(txi_rds_dir, rds_name)),
+      error = function(e) cat("  Warning: Failed to save tximport RDS:", e$message, "\n")
+    )
+    cat("Saved tximport RDS for DESeq2:", rds_name, "\n\n")
   }
 
   # ===============================================
@@ -365,12 +381,18 @@ for (level_name in names(processing_levels)) {
 
   cat("Step 7: Processing gene groups...\n")
 
+  if (!dir.exists(GENE_GROUPS_DIR)) {
+    cat("WARNING: Gene groups directory does not exist:", GENE_GROUPS_DIR, "\n")
+    cat("  Set GENE_GROUPS_DIR env var or check BASE_DIR.\n")
+  }
   gene_group_files <- list.files(GENE_GROUPS_DIR, pattern = "\\.(csv|txt|tsv)$", recursive = TRUE, full.names = TRUE)
 
-  # Deduplicate by basename — recursive search may find the same gene group in multiple
-  # subdirectories (e.g. gene_sets/ and experimental/Eggplant_V4.1/); keep the first match.
+  # Deduplicate by basename (sans extension) — recursive search may find the same gene group
+  # in multiple subdirectories (e.g. gene_sets/ and experimental/Eggplant_V4.1/) or formats
+  # (e.g. SmelDMPs.csv and SmelDMPs.txt); keep the first match.
   if (length(gene_group_files) > 1) {
-    dup_idx <- duplicated(basename(gene_group_files))
+    gg_base_names <- tools::file_path_sans_ext(basename(gene_group_files))
+    dup_idx <- duplicated(gg_base_names)
     if (any(dup_idx)) {
       cat("  Note: removing", sum(dup_idx), "duplicate gene group file(s) by basename\n")
       gene_group_files <- gene_group_files[!dup_idx]
