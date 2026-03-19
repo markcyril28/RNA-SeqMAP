@@ -20,7 +20,13 @@ if [[ -f /proc/meminfo ]]; then
 elif command -v sysctl &>/dev/null; then
     AVAILABLE_RAM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1/1073741824}')
 fi
+# Fallback: try free(1) before using hardcoded default
+if [[ -z "${AVAILABLE_RAM_GB:-}" || "${AVAILABLE_RAM_GB:-0}" -eq 0 ]] 2>/dev/null; then
+    AVAILABLE_RAM_GB=$(free -g 2>/dev/null | awk '/^Mem:/ {print $7}')
+fi
 AVAILABLE_RAM_GB="${AVAILABLE_RAM_GB:-24}"
+# Ensure numeric (strip non-digits) before arithmetic
+[[ "$AVAILABLE_RAM_GB" =~ ^[0-9]+$ ]] || AVAILABLE_RAM_GB=24
 # Floor: ensure at least 4 GB to avoid starving R scripts
 (( AVAILABLE_RAM_GB < 4 )) && AVAILABLE_RAM_GB=4
 
@@ -208,21 +214,22 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
     # Clear output folders if requested (rm -rf + mkdir is faster than find -delete on deep trees)
     if [[ "$CLEAR_OUTPUT_FOLDER" == "TRUE" ]]; then
         log_info "Clearing output folders for $MASTER_REFERENCE..."
-        _cleared=0
+        # Collect all target directories first, then batch rm + mkdir
+        _clear_targets=()
         for method in "${METHODS[@]}"; do
             output_base="$BASE_DIR/3_POST_PROC/$method/Figure_Outputs"
             [[ -d "$output_base" ]] || continue
             for analysis in "${ANALYSES[@]}"; do
                 folder_name="$(get_output_folder_name "$analysis")"
                 target="$output_base/$folder_name/$MASTER_REFERENCE"
-                if [[ -n "$folder_name" && -d "$target" ]]; then
-                    rm -rf "$target"
-                    mkdir -p "$target"
-                    ((_cleared++)) || true
-                fi
+                [[ -n "$folder_name" && -d "$target" ]] && _clear_targets+=("$target")
             done
         done
-        [[ $_cleared -gt 0 ]] && log_info "  Cleared $_cleared output directories"
+        if [[ ${#_clear_targets[@]} -gt 0 ]]; then
+            rm -rf "${_clear_targets[@]}"
+            mkdir -p "${_clear_targets[@]}"
+            log_info "  Cleared ${#_clear_targets[@]} output directories"
+        fi
     fi
 
     # Export for R scripts and subprocesses
@@ -234,6 +241,50 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
     log_info "Reference: $MASTER_REFERENCE | Methods: ${METHODS[*]}"
     log_info "Gene Groups: ${GENE_GROUPS[*]} | Datasets: ${SRR_DATASETS[*]} (${#SRR_COMBINED_LIST[@]} samples)"
     log_info "Analyses: ${ANALYSES[*]}"
+
+    # ── Phase 0: Setup method environments (once per config, not per dataset) ──
+    # Method environments depend on METHODS[] and MASTER_REFERENCE which are
+    # config-level, not dataset-level. Hoisting saves N_datasets × N_methods
+    # redundant setup calls.
+    _methods_setup_ok=true
+    for method in "${METHODS[@]}"; do
+        setup_method_env "$method" "$MASTER_REFERENCE" || {
+            log_error "Failed to set up environment for $method — skipping config"
+            _methods_setup_ok=false
+            break
+        }
+    done
+    $_methods_setup_ok || continue
+
+    # Export utils once per config (avoids repeated export -f per dataset)
+    if $_HAS_PARALLEL && [[ "$ENABLE_GNU_PARALLEL" == "TRUE" ]]; then
+        export_utils_for_parallel
+        export SCRIPT_DIR LOG_FILE ERROR_WARN_FILE RUN_ID
+    fi
+
+    # ── Pre-compute analysis classification (config-level, not dataset-level) ──
+    # Split ANALYSES into heavy (thread-bound) and figure (parallelizable) categories
+    # once per config instead of re-classifying per dataset.
+    HEAVY_ANALYSES=()
+    FIGURE_ANALYSES=()
+    for analysis in "${ANALYSES[@]}"; do
+        [[ -z "$analysis" ]] && continue
+        if is_figure_analysis "$analysis"; then
+            FIGURE_ANALYSES+=("$analysis")
+        else
+            HEAVY_ANALYSES+=("$analysis")
+        fi
+    done
+
+    # Pre-build method×analysis Cartesian product for Phase 3 (config-level)
+    PARALLEL_TASKS=()
+    if [[ ${#FIGURE_ANALYSES[@]} -gt 0 ]]; then
+        for method in "${METHODS[@]}"; do
+            for analysis in "${FIGURE_ANALYSES[@]}"; do
+                PARALLEL_TASKS+=("${method}"$'\t'"${analysis}")
+            done
+        done
+    fi
 
     # Process each dataset (reuse cached CSV parse — avoids redundant file I/O)
     for dataset in "${SRR_DATASETS[@]}"; do
@@ -251,20 +302,6 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
         export CURRENT_DATASET="$dataset" SRR_COMBINED_LIST_STR="${CURRENT_SRR_LIST[*]}"
         log_step "Dataset: $dataset (${#CURRENT_SRR_LIST[@]} samples)"
 
-        # ── Phase 0: Setup method environments ──
-        for method in "${METHODS[@]}"; do
-            setup_method_env "$method" "$MASTER_REFERENCE" || {
-                log_error "Failed to set up environment for $method — skipping dataset $dataset"
-                continue 2
-            }
-        done
-
-        # Export utils once per dataset (avoids repeated export -f in each phase)
-        if $_HAS_PARALLEL && [[ "$ENABLE_GNU_PARALLEL" == "TRUE" ]]; then
-            export_utils_for_parallel
-            export SCRIPT_DIR LOG_FILE ERROR_WARN_FILE RUN_ID
-        fi
-
         # ── Phase 1: Preprocessing (parallel across methods when possible) ──
         if [[ ${#METHODS[@]} -gt 1 && "$ENABLE_GNU_PARALLEL" == "TRUE" ]] && $_HAS_PARALLEL; then
             log_info "Phase 1: Preprocessing (parallel across ${#METHODS[@]} methods)"
@@ -281,18 +318,6 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
         fi
 
         # ── Phase 2: Thread-heavy analyses (sequential — needs full threads) ──
-        # Includes: Matrix_Creation, Differential_Expression, WGCNA, GSEA, PCA
-        HEAVY_ANALYSES=()
-        FIGURE_ANALYSES=()
-        for analysis in "${ANALYSES[@]}"; do
-            [[ -z "$analysis" ]] && continue
-            if is_figure_analysis "$analysis"; then
-                FIGURE_ANALYSES+=("$analysis")
-            else
-                HEAVY_ANALYSES+=("$analysis")
-            fi
-        done
-
         if [[ ${#HEAVY_ANALYSES[@]} -gt 0 ]]; then
             if [[ ${#METHODS[@]} -gt 1 && "$ENABLE_GNU_PARALLEL" == "TRUE" ]] && $_HAS_PARALLEL; then
                 # Each method's heavy analyses are independent of other methods.
@@ -309,13 +334,12 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
                 log_info "Phase 2: Heavy analyses (parallel across ${_n_methods} methods, ${_threads_per_method} threads each): ${HEAVY_ANALYSES[*]}"
                 # Worker function: run all heavy analyses for one method with reduced thread count
                 _run_heavy_for_method() {
-                    local _method="$1" _ref="$2" _orig_threads="$THREADS"
+                    local _method="$1" _ref="$2"
                     shift 2
                     export THREADS="$_threads_per_method"
                     for _analysis in "$@"; do
                         run_single_analysis "$_method" "$_ref" "$_analysis"
                     done
-                    export THREADS="$_orig_threads"
                 }
                 export -f _run_heavy_for_method
                 export _threads_per_method
@@ -336,18 +360,10 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
         fi
 
         # ── Phase 3: Figure generation (parallelisable — lightweight per job) ──
+        # PARALLEL_TASKS array was pre-built above (config-level, not per-dataset)
         if [[ ${#FIGURE_ANALYSES[@]} -gt 0 ]]; then
             if [[ "$ENABLE_GNU_PARALLEL" == "TRUE" && $JOBS -gt 1 ]] && $_HAS_PARALLEL; then
                 log_info "Phase 3: Figure generation (GNU Parallel, $JOBS jobs): ${FIGURE_ANALYSES[*]}"
-
-                # Build method×analysis pairs (tab-separated) and parallelise
-                PARALLEL_TASKS=()
-                for method in "${METHODS[@]}"; do
-                    for analysis in "${FIGURE_ANALYSES[@]}"; do
-                        PARALLEL_TASKS+=("${method}"$'\t'"${analysis}")
-                    done
-                done
-
                 printf '%s\n' "${PARALLEL_TASKS[@]}" | parallel \
                     -j "$JOBS" \
                     --colsep '\t' \
