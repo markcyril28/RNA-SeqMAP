@@ -39,9 +39,10 @@ mkdir -p "$GPU_LOG_DIR" 2>/dev/null || true
 # LOGGING FUNCTIONS
 # ==============================================================================
 
-# Get timestamp for logging
+# Get timestamp for logging (prefer bash printf to avoid date subprocess)
 _get_timestamp() {
-	date "+%Y-%m-%d %H:%M:%S"
+	local _ts
+	printf -v _ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null && echo "$_ts" || date "+%Y-%m-%d %H:%M:%S"
 }
 
 # Write to log file
@@ -580,7 +581,7 @@ verify_installation() {
 			fi
 			
 			if command -v nvcc &>/dev/null; then
-				log_info "CUDA compiler: OK ($(nvcc --version | grep release | awk '{print $5}' | tr -d ','))"
+				log_info "CUDA compiler: OK ($(nvcc --version | awk '/release/{gsub(/,/,"",$5); print $5}'))"
 			else
 				log_warn "CUDA compiler (nvcc): NOT FOUND - reboot may be required"
 			fi

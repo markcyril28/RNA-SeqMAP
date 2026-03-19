@@ -609,6 +609,10 @@ rotate_old_logs() {
 # GPU LOGGING FUNCTIONS
 # ==============================================================================
 
+# Cache nvidia-smi availability once (avoids repeated PATH lookups in GPU log functions)
+_HAS_NVIDIA_SMI=false
+command -v nvidia-smi &>/dev/null && _HAS_NVIDIA_SMI=true
+
 log_gpu() {
 	# Log GPU-related message to GPU log file
 	# Usage: log_gpu "message"
@@ -621,8 +625,8 @@ log_gpu_info() {
 	# Log GPU information and status using nvidia-smi
 	# Usage: log_gpu_info [description]
 	local description="${1:-GPU Status}"
-	
-	if ! command -v nvidia-smi >/dev/null 2>&1; then
+
+	if ! $_HAS_NVIDIA_SMI; then
 		log_gpu "nvidia-smi not found - GPU monitoring unavailable"
 		return 1
 	fi
@@ -640,8 +644,8 @@ log_gpu_memory() {
 	# Log GPU memory usage
 	# Usage: log_gpu_memory [description]
 	local description="${1:-GPU Memory}"
-	
-	if ! command -v nvidia-smi >/dev/null 2>&1; then
+
+	if ! $_HAS_NVIDIA_SMI; then
 		log_gpu "nvidia-smi not found - GPU monitoring unavailable"
 		return 1
 	fi
@@ -659,8 +663,8 @@ log_gpu_utilization() {
 	# Log GPU utilization percentage
 	# Usage: log_gpu_utilization [description]
 	local description="${1:-GPU Utilization}"
-	
-	if ! command -v nvidia-smi >/dev/null 2>&1; then
+
+	if ! $_HAS_NVIDIA_SMI; then
 		log_gpu "nvidia-smi not found - GPU monitoring unavailable"
 		return 1
 	fi
@@ -685,7 +689,7 @@ run_with_gpu_log() {
 	log_gpu_memory "Before: $cmd_string"
 
 	# Start background GPU monitor (polls every 2s, writes peak to temp file)
-	if command -v nvidia-smi >/dev/null 2>&1; then
+	if $_HAS_NVIDIA_SMI; then
 		peak_file=$(mktemp "${GPU_LOG_DIR}/.gpu_peak_XXXXXX")
 		echo "0" > "$peak_file"
 		(
