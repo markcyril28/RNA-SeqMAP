@@ -66,14 +66,40 @@ for (i in seq_along(method_pairs)) {
   nonzero_mask <- (mat1 > 0) | (mat2 > 0)  # genes × samples logical matrix
   nonzero_per_sample <- colSums(nonzero_mask)
 
-  # Vectorized skip detection: avoid O(n²) c() concatenation in loop
-  skipped_samples <- common_samples[nonzero_per_sample[common_samples] < CORRELATION_MIN_GENES]
+  # Vectorized skip detection — guard against missing names
+  nonzero_counts <- nonzero_per_sample[common_samples]
+  nonzero_counts[is.na(nonzero_counts)] <- 0L
+  skipped_samples <- common_samples[nonzero_counts < CORRELATION_MIN_GENES]
   valid_samples <- setdiff(common_samples, skipped_samples)
-  for (s in valid_samples) {
-    nz <- nonzero_mask[, s]
-    spearman_per_sample[s, i] <- cor(mat1[nz, s], mat2[nz, s], method = "spearman",
-                                      use = "pairwise.complete.obs")
+
+  # Vectorized Spearman: rank transform per column, then compute Pearson on ranks.
+  # Spearman(x,y) = Pearson(rank(x), rank(y)). This avoids N individual cor() calls.
+  if (length(valid_samples) > 0) {
+    # Zero out non-expressed genes per sample so they don't affect ranking
+    # (set to NA, then rank with na.last="keep" to exclude them)
+    m1_valid <- mat1[, valid_samples, drop = FALSE]
+    m2_valid <- mat2[, valid_samples, drop = FALSE]
+    nz_valid <- nonzero_mask[, valid_samples, drop = FALSE]
+    m1_valid[!nz_valid] <- NA
+    m2_valid[!nz_valid] <- NA
+
+    # Column-wise rank transform (each sample ranked independently)
+    r1 <- apply(m1_valid, 2, rank, na.last = "keep")
+    r2 <- apply(m2_valid, 2, rank, na.last = "keep")
+
+    # Pearson correlation on ranks = Spearman (vectorized per column)
+    # Center each column, compute dot-product correlation
+    r1_centered <- sweep(r1, 2, colMeans(r1, na.rm = TRUE))
+    r2_centered <- sweep(r2, 2, colMeans(r2, na.rm = TRUE))
+    r1_centered[is.na(r1_centered)] <- 0
+    r2_centered[is.na(r2_centered)] <- 0
+
+    num <- colSums(r1_centered * r2_centered)
+    den <- sqrt(colSums(r1_centered^2) * colSums(r2_centered^2))
+    den[den == 0] <- 1  # guard against zero-variance
+    spearman_per_sample[valid_samples, i] <- num / den
   }
+
   if (length(skipped_samples) > 0) {
     cat("  Warning: Skipped", length(skipped_samples), "samples for pair",
         get_short_name(m1), "vs", get_short_name(m2),
@@ -124,15 +150,22 @@ print(round(median_spearman, 3))
 
 cat("\n--- Generating Median Spearman concordance heatmap ---\n")
 
+# Replace any NaN/Inf values in the correlation matrix with NA before visualization
+median_spearman[!is.finite(median_spearman) & row(median_spearman) != col(median_spearman)] <- NA
 min_cor <- min(median_spearman, na.rm = TRUE)
-if (is.na(min_cor) || min_cor >= 1) min_cor <- 0.9
+if (!is.finite(min_cor) || min_cor >= 1) min_cor <- 0.9
+if (all(is.na(median_spearman[row(median_spearman) != col(median_spearman)]))) {
+  cat("  WARNING: All pairwise correlations are NA — check input data quality\n")
+}
 col_fun <- colorRamp2(
   seq(min_cor, 1, length.out = 100),
   colorRampPalette(c("#FEE090", "#E0F3F8", "#91BFDB", "#4575B4"))(100)
 )
 
 cell_fun <- function(j, i, x, y, width, height, fill) {
-  grid.text(sprintf("%.2f", median_spearman[i, j]), x, y, gp = gpar(fontsize = 12, fontface = "bold"))
+  val <- median_spearman[i, j]
+  label <- if (is.finite(val)) sprintf("%.2f", val) else "N/A"
+  grid.text(label, x, y, gp = gpar(fontsize = 12, fontface = "bold"))
 }
 
 ht <- Heatmap(median_spearman,
@@ -156,14 +189,17 @@ ht <- Heatmap(median_spearman,
   height = unit(14, "cm")
 )
 
+.dev_open <- FALSE
 tryCatch({
   png(file.path(FIGURES_DIR, "method_concordance_heatmap_spearman.png"),
       width = 1600, height = 1300, res = 150)
+  .dev_open <- TRUE
   draw(ht, padding = unit(c(30, 30, 25, 40), "mm"))
   dev.off()
+  .dev_open <- FALSE
   cat("  Saved: method_concordance_heatmap_spearman.png\n")
 }, error = function(e) {
-  try(dev.off(), silent = TRUE)
+  if (.dev_open) try(dev.off(), silent = TRUE)
   cat("  Error generating concordance heatmap:", e$message, "\n")
 })
 
