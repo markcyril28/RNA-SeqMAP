@@ -81,21 +81,27 @@ if [[ "$_genome_ref" == *_genome ]]; then
 else
     _transcript_ref="${_genome_ref}_transcripts"
 fi
-# Verify the auto-derived transcript reference exists for at least one method's
-# alignment directory.  If not, search for the actual transcript reference dir
-# (handles non-standard naming like Eggplant_V4.1_transcripts.function).
-_m2_stringtie_base="${ALIGNMENT_BASE:-${BASE_DIR}/2_ALIGNMENT_RESULTs}/M2_HISAT2_DeNovo/stringtie_WD"
-if [[ -d "$_m2_stringtie_base" && ! -d "$_m2_stringtie_base/$_transcript_ref" ]]; then
-    _base_pattern="${_genome_ref%_genome}"
-    [[ "$_base_pattern" == "$_genome_ref" ]] && _base_pattern="$_genome_ref"
-    _found_ref=$(find "$_m2_stringtie_base" -maxdepth 1 -type d -name "${_base_pattern}*transcript*" -printf '%f\n' 2>/dev/null | head -1)
-    if [[ -n "$_found_ref" ]]; then
-        log_info "Auto-derived transcript ref '${_transcript_ref}' not found; using '${_found_ref}'"
-        _transcript_ref="$_found_ref"
+# Auto-detect transcript reference by checking multiple method directories.
+# Handles non-standard naming like Eggplant_V4.1_transcripts.function.
+_base_pattern="${_genome_ref%_genome}"
+[[ "$_base_pattern" == "$_genome_ref" ]] && _base_pattern="$_genome_ref"
+_align_base="${ALIGNMENT_BASE:-${BASE_DIR}/2_ALIGNMENT_RESULTs}"
+_transcript_ref_dirs=(
+    "$_align_base/M2_HISAT2_DeNovo/stringtie_WD"
+    "$_align_base/M4_Salmon_Saf/Salmon_Quant_WD"
+    "$_align_base/M5_RSEM_Bowtie2/RSEM_Quant_WD"
+)
+for _probe_dir in "${_transcript_ref_dirs[@]}"; do
+    if [[ -d "$_probe_dir" && ! -d "$_probe_dir/$_transcript_ref" ]]; then
+        _found_ref=$(find "$_probe_dir" -maxdepth 1 -type d -name "${_base_pattern}*transcript*" -printf '%f\n' 2>/dev/null | head -1)
+        if [[ -n "$_found_ref" ]]; then
+            log_info "Auto-derived transcript ref '${_transcript_ref}' not found in $(basename "$(dirname "$_probe_dir")"); using '${_found_ref}'"
+            _transcript_ref="$_found_ref"
+            break
+        fi
     fi
-    unset _base_pattern _found_ref
-fi
-unset _m2_stringtie_base
+done
+unset _base_pattern _found_ref _align_base _transcript_ref_dirs _probe_dir
 declare -A METHOD_REF_DIRS
 METHOD_REF_DIRS[M1_HISAT2_RefGuided]="${M1_REF_DIR:-$_genome_ref}"
 METHOD_REF_DIRS[M2_HISAT2_DeNovo]="${M2_REF_DIR:-$_transcript_ref}"
@@ -213,6 +219,10 @@ run_step 1 "Load & Harmonize Matrices"    "1_load_matrices.R"
 log_step "[STEPS 2+3] Quantification Concordance & Ranking Stability (parallel)"
 _step2_log="${OUTPUT_DIR}/step2.log"
 _step3_log="${OUTPUT_DIR}/step3.log"
+
+# Ensure temp logs are cleaned up on early exit (SIGINT/SIGTERM)
+_concordance_cleanup() { rm -f "$_step2_log" "$_step3_log"; }
+trap '_concordance_cleanup' EXIT
 
 Rscript "${CONCORDANCE_SCRIPT_DIR}/2_quantification_concordance.R" > "$_step2_log" 2>&1 &
 _pid2=$!
