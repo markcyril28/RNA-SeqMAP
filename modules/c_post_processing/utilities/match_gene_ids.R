@@ -11,6 +11,9 @@
 #          3_Matrix_Creation_utils.R, 8_Differential_Expression.R
 
 match_gene_ids <- function(gene_list, data_rownames) {
+  if (is.null(gene_list) || length(gene_list) == 0) return(character(0))
+  if (is.null(data_rownames) || length(data_rownames) == 0) return(character(0))
+
   # Precompute base IDs by stripping version suffixes (.X.XX then .X)
   base_ids <- sub("\\.[0-9]+\\.[0-9]+$", "", data_rownames)
   base_ids <- sub("\\.[0-9]+$", "", base_ids)

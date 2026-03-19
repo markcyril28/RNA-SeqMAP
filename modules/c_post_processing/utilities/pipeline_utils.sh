@@ -171,7 +171,7 @@ setup_method_env() {
 
     export SRR_COMBINED_LIST_STR="${SRR_COMBINED_LIST_STR:-}"
 
-    popd > /dev/null
+    popd > /dev/null || log_warn "popd failed in setup_method_env (was in $method_dir)"
 }
 
 # Run preprocessing (tximport / prepDE / StringTie) for a single method.
@@ -209,11 +209,11 @@ run_method_preprocessing() {
         fi
     elif [[ -n "$preprocess_path" ]]; then
         log_warn "Preprocessing script not found: $preprocess_path"
-        popd > /dev/null
+        popd > /dev/null || true
         return 1
     fi
 
-    popd > /dev/null
+    popd > /dev/null || log_warn "popd failed in run_method_preprocessing (was in $method_dir)"
 }
 
 # Resolve and run a single analysis script inside the method directory.
@@ -232,7 +232,7 @@ run_single_analysis() {
 
     # Skip legacy preprocessing analysis names
     if [[ "$analysis" =~ ^(Tximport_Salmon|Tximport_RSEM|Tximport_STAR|Stringtie_Matrix)$ ]]; then
-        popd > /dev/null
+        popd > /dev/null || true
         return 0
     fi
 
@@ -242,7 +242,7 @@ run_single_analysis() {
         script=$(get_matrix_creation_script "$method")
         if [[ -z "$script" ]]; then
             log_info "Matrix_Creation not applicable for $method — skipping"
-            popd > /dev/null
+            popd > /dev/null || true
             return 0
         fi
     else
@@ -270,7 +270,7 @@ run_single_analysis() {
         log_warn "Script not found for: $analysis ($method)"
     fi
 
-    popd > /dev/null
+    popd > /dev/null || log_warn "popd failed in run_single_analysis (was in $method_dir)"
 }
 
 # Legacy wrapper — runs ALL analyses for a single method sequentially.
