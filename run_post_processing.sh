@@ -75,7 +75,7 @@ source "$UTILITIES_DIR/pipeline_utils.sh"
 
 if [[ ! -d "$ANALYSIS_MODULES_DIR" ]]; then
     log_warn "Analysis modules directory not found: $ANALYSIS_MODULES_DIR"
-    log_warn "R analysis scripts (Basic_Heatmap, Differential_Expression, etc.) will not run."
+    log_warn "R analysis scripts (Matrix_Creation, Basic_Heatmap, Heatmap_with_CV) will not run."
     log_warn "Restore from z_archive/modules/c_post_processing/analysis_modules/ if needed."
 fi
 
@@ -92,13 +92,6 @@ get_output_folder_name() {
         "Matrix_Creation")                echo "0_Matrix_Creation" ;;
         "Basic_Heatmap")                  echo "I_Basic_Heatmap" ;;
         "Heatmap_with_CV")               echo "II_Heatmap_with_CV" ;;
-        "BarGraph")                       echo "III_Bar_Graphs" ;;
-        "Coexpression_using_WGCNA")      echo "IV_Coexpression_WGCNA" ;;
-        "Differential_Expression")        echo "V_Differential_Expression" ;;
-        "Gene_Set_Enrichment")            echo "VI_Gene_Set_Enrichment" ;;
-        "PCA_Dimensionality_Reduction")  echo "VII_PCA" ;;
-        "Sample_Correlation_Clustering") echo "VIII_Sample_Clustering" ;;
-        "Tissue_Specificity")             echo "IX_Tissue_Specificity" ;;
         *)                                echo "" ;;
     esac
 }
