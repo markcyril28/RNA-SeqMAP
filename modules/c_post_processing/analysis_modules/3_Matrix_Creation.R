@@ -80,6 +80,11 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
 
   if (grepl("STAR|M3", method, ignore.case = TRUE)) {
     if (!.HAS_TXIMPORT) { cat("WARNING: tximport not installed, skipping M3 matrix creation.\n"); return(results) }
+    if (!dir.exists(quant_dir)) {
+      cat("ERROR: M3 STAR+Salmon quantification directory not found:", quant_dir,
+          "\n  Run the M3 STAR+Salmon alignment stage first, or check BASE_DIR / MASTER_REFERENCE.\n")
+      return(results)
+    }
     # Prefer 3_Matrix_Creation_STAR.R; this branch is a fallback only.
     if (GENERATE_GENE_LEVEL) {
       tx2gene_file <- list.files(file.path("count_matrices_from_STAR", master_ref),
@@ -102,41 +107,103 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
           tx2gene$TXNAME <- trimws(tx2gene$TXNAME)
           tx2gene$GENEID <- trimws(tx2gene$GENEID)
         } else {
-          tx2gene <- raw_tx2gene
-          colnames(tx2gene) <- c("TXNAME", "GENEID")[seq_len(ncol(tx2gene))]
+          cat("  Error: tx2gene file has", ncol(raw_tx2gene), "column(s), expected >= 2:",
+              tx2gene_file[1], "\n")
+          tx2gene <- NULL
         }
+        if (is.null(tx2gene)) {
+          cat("  Skipping M3 gene-level import (malformed tx2gene)\n")
+        } else {
+        # Build quant.sf paths with tissue-specific directory fallback
+        .m3_quant_files <- setNames(file.path(quant_dir, sample_ids, "quant.sf"), sample_ids)
+        if (sum(file.exists(.m3_quant_files)) == 0 && dir.exists(quant_dir)) {
+          .tissue_dirs <- list.dirs(quant_dir, recursive = FALSE, full.names = TRUE)
+          # Vectorized: build all candidate paths at once, check existence in one batch
+          .all_cands <- outer(.tissue_dirs, sample_ids, function(td, sid) file.path(td, sid, "quant.sf"))
+          .all_exist <- matrix(file.exists(.all_cands), nrow = length(.tissue_dirs))
+          for (.j in seq_along(sample_ids)) {
+            .hit <- which(.all_exist[, .j])[1]
+            if (!is.na(.hit)) .m3_quant_files[sample_ids[.j]] <- .all_cands[.hit, .j]
+          }
+        }
+        .m3_quant_files <- .m3_quant_files[file.exists(.m3_quant_files)]
+        if (length(.m3_quant_files) < 2) {
+          cat("  Error: Need >= 2 quant.sf files for M3 gene-level import, found",
+              length(.m3_quant_files), "\n")
+        } else {
+        # Validate tx2gene transcript IDs match quant.sf IDs
+        .sample_qf <- read.delim(.m3_quant_files[1], header = TRUE, nrows = 100,
+                                  stringsAsFactors = FALSE)
+        .qf_ids <- .sample_qf$Name
+        .overlap <- length(intersect(.qf_ids, tx2gene$TXNAME))
+        .match_rate <- if (length(.qf_ids) > 0) .overlap / length(.qf_ids) else 0
+        if (.match_rate < 0.5) {
+          cat("  ERROR: tx2gene transcript IDs poorly match quant.sf IDs (match rate:",
+              round(.match_rate * 100), "%) — skipping M3 gene-level import\n")
+        } else {
         txi_gene <- tryCatch(
-          tximport(setNames(file.path(quant_dir, sample_ids, "quant.sf"), sample_ids),
+          tximport(.m3_quant_files,
                    type = "salmon", tx2gene = tx2gene, ignoreTxVersion = FALSE),
-          error = function(e) NULL)
+          error = function(e) { cat("  M3 gene-level import error:", e$message, "\n"); NULL })
         if (!is.null(txi_gene)) {
-          results$gene_level     <- txi_gene$counts
-          results$gene_level_tpm <- txi_gene$abundance
-          # Save tximport RDS for DESeq2 (preserves transcript-length offsets)
-          txi_rds_dir <- file.path(output_dir, master_ref, "gene_level")
-          ensure_output_dir(txi_rds_dir)
-          saveRDS(txi_gene, file.path(txi_rds_dir, "tximport_gene_level.rds"))
-          cat("  Saved tximport RDS for DESeq2: tximport_gene_level.rds\n")
+          if (nrow(txi_gene$counts) == 0 || ncol(txi_gene$counts) == 0) {
+            cat("  WARNING: M3 gene-level import produced empty matrix — skipping\n")
+          } else {
+            results$gene_level     <- txi_gene$counts
+            results$gene_level_tpm <- txi_gene$abundance
+            # Save tximport RDS for DESeq2 (preserves transcript-length offsets)
+            txi_rds_dir <- file.path(output_dir, master_ref, "gene_level")
+            ensure_output_dir(txi_rds_dir)
+            saveRDS(txi_gene, file.path(txi_rds_dir, "tximport_gene_level.rds"))
+            cat("  Saved tximport RDS for DESeq2: tximport_gene_level.rds\n")
+          }
         }
+        }  # end if (match_rate >= 0.5)
+        }  # end if (length >= 2)
+        }  # end if (!is.null(tx2gene))
       } else {
         cat("  Warning: tx2gene file not found for M3 gene-level import\n")
       }
     }
     if (GENERATE_ISOFORM_LEVEL) {
+      # Reuse tissue-specific fallback paths if already resolved above, else build fresh
+      if (!exists(".m3_quant_files") || length(.m3_quant_files) == 0) {
+        .m3_quant_files <- setNames(file.path(quant_dir, sample_ids, "quant.sf"), sample_ids)
+        if (sum(file.exists(.m3_quant_files)) == 0 && dir.exists(quant_dir)) {
+          .tissue_dirs <- list.dirs(quant_dir, recursive = FALSE, full.names = TRUE)
+          # Vectorized: build all candidate paths at once, check existence in one batch
+          .all_cands <- outer(.tissue_dirs, sample_ids, function(td, sid) file.path(td, sid, "quant.sf"))
+          .all_exist <- matrix(file.exists(.all_cands), nrow = length(.tissue_dirs))
+          for (.j in seq_along(sample_ids)) {
+            .hit <- which(.all_exist[, .j])[1]
+            if (!is.na(.hit)) .m3_quant_files[sample_ids[.j]] <- .all_cands[.hit, .j]
+          }
+        }
+        .m3_quant_files <- .m3_quant_files[file.exists(.m3_quant_files)]
+      }
+      if (length(.m3_quant_files) < 2) {
+        cat("  Error: Need >= 2 quant.sf files for M3 isoform-level import, found",
+            length(.m3_quant_files), "\n")
+      } else {
       txi_iso <- tryCatch(
-        tximport(setNames(file.path(quant_dir, sample_ids, "quant.sf"), sample_ids),
+        tximport(.m3_quant_files,
                  type = "salmon", txIn = TRUE, txOut = TRUE,
                  ignoreTxVersion = FALSE, ignoreAfterBar = FALSE),
-        error = function(e) NULL)
+        error = function(e) { cat("  M3 isoform-level import error:", e$message, "\n"); NULL })
       if (!is.null(txi_iso)) {
-        results$isoform_level     <- txi_iso$counts
-        results$isoform_level_tpm <- txi_iso$abundance
-        # Save tximport RDS for isoform-level DESeq2
-        txi_iso_rds_dir <- file.path(output_dir, master_ref, "isoform_level")
-        ensure_output_dir(txi_iso_rds_dir)
-        saveRDS(txi_iso, file.path(txi_iso_rds_dir, "tximport_isoform_level.rds"))
-        cat("  Saved tximport RDS for isoform-level DESeq2: tximport_isoform_level.rds\n")
+        if (nrow(txi_iso$counts) == 0 || ncol(txi_iso$counts) == 0) {
+          cat("  WARNING: M3 isoform-level import produced empty matrix — skipping\n")
+        } else {
+          results$isoform_level     <- txi_iso$counts
+          results$isoform_level_tpm <- txi_iso$abundance
+          # Save tximport RDS for isoform-level DESeq2
+          txi_iso_rds_dir <- file.path(output_dir, master_ref, "isoform_level")
+          ensure_output_dir(txi_iso_rds_dir)
+          saveRDS(txi_iso, file.path(txi_iso_rds_dir, "tximport_isoform_level.rds"))
+          cat("  Saved tximport RDS for isoform-level DESeq2: tximport_isoform_level.rds\n")
+        }
       }
+      }  # end if (length >= 2)
     }
 
   } else if (grepl("RSEM|M5", method, ignore.case = TRUE)) {
@@ -147,10 +214,29 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
         tximport(setNames(file.path(quant_dir, sample_ids,
                                     paste0(sample_ids, ".genes.results")), sample_ids),
                  type = "rsem", txIn = FALSE, txOut = FALSE),
-        error = function(e) NULL)
+        error = function(e) { cat("  M5 gene-level import error:", e$message, "\n"); NULL })
       if (!is.null(txi_gene)) {
-        results$gene_level     <- txi_gene$counts
-        results$gene_level_tpm <- txi_gene$abundance
+        # Filter entries with zero effective length (RSEM produces these for unaligned genes)
+        if (!is.null(txi_gene$length)) {
+          zero_mask <- rowSums(txi_gene$length == 0) > 0
+          if (any(zero_mask)) {
+            cat("  Filtering", sum(zero_mask), "genes with zero effective length\n")
+            txi_gene$counts    <- txi_gene$counts[!zero_mask, , drop = FALSE]
+            txi_gene$abundance <- txi_gene$abundance[!zero_mask, , drop = FALSE]
+            txi_gene$length    <- txi_gene$length[!zero_mask, , drop = FALSE]
+          }
+        }
+        if (nrow(txi_gene$counts) == 0 || ncol(txi_gene$counts) == 0) {
+          cat("  WARNING: M5 gene-level import produced empty matrix (possibly all zero-length) — skipping\n")
+        } else {
+          results$gene_level     <- txi_gene$counts
+          results$gene_level_tpm <- txi_gene$abundance
+          # Save tximport RDS for DESeq2 (preserves transcript-length offsets)
+          txi_rds_dir <- file.path(output_dir, master_ref, "gene_level")
+          ensure_output_dir(txi_rds_dir)
+          saveRDS(txi_gene, file.path(txi_rds_dir, "tximport_gene_level.rds"))
+          cat("  Saved tximport RDS for DESeq2: tximport_gene_level.rds\n")
+        }
       }
     }
     if (GENERATE_ISOFORM_LEVEL) {
@@ -158,38 +244,129 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
         tximport(setNames(file.path(quant_dir, sample_ids,
                                     paste0(sample_ids, ".isoforms.results")), sample_ids),
                  type = "rsem", txIn = TRUE, txOut = TRUE),
-        error = function(e) NULL)
+        error = function(e) { cat("  M5 isoform-level import error:", e$message, "\n"); NULL })
       if (!is.null(txi_iso)) {
-        results$isoform_level     <- txi_iso$counts
-        results$isoform_level_tpm <- txi_iso$abundance
+        # Filter entries with zero effective length (RSEM produces these for unaligned transcripts)
+        if (!is.null(txi_iso$length)) {
+          zero_mask <- rowSums(txi_iso$length == 0) > 0
+          if (any(zero_mask)) {
+            cat("  Filtering", sum(zero_mask), "isoforms with zero effective length\n")
+            txi_iso$counts    <- txi_iso$counts[!zero_mask, , drop = FALSE]
+            txi_iso$abundance <- txi_iso$abundance[!zero_mask, , drop = FALSE]
+            txi_iso$length    <- txi_iso$length[!zero_mask, , drop = FALSE]
+          }
+        }
+        if (nrow(txi_iso$counts) == 0 || ncol(txi_iso$counts) == 0) {
+          cat("  WARNING: M5 isoform-level import produced empty matrix (possibly all zero-length) — skipping\n")
+        } else {
+          results$isoform_level     <- txi_iso$counts
+          results$isoform_level_tpm <- txi_iso$abundance
+          # Save tximport RDS for isoform-level DESeq2
+          txi_iso_rds_dir <- file.path(output_dir, master_ref, "isoform_level")
+          ensure_output_dir(txi_iso_rds_dir)
+          saveRDS(txi_iso, file.path(txi_iso_rds_dir, "tximport_isoform_level.rds"))
+          cat("  Saved tximport RDS for isoform-level DESeq2: tximport_isoform_level.rds\n")
+        }
       }
     }
 
   } else if (grepl("Salmon|M4", method, ignore.case = TRUE)) {
     if (!.HAS_TXIMPORT) { cat("WARNING: tximport not installed, skipping M4 matrix creation.\n"); return(results) }
+    if (!dir.exists(quant_dir)) {
+      cat("ERROR: M4 Salmon quantification directory not found:", quant_dir,
+          "\n  Run the M4 Salmon alignment stage first, or check BASE_DIR / MASTER_REFERENCE.\n")
+      return(results)
+    }
     # Prefer 3_Matrix_Creation_Salmon.R; this branch is a fallback only.
     if (GENERATE_GENE_LEVEL) {
-      txi_gene <- tryCatch(
-        tximport(setNames(file.path(quant_dir, sample_ids, "quant.sf"), sample_ids),
-                 type = "salmon"),
-        error = function(e) {
-          cat("  Warning: M4 gene-level import failed (tx2gene mapping required).", e$message, "\n")
-          cat("  Use 3_Matrix_Creation_Salmon.R for proper gene-level aggregation.\n")
-          NULL
-        })
-      if (!is.null(txi_gene)) {
-        results$gene_level     <- txi_gene$counts
-        results$gene_level_tpm <- txi_gene$abundance
+      # Look up tx2gene mapping (required for gene-level Salmon import)
+      .input_fastas_dir <- Sys.getenv("INPUT_FASTAS_DIR", unset = "")
+      if (!nzchar(.input_fastas_dir)) {
+        .base_dir_fb <- Sys.getenv("BASE_DIR", "")
+        if (nzchar(.base_dir_fb)) .input_fastas_dir <- file.path(.base_dir_fb, "inputs")
       }
+      .tx2gene_m4 <- NULL
+      if (nzchar(.input_fastas_dir)) {
+        .cands <- c(
+          Sys.getenv("GENE_TRANS_MAP_FILE", unset = ""),
+          file.path(.input_fastas_dir, "mapping", paste0(master_ref, ".fa.gene_trans_map")),
+          file.path(.input_fastas_dir, "mapping", paste0(master_ref, ".fasta.gene_trans_map"))
+        )
+        for (.c in .cands) {
+          if (nzchar(.c) && file.exists(.c)) {
+            .raw <- read.table(.c, header = FALSE, sep = "\t", stringsAsFactors = FALSE,
+                               strip.white = TRUE)
+            .raw <- .raw[, 1:2, drop = FALSE]
+            colnames(.raw) <- c("GENEID", "TXNAME")
+            .tx2gene_m4 <- .raw[, c("TXNAME", "GENEID")]
+            cat("  Loaded tx2gene mapping:", nrow(.tx2gene_m4), "entries from", basename(.c), "\n")
+            break
+          }
+        }
+        if (is.null(.tx2gene_m4)) {
+          # Lazy fallback: recurse directory tree
+          .all_maps <- list.files(.input_fastas_dir, pattern = "\\.gene_trans_map$",
+                                  recursive = TRUE, full.names = TRUE)
+          # Use regex with boundary anchors to prevent substring false positives
+          # (e.g., "V4" matching "V4.1")
+          .hits <- .all_maps[grepl(paste0("(^|[/\\\\])", master_ref, "\\."), .all_maps)]
+          if (length(.hits) > 0) {
+            .raw <- read.table(.hits[1], header = FALSE, sep = "\t", stringsAsFactors = FALSE,
+                               strip.white = TRUE)
+            .raw <- .raw[, 1:2, drop = FALSE]
+            colnames(.raw) <- c("GENEID", "TXNAME")
+            .tx2gene_m4 <- .raw[, c("TXNAME", "GENEID")]
+            cat("  Loaded tx2gene mapping:", nrow(.tx2gene_m4), "entries from", basename(.hits[1]), "\n")
+          }
+        }
+      }
+      if (is.null(.tx2gene_m4)) {
+        cat("  Warning: tx2gene mapping not found for M4 — skipping gene-level import\n")
+        cat("  Use 3_Matrix_Creation_Salmon.R for proper gene-level aggregation.\n")
+      } else {
+        txi_gene <- tryCatch(
+          tximport(setNames(file.path(quant_dir, sample_ids, "quant.sf"), sample_ids),
+                   type = "salmon", txIn = TRUE, txOut = FALSE,
+                   tx2gene = .tx2gene_m4, ignoreTxVersion = FALSE, ignoreAfterBar = FALSE),
+          error = function(e) {
+            cat("  Warning: M4 gene-level import failed:", e$message, "\n")
+            cat("  Use 3_Matrix_Creation_Salmon.R for proper gene-level aggregation.\n")
+            NULL
+          })
+        if (!is.null(txi_gene)) {
+          if (nrow(txi_gene$counts) == 0 || ncol(txi_gene$counts) == 0) {
+            cat("  WARNING: M4 gene-level import produced empty matrix — skipping\n")
+          } else {
+            results$gene_level     <- txi_gene$counts
+            results$gene_level_tpm <- txi_gene$abundance
+            # Save tximport RDS for DESeq2 (preserves transcript-length offsets)
+            txi_rds_dir <- file.path(output_dir, master_ref, "gene_level")
+            ensure_output_dir(txi_rds_dir)
+            saveRDS(txi_gene, file.path(txi_rds_dir, "tximport_gene_level.rds"))
+            cat("  Saved tximport RDS for DESeq2: tximport_gene_level.rds\n")
+          }
+        }
+      }
+      rm(list = intersect(c(".input_fastas_dir", ".base_dir_fb", ".cands", ".c",
+                             ".raw", ".all_maps", ".hits", ".tx2gene_m4"), ls(all.names = TRUE)))
     }
     if (GENERATE_ISOFORM_LEVEL) {
       txi_iso <- tryCatch(
         tximport(setNames(file.path(quant_dir, sample_ids, "quant.sf"), sample_ids),
                  type = "salmon", txOut = TRUE),
-        error = function(e) NULL)
+        error = function(e) { cat("  M4 isoform-level import error:", e$message, "\n"); NULL })
       if (!is.null(txi_iso)) {
-        results$isoform_level     <- txi_iso$counts
-        results$isoform_level_tpm <- txi_iso$abundance
+        if (nrow(txi_iso$counts) == 0 || ncol(txi_iso$counts) == 0) {
+          cat("  WARNING: M4 isoform-level import produced empty matrix — skipping\n")
+        } else {
+          results$isoform_level     <- txi_iso$counts
+          results$isoform_level_tpm <- txi_iso$abundance
+          # Save tximport RDS for isoform-level DESeq2
+          txi_iso_rds_dir <- file.path(output_dir, master_ref, "isoform_level")
+          ensure_output_dir(txi_iso_rds_dir)
+          saveRDS(txi_iso, file.path(txi_iso_rds_dir, "tximport_isoform_level.rds"))
+          cat("  Saved tximport RDS for isoform-level DESeq2: tximport_isoform_level.rds\n")
+        }
       }
     }
 
@@ -210,43 +387,45 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
 # MAIN EXECUTION
 # ===============================================
 
-cat("\n", paste(rep("=", 60), collapse = ""), "\n")
-cat("MATRIX CREATION MODULE\n")
-cat(paste(rep("=", 60), collapse = ""), "\n\n")
-cat("Method:           ", CURRENT_METHOD, "\n")
-cat("Master Reference: ", MASTER_REFERENCE, "\n")
-cat("Samples:          ", length(SAMPLE_IDS), "\n\n")
+if (!interactive() && identical(environment(), globalenv())) {
+  cat("\n", paste(rep("=", 60), collapse = ""), "\n")
+  cat("MATRIX CREATION MODULE\n")
+  cat(paste(rep("=", 60), collapse = ""), "\n\n")
+  cat("Method:           ", CURRENT_METHOD, "\n")
+  cat("Master Reference: ", MASTER_REFERENCE, "\n")
+  cat("Samples:          ", length(SAMPLE_IDS), "\n\n")
 
-if (length(SAMPLE_IDS) == 0) {
-  stop("No samples loaded. Check SRR_COMBINED_LIST_STR and SRR_csv files.")
-}
+  if (length(SAMPLE_IDS) == 0) {
+    stop("No samples loaded. Check SRR_COMBINED_LIST_STR and SRR_csv files.")
+  }
 
-base_dir    <- Sys.getenv("BASE_DIR", "")
-method_type <- get_method_type(CURRENT_METHOD)
-quant_dir <- if (nzchar(base_dir)) {
-  switch(method_type,
-    "rsem"   = file.path(base_dir, "2_ALIGNMENT_RESULTs", "M5_RSEM_Bowtie2",
-                         "RSEM_Quant_WD", MASTER_REFERENCE),
-    "salmon" = file.path(base_dir, "2_ALIGNMENT_RESULTs", "M4_Salmon_Saf",
-                         "Salmon_Quant", MASTER_REFERENCE),
-    "star"   = file.path(base_dir, "2_ALIGNMENT_RESULTs", "M3_STAR_Align",
-                         MASTER_REFERENCE, "6_salmon", "quant"),
-    get_quant_dir(CURRENT_METHOD)  # fallback: relative path for other methods
+  base_dir    <- Sys.getenv("BASE_DIR", "")
+  method_type <- get_method_type(CURRENT_METHOD)
+  quant_dir <- if (nzchar(base_dir)) {
+    switch(method_type,
+      "rsem"   = file.path(base_dir, "2_ALIGNMENT_RESULTs", "M5_RSEM_Bowtie2",
+                           "RSEM_Quant_WD", MASTER_REFERENCE),
+      "salmon" = file.path(base_dir, "2_ALIGNMENT_RESULTs", "M4_Salmon_Saf",
+                           "Salmon_Quant", MASTER_REFERENCE),
+      "star"   = file.path(base_dir, "2_ALIGNMENT_RESULTs", "M3_STAR_Align",
+                           MASTER_REFERENCE, "6_salmon", "quant"),
+      get_quant_dir(CURRENT_METHOD)  # fallback: relative path for other methods
+    )
+  } else {
+    get_quant_dir(CURRENT_METHOD)  # fallback for standalone execution
+  }
+
+  output_dir <- get_matrices_dir(CURRENT_METHOD)
+
+  cat("Quantification directory:", quant_dir, "\n")
+  cat("Output directory:        ", output_dir, "\n\n")
+
+  run_matrix_creation(
+    method          = CURRENT_METHOD,
+    quant_dir       = quant_dir,
+    output_dir      = output_dir,
+    master_ref      = MASTER_REFERENCE,
+    sample_ids      = SAMPLE_IDS,
+    gene_groups_dir = GENE_GROUPS_DIR
   )
-} else {
-  get_quant_dir(CURRENT_METHOD)  # fallback for standalone execution
 }
-
-output_dir <- get_matrices_dir(CURRENT_METHOD)
-
-cat("Quantification directory:", quant_dir, "\n")
-cat("Output directory:        ", output_dir, "\n\n")
-
-run_matrix_creation(
-  method          = CURRENT_METHOD,
-  quant_dir       = quant_dir,
-  output_dir      = output_dir,
-  master_ref      = MASTER_REFERENCE,
-  sample_ids      = SAMPLE_IDS,
-  gene_groups_dir = GENE_GROUPS_DIR
-)
