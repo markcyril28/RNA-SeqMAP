@@ -124,7 +124,15 @@ gpu_prcomp <- function(x, center = TRUE, scale. = FALSE, rank. = NULL) {
       rotation <- as.matrix(svd_result[[3]]$t()$cpu())
       # Scores = X_centered %*% V; svd_result[[3]] = Vh (k×p), so Vh$t() = V (p×k)
       x_scores <- as.matrix(torch::torch_mm(x_tensor, svd_result[[3]]$t())$cpu())
-      
+
+      # Truncate to rank. components if requested (matches prcomp(rank.=) behavior)
+      if (!is.null(rank.) && rank. < length(sdev)) {
+        k <- as.integer(rank.)
+        sdev <- sdev[seq_len(k)]
+        rotation <- rotation[, seq_len(k), drop = FALSE]
+        x_scores <- x_scores[, seq_len(k), drop = FALSE]
+      }
+
       # Build prcomp-compatible result
       result <- list(
         sdev = sdev,
