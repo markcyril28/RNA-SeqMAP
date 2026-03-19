@@ -46,6 +46,11 @@ count_label <- "NumReads"
 cat("Quantification directory:", quant_dir, "\n")
 cat("Output directory:        ", output_dir, "\n\n")
 
+if (!dir.exists(quant_dir)) {
+  stop("STAR+Salmon quantification directory not found: ", quant_dir,
+       "\n  Run the M3 STAR+Salmon alignment stage first, or check BASE_DIR / MASTER_REFERENCE.")
+}
+
 results <- list()
 
 # ----- Gene-level (requires tx2gene mapping) --------------------------------
@@ -155,6 +160,9 @@ if (GENERATE_GENE_LEVEL) {
             error = function(e) { cat("  Gene-level import error:", e$message, "\n"); NULL })
 
           if (!is.null(txi_gene)) {
+            if (nrow(txi_gene$counts) == 0 || ncol(txi_gene$counts) == 0) {
+              cat("WARNING: Gene-level import produced empty matrix — skipping\n")
+            } else {
             results$gene_level     <- txi_gene$counts
             results$gene_level_tpm <- txi_gene$abundance
             # Save full tximport object for DESeq2 (preserves transcript-length offsets)
@@ -162,6 +170,7 @@ if (GENERATE_GENE_LEVEL) {
             ensure_output_dir(txi_rds_dir)
             saveRDS(txi_gene, file.path(txi_rds_dir, "tximport_gene_level.rds"))
             cat("Saved tximport RDS for DESeq2: tximport_gene_level.rds\n")
+            }
           }
         }
       }
@@ -200,13 +209,17 @@ if (GENERATE_ISOFORM_LEVEL) {
       error = function(e) { cat("  Isoform-level import error:", e$message, "\n"); NULL })
 
     if (!is.null(txi_iso)) {
-      results$isoform_level     <- txi_iso$counts
-      results$isoform_level_tpm <- txi_iso$abundance
-      # Save full tximport object for DESeq2 isoform-level analysis
-      txi_iso_rds_dir <- file.path(output_dir, MASTER_REFERENCE, "isoform_level")
-      ensure_output_dir(txi_iso_rds_dir)
-      saveRDS(txi_iso, file.path(txi_iso_rds_dir, "tximport_isoform_level.rds"))
-      cat("Saved tximport RDS for isoform-level DESeq2: tximport_isoform_level.rds\n")
+      if (nrow(txi_iso$counts) == 0 || ncol(txi_iso$counts) == 0) {
+        cat("WARNING: Isoform-level import produced empty matrix — skipping\n")
+      } else {
+        results$isoform_level     <- txi_iso$counts
+        results$isoform_level_tpm <- txi_iso$abundance
+        # Save full tximport object for DESeq2 isoform-level analysis
+        txi_iso_rds_dir <- file.path(output_dir, MASTER_REFERENCE, "isoform_level")
+        ensure_output_dir(txi_iso_rds_dir)
+        saveRDS(txi_iso, file.path(txi_iso_rds_dir, "tximport_isoform_level.rds"))
+        cat("Saved tximport RDS for isoform-level DESeq2: tximport_isoform_level.rds\n")
+      }
     }
   }
 }
