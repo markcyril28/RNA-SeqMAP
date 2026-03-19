@@ -59,6 +59,8 @@ calculate_cv <- function(data_matrix, is_log_scale = FALSE, margin = 1) {
     n_c <- ncol(data_matrix)
     row_sds <- sqrt(rowSums((data_matrix - rm)^2, na.rm = TRUE) / (n_c - 1))
     cv <- ifelse(rm > 0 & is.finite(rm) & is.finite(row_sds), row_sds / rm * 100, NA)
+    # Clamp Inf values from near-zero means (division by very small positive number)
+    cv[is.infinite(cv)] <- NA
     return(cv)
   } else {
     # Column-wise (per sample) — use sweep() to avoid large temp vector from rep()
@@ -70,6 +72,8 @@ calculate_cv <- function(data_matrix, is_log_scale = FALSE, margin = 1) {
       return(col_sds)
     }
     cv <- ifelse(cm > 0 & is.finite(cm) & is.finite(col_sds), col_sds / cm * 100, NA)
+    # Clamp Inf values from near-zero means (division by very small positive number)
+    cv[is.infinite(cv)] <- NA
     return(cv)
   }
 }
@@ -152,14 +156,15 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
       }
     }
     
-    # Configure legend breaks based on normalization type
+    # Configure legend breaks based on normalization scheme
     # All schemes use quantile-based color bounds so visual intensity is consistent.
     # zscore_scaled_to_ten is a linear rescaling of zscore to [0,10]; using the same
     # quantile approach ensures identical color patterns between the two.
     # For zscore_scaled_to_ten: show a complete 0-10 legend (increment of 2) so the
     # reader sees the full intuitive scale, even though colors are quantile-mapped.
-    is_zscore_scaled <- grepl("zscore.*scaled.*ten|z-score.*scaled.*ten",
-                              normalization_type, ignore.case = TRUE)
+    # Use norm_scheme (internal name) instead of normalization_type (display name)
+    # for reliable detection — display names can change without breaking this logic.
+    is_zscore_scaled <- !is.null(norm_scheme) && norm_scheme == "zscore_scaled_to_ten"
     if (is_zscore_scaled) {
       legend_breaks <- seq(0, 10, by = 2)
       legend_labels <- as.character(legend_breaks)
@@ -175,8 +180,10 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
     
     # CV color scales: violet gradient matching heatmap (low CV = deep, high CV = pale)
     # Row CV color scale
+    # NOTE: range(all_NA, na.rm=TRUE) returns c(Inf, -Inf), not c(NA, NA);
+    # must check !is.finite() to catch both NA and Inf/-Inf cases.
     row_cv_range <- range(row_cv, na.rm = TRUE)
-    if (row_cv_range[1] == row_cv_range[2] || any(is.na(row_cv_range))) {
+    if (!is.finite(row_cv_range[1]) || !is.finite(row_cv_range[2]) || row_cv_range[1] == row_cv_range[2]) {
       row_cv_range <- c(0, 100)
     }
     row_cv_color_fun <- colorRamp2(
@@ -185,7 +192,7 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
     )
     # Column CV color scale
     col_cv_range <- range(col_cv, na.rm = TRUE)
-    if (col_cv_range[1] == col_cv_range[2] || any(is.na(col_cv_range))) {
+    if (!is.finite(col_cv_range[1]) || !is.finite(col_cv_range[2]) || col_cv_range[1] == col_cv_range[2]) {
       col_cv_range <- c(0, 100)
     }
     col_cv_color_fun <- colorRamp2(
@@ -400,6 +407,7 @@ process_cv_heatmap <- function(gene_group, gene_group_output_dir, processing_lev
       local_total <- local_total + 1
       
       if (should_skip_existing(output_path, overwrite)) {
+        cat("      Skipping (exists):", basename(output_path), "\n")
         local_skipped <- local_skipped + 1
         next
       }
