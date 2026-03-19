@@ -19,11 +19,11 @@
 # Override via environment variables
 
 # Method being processed (set by bash wrapper)
-CURRENT_METHOD <- Sys.getenv("CURRENT_METHOD", unset = "M5_RSEM_Bowtie2")
 if (!nzchar(Sys.getenv("CURRENT_METHOD", unset = ""))) {
   warning("CURRENT_METHOD env var is not set \u2014 defaulting to 'M5_RSEM_Bowtie2'. ",
           "Export CURRENT_METHOD before running analysis scripts.")
 }
+CURRENT_METHOD <- Sys.getenv("CURRENT_METHOD", unset = "M5_RSEM_Bowtie2")
 
 # Current dataset being processed (set by bash wrapper)
 CURRENT_DATASET <- Sys.getenv("CURRENT_DATASET", unset = "")
@@ -125,6 +125,7 @@ OUTPUT_SUBDIRS <- list(
 # For DESeq2: use expected_count/NumReads (raw integer counts)
 #   NOTE: StringTie coverage is a per-base abundance metric, NOT raw fragment counts.
 #         M1 DESeq2 uses prepDE.py integer counts (gene_count_matrix.csv), not coverage.
+#         M2 De Novo lacks raw integer counts entirely — DESeq2 is not supported for M2.
 # For visualization: TPM is preferred for cross-sample comparison
 #
 # NOTE: COUNT_TYPES is now dynamically set at initialization based on CURRENT_METHOD
@@ -318,7 +319,8 @@ get_quant_dir <- function(method = CURRENT_METHOD) {
 
 # Get method-appropriate count types
 # For visualization: TPM is preferred (comparable across samples)
-# For DESeq2: use raw counts (coverage for StringTie)
+# For DESeq2: use raw counts (NumReads for Salmon/STAR, expected_count for RSEM)
+#   M1 uses prepDE.py integer counts; M2 has no DESeq2-suitable counts
 get_count_types <- function(method = CURRENT_METHOD) {
   method_type <- get_method_type(method)
   switch(method_type,
@@ -435,10 +437,30 @@ get_output_folder_name <- function(gene_group, dataset = CURRENT_DATASET) {
 # Load sample labels from all CSV files in SRR_csv directory
 # CSV format: SRR_ID,Organ,Notes
 # If SRR_COMBINED_LIST_STR env var is set, filter to only those samples AND preserve order
+#
+# Performance: uses .rds cache to skip CSV parsing after first load.
+# The cache key includes the directory mtime and SRR_COMBINED_LIST_STR so it
+# auto-invalidates when CSVs change or the sample list changes.
 load_sample_labels_from_csv <- function(srr_csv_dir = SRR_CSV_DIR) {
   labels <- c()
   if (!dir.exists(srr_csv_dir)) return(labels)
-  
+
+  # RDS cache: each analysis module invokes a fresh Rscript that re-sources
+  # 0_shared_config.R → load_sample_labels_from_csv(). Caching to .rds avoids
+  # re-parsing the same CSV files 50+ times across analysis modules.
+  srr_list_str <- Sys.getenv("SRR_COMBINED_LIST_STR", unset = "")
+  .cache_key <- paste0(srr_csv_dir, "|", srr_list_str)
+  .rds_path <- file.path(srr_csv_dir, ".sample_labels_cache.rds")
+  if (file.exists(.rds_path)) {
+    tryCatch({
+      .cached <- readRDS(.rds_path)
+      if (identical(.cached$key, .cache_key)) {
+        cat("[CONFIG] Sample labels loaded from RDS cache (", length(.cached$labels), " samples)\n", sep = "")
+        return(.cached$labels)
+      }
+    }, error = function(e) NULL)
+  }
+
   csv_files <- list.files(srr_csv_dir, pattern = "\\.csv$", full.names = TRUE)
   for (csv_file in csv_files) {
     tryCatch({
@@ -452,13 +474,15 @@ load_sample_labels_from_csv <- function(srr_csv_dir = SRR_CSV_DIR) {
         new_labels <- setNames(df$Organ, df$SRR_ID)
         labels <- c(labels, new_labels[!names(new_labels) %in% names(labels)])
       }
-    }, error = function(e) NULL)
+    }, error = function(e) {
+      cat("[CONFIG] Warning: Failed to read ", basename(csv_file), " - ", e$message, "\n", sep = "")
+      NULL
+    })
   }
-  
+
   # Filter to only samples specified in SRR_COMBINED_LIST_STR (from bash config)
   # Format may be "SRR123 SRR456" or "SRR123:Organ1 SRR456:Organ2"
   # IMPORTANT: Preserve the order from the env var (which follows CSV file order)
-  srr_list_str <- Sys.getenv("SRR_COMBINED_LIST_STR", unset = "")
   if (nzchar(srr_list_str)) {
     enabled_samples <- trimws(strsplit(srr_list_str, " ")[[1]])
     # Extract just the SRR ID (before colon if present)
@@ -466,10 +490,14 @@ load_sample_labels_from_csv <- function(srr_csv_dir = SRR_CSV_DIR) {
     original_count <- length(labels)
     # Reorder labels to match the order in SRR_COMBINED_LIST_STR (CSV order)
     labels <- labels[enabled_samples[enabled_samples %in% names(labels)]]
-    cat("[CONFIG] Filtering samples: ", original_count, " -> ", length(labels), 
+    cat("[CONFIG] Filtering samples: ", original_count, " -> ", length(labels),
         " (from SRR_COMBINED_LIST_STR)\n", sep = "")
   }
-  
+
+  # Save RDS cache for subsequent R sessions
+  tryCatch(saveRDS(list(key = .cache_key, labels = labels), .rds_path),
+           error = function(e) NULL)
+
   return(labels)
 }
 
