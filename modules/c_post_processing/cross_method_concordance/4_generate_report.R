@@ -22,8 +22,10 @@ if (!file.exists(concordance_rds)) {
 }
 data <- readRDS(HARMONIZED_RDS)
 concordance <- readRDS(concordance_rds)
-ranking_results <- if (file.exists(file.path(OUTPUT_DIR, "ranking_results.rds"))) {
-  readRDS(file.path(OUTPUT_DIR, "ranking_results.rds"))
+# Pre-compute path to avoid redundant file.path() call
+ranking_rds_path <- file.path(OUTPUT_DIR, "ranking_results.rds")
+ranking_results <- if (file.exists(ranking_rds_path)) {
+  readRDS(ranking_rds_path)
 } else {
   list()
 }
@@ -85,6 +87,7 @@ add("| Method Pair | Shared Genes |")
 add("|------------|-------------|")
 gene_sets <- data$gene_sets_raw
 method_names <- names(gene_sets)
+# O(M²) pairwise method comparison where M = number of methods
 for (i in seq_len(length(method_names) - 1)) {
   for (j in seq(i + 1, length(method_names))) {
     overlap <- length(intersect(gene_sets[[method_names[i]]], gene_sets[[method_names[j]]]))
@@ -203,6 +206,7 @@ if (n_clusters > 1) {
   add("**Clustering pattern:** Methods form ", n_clusters, " distinct clusters based on ",
       "Spearman correlation similarity:")
   add("")
+  # O(K) where K = number of clusters (K ≤ M methods)
   for (cl in sort(unique(sp_clusters))) {
     cl_methods <- names(sp_clusters)[sp_clusters == cl]
     add("- Cluster ", cl, ": ", paste(cl_methods, collapse = ", "))
@@ -245,7 +249,7 @@ add("")
 
 for (gene_group in names(ranking_results)) {
   rdf <- ranking_results[[gene_group]]
-  add("### 3.", which(names(ranking_results) == gene_group), " ", gene_group)
+  add("### 3.", which(names(ranking_results) == gene_group)[1], " ", gene_group)
   add("")
 
   n_total <- nrow(rdf)
@@ -262,6 +266,7 @@ for (gene_group in names(ranking_results)) {
   sep_cols <- paste(rep("---:", length(display_cols)), collapse = " | ")
   add("|------|-----------|----------:|-----:|---:|---------| ", sep_cols, " |--------:|")
 
+  # O(R × C) where R = rows in ranking table, C = display columns
   for (i in seq_len(nrow(rdf))) {
     row <- rdf[i, ]
     method_ranks <- sprintf("%.0f", as.numeric(row[display_cols]))

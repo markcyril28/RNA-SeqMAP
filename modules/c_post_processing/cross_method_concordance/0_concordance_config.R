@@ -69,7 +69,7 @@ if (!exists("MASTER_REFERENCE") || !nzchar(MASTER_REFERENCE)) {
 if (!exists("GENE_GROUPS_DIR") || !nzchar(GENE_GROUPS_DIR)) {
   GENE_GROUPS_DIR <- Sys.getenv("GENE_GROUPS_DIR", "")
   if (!nzchar(GENE_GROUPS_DIR)) {
-    GENE_GROUPS_DIR <- file.path(BASE_DIR, "inputs", "gene_groups_csv")
+    GENE_GROUPS_DIR <- file.path(BASE_DIR, "inputs", "3_post_proc_inputs", "gene_groups_csv")
   }
 }
 

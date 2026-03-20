@@ -129,16 +129,11 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
   # For genes not in the original mapping (matched via suffix stripping), use the gene ID
   na_mask <- is.na(display_names)
   if (any(na_mask)) {
-    # Try matching base IDs
-    base_matched <- sub("\\.[0-9]+$", "", matched_genes[na_mask])
-    for (k in which(na_mask)) {
-      base_id <- sub("\\.[0-9]+$", "", matched_genes[k])
-      if (base_id %in% names(gene_names)) {
-        display_names[k] <- gene_names[base_id]
-      } else {
-        display_names[k] <- matched_genes[k]
-      }
-    }
+    # Vectorized base ID matching — O(N) vs O(N × lookup) loop
+    base_ids_na <- sub("\\.[0-9]+$", "", matched_genes[na_mask])
+    in_names <- base_ids_na %in% names(gene_names)
+    display_names[na_mask][in_names] <- gene_names[base_ids_na[in_names]]
+    display_names[na_mask][!in_names] <- matched_genes[na_mask][!in_names]
   }
 
   # Build results table
