@@ -13,9 +13,14 @@
 #   4. Generate unified Markdown report
 #
 # Usage:
-#   bash run_cross_method_concordance.sh [config_file]
+#   bash run_cross_method_concordance.sh [config_file|config_class|config_class_dir]
 #
 #   If no config_file is provided, uses internal defaults for GPE001970.
+#
+#   Config classes can be stored in: config/4_concordance_combination/
+#   and selected via:
+#     - positional arg: class filename or class basename
+#     - env var: CONCORDANCE_CONFIG_CLASSES="class1,class2,..."
 #
 # Prerequisites:
 #   - Alignment results for M1-M5 in 2_ALIGNMENT_RESULTs/
@@ -49,16 +54,213 @@ source "${SCRIPT_DIR}/modules/logging/logging_utils.sh" 2>/dev/null || {
 # CONFIGURATION (override via env, config file, or associative array below)
 #===============================================================================
 
-# Load optional config file (first positional argument)
-if [[ -n "${1:-}" && -f "$1" ]]; then
-    log_info "Loading config from: $1"
-    source "$1"
+CONFIG_INPUT="${1:-}"
+CONFIG_CLASS_DIR="${CONCORDANCE_CONFIG_CLASS_DIR:-${BASE_DIR}/config/4_concordance_combination}"
+
+# Optional curated config list (comment in/out as needed).
+# Entries can be:
+#   - absolute/relative file paths
+#   - class basenames from config/4_concordance_combination (with or without .sh)
+# Load order matters: later entries override earlier ones.
+CONCORDANCE_CONFIGS=(
+    # "defaults"
+    # "class_genomes_vs_genomes"
+    # "class_methods_vs_methods"
+    # "class_genes_vs_genes"
+    # "class_full_factorial_example"
+)
+
+REINVOKE_ARGS=()
+if [[ -n "$CONFIG_INPUT" ]]; then
+    REINVOKE_ARGS+=("$CONFIG_INPUT")
+fi
+
+source_config_file() {
+    local cfg_path="$1"
+    if [[ -f "$cfg_path" ]]; then
+        log_info "Loading config: $cfg_path"
+        # shellcheck disable=SC1090
+        source "$cfg_path"
+        return 0
+    fi
+    return 1
+}
+
+load_config_entry() {
+    local entry="$1"
+
+    # Trim whitespace-only entries.
+    entry="${entry#${entry%%[![:space:]]*}}"
+    entry="${entry%${entry##*[![:space:]]}}"
+    [[ -z "$entry" ]] && return 0
+
+    if [[ -f "$entry" ]]; then
+        source_config_file "$entry"
+    elif [[ -f "${CONFIG_CLASS_DIR}/${entry}" ]]; then
+        source_config_file "${CONFIG_CLASS_DIR}/${entry}"
+    elif [[ -f "${CONFIG_CLASS_DIR}/${entry}.sh" ]]; then
+        source_config_file "${CONFIG_CLASS_DIR}/${entry}.sh"
+    else
+        log_warn "Config entry not found: ${entry}"
+    fi
+}
+
+# Load manually curated config list first (for easy comment-in/out workflow).
+if [[ "$(declare -p CONCORDANCE_CONFIGS 2>/dev/null)" == "declare -a"* && ${#CONCORDANCE_CONFIGS[@]} -gt 0 ]]; then
+    for _cfg_entry in "${CONCORDANCE_CONFIGS[@]}"; do
+        load_config_entry "$_cfg_entry"
+    done
+    unset _cfg_entry
+fi
+
+# Load optional config file/class/dir (first positional argument)
+if [[ -n "$CONFIG_INPUT" ]]; then
+    if [[ -f "$CONFIG_INPUT" ]]; then
+        source_config_file "$CONFIG_INPUT"
+    elif [[ -d "$CONFIG_INPUT" ]]; then
+        while IFS= read -r _cfg; do
+            source_config_file "$_cfg"
+        done < <(find "$CONFIG_INPUT" -maxdepth 1 -type f -name "*.sh" | sort)
+    elif [[ -f "${CONFIG_CLASS_DIR}/${CONFIG_INPUT}" ]]; then
+        source_config_file "${CONFIG_CLASS_DIR}/${CONFIG_INPUT}"
+    elif [[ -f "${CONFIG_CLASS_DIR}/${CONFIG_INPUT}.sh" ]]; then
+        source_config_file "${CONFIG_CLASS_DIR}/${CONFIG_INPUT}.sh"
+    else
+        log_warn "Config input not found: ${CONFIG_INPUT} (continuing with defaults)"
+    fi
+fi
+
+# Optionally source additional config classes from config/4_concordance_combination
+# Example: CONCORDANCE_CONFIG_CLASSES="defaults,class_methods_vs_methods"
+if [[ -n "${CONCORDANCE_CONFIG_CLASSES:-}" ]]; then
+    IFS=',' read -r -a _cfg_classes <<< "$CONCORDANCE_CONFIG_CLASSES"
+    for _cfg_class in "${_cfg_classes[@]}"; do
+        load_config_entry "$_cfg_class"
+    done
+    unset _cfg_classes _cfg_class
+fi
+
+# Internal child-run overrides (applied after config sourcing)
+[[ -n "${__CONCORDANCE_OVERRIDE_MASTER_REFERENCE:-}" ]] && MASTER_REFERENCE="${__CONCORDANCE_OVERRIDE_MASTER_REFERENCE}"
+[[ -n "${__CONCORDANCE_OVERRIDE_METHODS:-}" ]] && METHODS="${__CONCORDANCE_OVERRIDE_METHODS}"
+[[ -n "${__CONCORDANCE_OVERRIDE_GENE_GROUPS:-}" ]] && GENE_GROUPS="${__CONCORDANCE_OVERRIDE_GENE_GROUPS}"
+[[ -n "${__CONCORDANCE_OVERRIDE_REPORT_BASE:-}" ]] && REPORT_BASE="${__CONCORDANCE_OVERRIDE_REPORT_BASE}"
+[[ -n "${__CONCORDANCE_OVERRIDE_RUN_ALL_MASTER_REFERENCES:-}" ]] && RUN_ALL_MASTER_REFERENCES="${__CONCORDANCE_OVERRIDE_RUN_ALL_MASTER_REFERENCES}"
+[[ -n "${__CONCORDANCE_OVERRIDE_RUN_ALL_METHOD_COMBINATIONS:-}" ]] && RUN_ALL_METHOD_COMBINATIONS="${__CONCORDANCE_OVERRIDE_RUN_ALL_METHOD_COMBINATIONS}"
+[[ -n "${__CONCORDANCE_OVERRIDE_RUN_ALL_GENE_GROUP_COMBINATIONS:-}" ]] && RUN_ALL_GENE_GROUP_COMBINATIONS="${__CONCORDANCE_OVERRIDE_RUN_ALL_GENE_GROUP_COMBINATIONS}"
+
+sanitize_tag() {
+    local raw="$1"
+    local clean
+    clean=$(echo "$raw" | tr ',|/[:space:]' '_' | tr -cd '[:alnum:]_.-')
+    [[ -n "$clean" ]] && printf "%s" "$clean" || printf "combo"
+}
+
+# Optional multi-reference mode:
+# - RUN_ALL_MASTER_REFERENCES=TRUE: iterate over MASTER_REFERENCES and run once per reference
+# - Default FALSE: run only one reference (MASTER_REFERENCE or first MASTER_REFERENCES entry)
+RUN_ALL_MASTER_REFERENCES="${RUN_ALL_MASTER_REFERENCES:-FALSE}"
+if [[ "${RUN_ALL_MASTER_REFERENCES^^}" == "TRUE" ]]; then
+    if [[ "$(declare -p MASTER_REFERENCES 2>/dev/null)" == "declare -a"* && ${#MASTER_REFERENCES[@]} -gt 0 ]]; then
+        _parent_report_base="${REPORT_BASE:-${BASE_DIR}/4_CONCORDANCE_ANALYSIS}"
+        _overall_rc=0
+
+        log_step "MULTI-REFERENCE CONCORDANCE MODE"
+        log_info "Found ${#MASTER_REFERENCES[@]} references in MASTER_REFERENCES"
+
+        for _ref in "${MASTER_REFERENCES[@]}"; do
+            log_step "Running concordance for reference: ${_ref}"
+            __CONCORDANCE_OVERRIDE_REPORT_BASE="${_parent_report_base}/${_ref}" \
+            __CONCORDANCE_OVERRIDE_MASTER_REFERENCE="${_ref}" \
+            __CONCORDANCE_OVERRIDE_RUN_ALL_MASTER_REFERENCES="FALSE" \
+            bash "$0" "${REINVOKE_ARGS[@]}" || _overall_rc=1
+        done
+
+        if [[ $_overall_rc -ne 0 ]]; then
+            log_error "One or more references failed in multi-reference mode"
+            exit 1
+        fi
+        log_info "All references completed successfully"
+        exit 0
+    else
+        log_warn "RUN_ALL_MASTER_REFERENCES=TRUE but MASTER_REFERENCES array is empty/unset; continuing single-reference run"
+    fi
+fi
+
+# Optional method-combination mode:
+# - RUN_ALL_METHOD_COMBINATIONS=TRUE: iterate over METHOD_COMBINATIONS entries
+# - METHOD_COMBINATIONS entry format: comma or pipe separated method IDs
+#   e.g., "M1_HISAT2_RefGuided,M3_STAR_Align"
+RUN_ALL_METHOD_COMBINATIONS="${RUN_ALL_METHOD_COMBINATIONS:-FALSE}"
+if [[ "${RUN_ALL_METHOD_COMBINATIONS^^}" == "TRUE" ]]; then
+    if [[ "$(declare -p METHOD_COMBINATIONS 2>/dev/null)" == "declare -a"* && ${#METHOD_COMBINATIONS[@]} -gt 0 ]]; then
+        _parent_report_base="${REPORT_BASE:-${BASE_DIR}/4_CONCORDANCE_ANALYSIS}"
+        _overall_rc=0
+
+        log_step "METHOD-COMBINATION CONCORDANCE MODE"
+        log_info "Found ${#METHOD_COMBINATIONS[@]} method combinations"
+
+        for _combo in "${METHOD_COMBINATIONS[@]}"; do
+            _methods="${_combo//,/ }"
+            _methods="${_methods//|/ }"
+            _combo_tag="$(sanitize_tag "$_combo")"
+            log_step "Running concordance for methods: ${_methods}"
+            __CONCORDANCE_OVERRIDE_REPORT_BASE="${_parent_report_base}/methods_${_combo_tag}" \
+            __CONCORDANCE_OVERRIDE_METHODS="${_methods}" \
+            __CONCORDANCE_OVERRIDE_RUN_ALL_METHOD_COMBINATIONS="FALSE" \
+            bash "$0" "${REINVOKE_ARGS[@]}" || _overall_rc=1
+        done
+
+        if [[ $_overall_rc -ne 0 ]]; then
+            log_error "One or more method combinations failed"
+            exit 1
+        fi
+        log_info "All method combinations completed successfully"
+        exit 0
+    else
+        log_warn "RUN_ALL_METHOD_COMBINATIONS=TRUE but METHOD_COMBINATIONS array is empty/unset; continuing standard run"
+    fi
+fi
+
+# Optional gene-group-combination mode:
+# - RUN_ALL_GENE_GROUP_COMBINATIONS=TRUE: iterate over GENE_GROUP_COMBINATIONS entries
+# - GENE_GROUP_COMBINATIONS entry format: comma or pipe separated gene-group basenames
+#   e.g., "SmelDMPs_v5_with_18s_and_HAP2,Selected_SmelGRF-GIF_with_two_GIF"
+RUN_ALL_GENE_GROUP_COMBINATIONS="${RUN_ALL_GENE_GROUP_COMBINATIONS:-FALSE}"
+if [[ "${RUN_ALL_GENE_GROUP_COMBINATIONS^^}" == "TRUE" ]]; then
+    if [[ "$(declare -p GENE_GROUP_COMBINATIONS 2>/dev/null)" == "declare -a"* && ${#GENE_GROUP_COMBINATIONS[@]} -gt 0 ]]; then
+        _parent_report_base="${REPORT_BASE:-${BASE_DIR}/4_CONCORDANCE_ANALYSIS}"
+        _overall_rc=0
+
+        log_step "GENE-GROUP-COMBINATION CONCORDANCE MODE"
+        log_info "Found ${#GENE_GROUP_COMBINATIONS[@]} gene-group combinations"
+
+        for _combo in "${GENE_GROUP_COMBINATIONS[@]}"; do
+            _groups="${_combo//|/,}"
+            _combo_tag="$(sanitize_tag "$_combo")"
+            log_step "Running concordance for gene groups: ${_groups}"
+            __CONCORDANCE_OVERRIDE_REPORT_BASE="${_parent_report_base}/genes_${_combo_tag}" \
+            __CONCORDANCE_OVERRIDE_GENE_GROUPS="${_groups}" \
+            __CONCORDANCE_OVERRIDE_RUN_ALL_GENE_GROUP_COMBINATIONS="FALSE" \
+            bash "$0" "${REINVOKE_ARGS[@]}" || _overall_rc=1
+        done
+
+        if [[ $_overall_rc -ne 0 ]]; then
+            log_error "One or more gene-group combinations failed"
+            exit 1
+        fi
+        log_info "All gene-group combinations completed successfully"
+        exit 0
+    else
+        log_warn "RUN_ALL_GENE_GROUP_COMBINATIONS=TRUE but GENE_GROUP_COMBINATIONS array is empty/unset; continuing standard run"
+    fi
 fi
 
 # Reference genome to compare across methods
-# If a sourced config set MASTER_REFERENCES as an array, take the first element
+# If MASTER_REFERENCE was not explicitly provided, and a sourced config set
+# MASTER_REFERENCES as an array, take the first element
 # (matches run_post_processing.sh behaviour).
-if [[ "$(declare -p MASTER_REFERENCES 2>/dev/null)" == "declare -a"* ]]; then
+if [[ -z "${MASTER_REFERENCE:-}" && "$(declare -p MASTER_REFERENCES 2>/dev/null)" == "declare -a"* ]]; then
     MASTER_REFERENCE="${MASTER_REFERENCES[0]}"
 fi
 MASTER_REFERENCE="${MASTER_REFERENCE:-GPE001970_genome}"
@@ -68,7 +270,13 @@ MASTER_REFERENCE="${MASTER_REFERENCE:-GPE001970_genome}"
 if [[ "$(declare -p METHODS 2>/dev/null)" == "declare -a"* ]]; then
     METHODS="${METHODS[*]}"
 fi
-METHODS="${METHODS:-M1_HISAT2_RefGuided M2_HISAT2_DeNovo M3_STAR_Align M4_Salmon_Saf M5_RSEM_Bowtie2}"
+METHODS="${METHODS:-
+    M1_HISAT2_RefGuided 
+    M2_HISAT2_DeNovo 
+    M3_STAR_Align 
+    M4_Salmon_Saf 
+    M5_RSEM_Bowtie2
+}"
 
 # Method-specific reference directory names
 # M1/M3 align to genome; M2/M4/M5 align to transcriptome
@@ -88,7 +296,7 @@ _base_pattern="${_genome_ref%_genome}"
 _align_base="${ALIGNMENT_BASE:-${BASE_DIR}/2_ALIGNMENT_RESULTs}"
 _transcript_ref_dirs=(
     "$_align_base/M2_HISAT2_DeNovo/stringtie_WD"
-    "$_align_base/M4_Salmon_Saf/Salmon_Quant_WD"
+    "$_align_base/M4_Salmon_Saf/Salmon_Quant"
     "$_align_base/M5_RSEM_Bowtie2/RSEM_Quant_WD"
 )
 for _probe_dir in "${_transcript_ref_dirs[@]}"; do
@@ -155,7 +363,8 @@ GPU_VRAM_GB="${GPU_VRAM_GB:-8}"
 # PATHS
 #===============================================================================
 
-OUTPUT_DIR="${OUTPUT_DIR:-${BASE_DIR}/3_POST_PROC/cross_method_concordance}"
+REPORT_BASE="${REPORT_BASE:-${BASE_DIR}/4_CONCORDANCE_ANALYSIS}"
+OUTPUT_DIR="${OUTPUT_DIR:-${REPORT_BASE}/cross_method_concordance}"
 ALIGNMENT_BASE="${ALIGNMENT_BASE:-${BASE_DIR}/2_ALIGNMENT_RESULTs}"
 POST_PROC_BASE="${POST_PROC_BASE:-${BASE_DIR}/3_POST_PROC}"
 ANALYSIS_MODULES_DIR="${BASE_DIR}/modules/c_post_processing/analysis_modules"
@@ -185,7 +394,7 @@ export BASE_DIR MASTER_REFERENCE METHODS METHOD_REF_DIRS_STR
 export GENE_GROUPS GENE_GROUPS_DIR SRR_CSV_DIR
 export THREADS ENABLE_GPU AVAILABLE_RAM_GB GPU_VRAM_GB
 export CONCORDANCE_SCRIPT_DIR ANALYSIS_MODULES_DIR UTILITIES_DIR
-export OUTPUT_DIR ALIGNMENT_BASE POST_PROC_BASE
+export OUTPUT_DIR ALIGNMENT_BASE POST_PROC_BASE REPORT_BASE
 
 #===============================================================================
 # RUN ANALYSIS PIPELINE
@@ -253,6 +462,6 @@ log_info "Steps 2 and 3 completed successfully"
 run_step 4 "Generate Report"              "4_generate_report.R"
 
 log_step "CONCORDANCE ANALYSIS COMPLETE"
-log_info "Report:  ${POST_PROC_BASE}/cross_method_concordance_report.md"
+log_info "Report:  ${REPORT_BASE}/cross_method_concordance_report.md"
 log_info "Figures: ${OUTPUT_DIR}/figures/"
 log_info "Tables:  ${OUTPUT_DIR}/tables/"
