@@ -9,20 +9,30 @@
 [[ "${PIPELINE_UTILS_SOURCED:-}" == "true" ]] && return 0
 export PIPELINE_UTILS_SOURCED="true"
 
+# Pre-compute utility directory paths at module load (avoids ~15-30 local var assignments
+# per run_single_analysis call × N methods × N analyses). O(1) lookup thereafter.
+_PIPELINE_UTIL_DIR="${UTILITIES_DIR:-${BASE_DIR:-.}/modules/c_post_processing/utilities}"
+_PIPELINE_MODS_DIR="${ANALYSIS_MODULES_DIR:-${BASE_DIR:-.}/modules/c_post_processing/analysis_modules}"
+
 #===============================================================================
 # CSV PARSING
 #===============================================================================
 
-# Parse CSV and extract SRR entries as SRR_ID:Organ format
+# Parse CSV and extract SRR entries as SRR_ID:Organ format. O(n) single awk pass.
+# Replaces while-read loop (avoids per-line bash overhead: fork+IFS parse per row).
 # Usage: mapfile -t SRR_LIST < <(parse_srr_csv "path/to/file.csv")
 parse_srr_csv() {
     local csv_file="$1"
     [[ ! -f "$csv_file" ]] && { log_warn "CSV not found: $csv_file"; return 1; }
-    
-    while IFS=',' read -r srr_id organ notes || [[ -n "$srr_id" ]]; do
-        [[ -z "$srr_id" || "$srr_id" == "#"* || "$srr_id" == "SRR_ID" ]] && continue
-        echo "${srr_id}:${organ}"
-    done < "$csv_file"
+
+    awk -F',' '
+        NR == 1 { next }
+        /^#/ || /^[[:space:]]*$/ { next }
+        $1 == "SRR_ID" { next }
+        { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2)
+          if ($1 != "") print $1 ":" $2 }
+    ' "$csv_file"
 }
 
 #===============================================================================
@@ -46,7 +56,7 @@ _rebuild_exported_arrays() {
 # ANALYSIS SCRIPT MAPPING
 #===============================================================================
 
-# Map analysis name to R script filename.
+# Map analysis name to R script filename. O(1) via case pattern match.
 # Uses case statement (not associative array) so the function works correctly
 # when exported to GNU Parallel subshells (bash cannot export associative arrays).
 # NOTE: Preprocessing scripts (Tximport_Salmon, Tximport_RSEM, Stringtie_Matrix)
@@ -150,7 +160,7 @@ setup_method_env() {
         export RSEM_QUANT_ROOT="$BASE_DIR/2_ALIGNMENT_RESULTs/M5_RSEM_Bowtie2/RSEM_Quant_WD/$master_ref"
     fi
 
-    export GENE_GROUPS_DIR="$BASE_DIR/inputs/gene_groups_csv"
+    export GENE_GROUPS_DIR="$BASE_DIR/inputs/3_post_proc_inputs/gene_groups_csv"
 
     # Rebuild arrays from exported strings (bash arrays are not exported to subshells)
     _rebuild_exported_arrays
@@ -178,10 +188,16 @@ run_method_preprocessing() {
 
     pushd "$method_dir" > /dev/null || { log_error "Cannot cd to $method_dir"; return 1; }
 
-    export CURRENT_METHOD="$method" MASTER_REFERENCE="$master_ref"
-    export METHOD_BASE_DIR="$method_dir"
-
-    _rebuild_exported_arrays
+    # Re-export env vars (needed in GNU Parallel subshells where setup_method_env
+    # ran in parent). Skip _rebuild_exported_arrays if already in same process.
+    # ASSUMPTION: setup_method_env() was called before this function, so MASTER_REFERENCE
+    # is already correct. If the same method is called with a different master_ref without
+    # re-calling setup_method_env(), MASTER_REFERENCE would be stale.
+    if [[ "${CURRENT_METHOD:-}" != "$method" ]]; then
+        export CURRENT_METHOD="$method" MASTER_REFERENCE="$master_ref"
+        export METHOD_BASE_DIR="$method_dir"
+        _rebuild_exported_arrays
+    fi
 
     # For M3/M4/M5: skip tximport preprocessing when Matrix_Creation is also enabled —
     # the method-specific 3_Matrix_Creation_*.R script supersedes the tximport step.
@@ -220,11 +236,16 @@ run_single_analysis() {
 
     pushd "$method_dir" > /dev/null || { log_error "Cannot cd to $method_dir"; return 1; }
 
-    export CURRENT_METHOD="$method" MASTER_REFERENCE="$master_ref"
-    export METHOD_BASE_DIR="$method_dir"
-
-    # Rebuild arrays in case we are inside a GNU Parallel subshell
-    _rebuild_exported_arrays
+    # Re-export env vars only when in a GNU Parallel subshell (CURRENT_METHOD differs).
+    # In same-process sequential runs, setup_method_env already set these — skip for speed.
+    # ASSUMPTION: setup_method_env() was called before this function, so MASTER_REFERENCE
+    # is already correct. If the same method is called with a different master_ref without
+    # re-calling setup_method_env(), MASTER_REFERENCE would be stale.
+    if [[ "${CURRENT_METHOD:-}" != "$method" ]]; then
+        export CURRENT_METHOD="$method" MASTER_REFERENCE="$master_ref"
+        export METHOD_BASE_DIR="$method_dir"
+        _rebuild_exported_arrays
+    fi
 
     # Skip legacy preprocessing analysis names
     if [[ "$analysis" =~ ^(Tximport_Salmon|Tximport_RSEM|Tximport_STAR|Stringtie_Matrix)$ ]]; then
@@ -246,13 +267,13 @@ run_single_analysis() {
     fi
 
     # Resolve script path: check utilities dir, then analysis_modules dir
+    # Uses module-level pre-computed paths (_PIPELINE_UTIL_DIR, _PIPELINE_MODS_DIR)
+    # to avoid repeated local variable allocation. O(1) path resolution.
     local script_path=""
-    local _util_dir="${UTILITIES_DIR:-$BASE_DIR/modules/c_post_processing/utilities}"
-    local _mods_dir="${ANALYSIS_MODULES_DIR:-$BASE_DIR/modules/c_post_processing/analysis_modules}"
-    if [[ -f "$_util_dir/$script" ]]; then
-        script_path="$_util_dir/$script"
-    elif [[ -f "$_mods_dir/$script" ]]; then
-        script_path="$_mods_dir/$script"
+    if [[ -f "${_PIPELINE_UTIL_DIR}/$script" ]]; then
+        script_path="${_PIPELINE_UTIL_DIR}/$script"
+    elif [[ -f "${_PIPELINE_MODS_DIR}/$script" ]]; then
+        script_path="${_PIPELINE_MODS_DIR}/$script"
     fi
 
     if [[ -n "$script_path" && -f "$script_path" ]]; then

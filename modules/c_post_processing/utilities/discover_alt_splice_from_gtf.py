@@ -86,13 +86,20 @@ def discover(gtf_path: Path):
             tx_id = ad.get("transcript_id")
             if not gene_id or not tx_id:
                 continue
+            try:
+                s, e = int(start), int(end)
+            except ValueError:
+                continue
+            if s > e:
+                continue
             gene_tx_exons[gene_id][tx_id].append(
-                ExonRec(seqname=seqname, start=int(start), end=int(end), strand=strand)
+                ExonRec(seqname=seqname, start=s, end=e, strand=strand)
             )
 
     alt_genes = []
     all_gene_stats = []
 
+    # O(G × T × E) where G=genes, T=transcripts/gene, E=exons/transcript
     for gene_id, tx_map in gene_tx_exons.items():
         tx_structures = {}
         for tx_id, exons in tx_map.items():
@@ -130,6 +137,7 @@ def filter_gtf_by_genes(gtf_in: Path, gtf_out: Path, alt_genes: set) -> int:
     with gtf_in.open("r", encoding="utf-8") as fin, gtf_out.open("w", encoding="utf-8") as fout:
         for line in fin:
             if line.startswith("#"):
+                fout.write(line)
                 continue
             fields = line.rstrip("\n").split("\t")
             if len(fields) < 9:
@@ -151,7 +159,9 @@ def extract_transcript_fasta(
     genome = read_fasta(genome_fasta)
     written = 0
     skipped = 0
+    skipped_seqnames: set = set()
 
+    # O(A × T × E) where A=alt-spliced genes, T=transcripts/gene, E=exons/transcript
     with out_fa.open("w", encoding="utf-8") as out:
         for gene_id in sorted(alt_genes):
             for tx_id, exons in sorted(gene_tx_exons[gene_id].items()):
@@ -163,6 +173,7 @@ def extract_transcript_fasta(
                 strand = exons[0].strand
                 if seqname not in genome:
                     skipped += 1
+                    skipped_seqnames.add(seqname)
                     continue
 
                 chrom_seq = genome[seqname]
@@ -188,6 +199,13 @@ def extract_transcript_fasta(
                 out.write(wrap_fasta(tx_seq) + "\n")
                 written += 1
 
+    if skipped_seqnames:
+        print(
+            f"WARNING: {len(skipped_seqnames)} GTF seqname(s) not found in genome FASTA: "
+            f"{', '.join(sorted(skipped_seqnames)[:5])}"
+            f"{'...' if len(skipped_seqnames) > 5 else ''}",
+            file=sys.stderr,
+        )
     return written, skipped
 
 
@@ -216,6 +234,10 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     gene_tx_exons, all_gene_stats, alt_genes = discover(gtf_path)
+
+    if not all_gene_stats:
+        print("WARNING: No valid exon records with gene_id and transcript_id found in GTF.", file=sys.stderr)
+        print("Check that the GTF contains exon features with gene_id and transcript_id attributes.", file=sys.stderr)
 
     stats_tsv = out_dir / "gene_splicing_summary.tsv"
     alt_genes_txt = out_dir / "alternatively_spliced_genes.txt"

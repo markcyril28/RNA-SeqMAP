@@ -46,6 +46,7 @@ def main(gene_names_file, sample_files_list):
     # calls). For pre-normalized metrics (TPM/FPKM/coverage), we keep the MAX
     # value across duplicates — this represents the dominant isoform's expression.
     # Summing would be incorrect for already-normalized values.
+    # O(S × L × V) where S=samples, L=lines/file, V=ID variants (≤3)
     sample_dicts = []
     for sample_file in sample_files:
         gene_to_count = {}
@@ -116,6 +117,7 @@ def main(gene_names_file, sample_files_list):
             current = stripped
         gene_name_variants[gene] = variants
 
+    # O(S × G) per-sample gene resolution with O(1) dict lookups; variant fallback O(V≤3)
     sample_gene_values = []
     for sample in sample_dicts:
         resolved = {}
