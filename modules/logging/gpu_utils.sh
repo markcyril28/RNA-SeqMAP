@@ -221,7 +221,8 @@ detect_gpu() {
 				_query_info=$(nvidia-smi --query-gpu=count,memory.total,name,driver_version --format=csv,noheader,nounits 2>/dev/null)
 				if [[ -n "$_query_info" ]]; then
 					GPU_COUNT=$(grep -c '' <<< "$_query_info")
-					GPU_MEMORY_MB=$(echo "$_query_info" | head -1 | cut -d',' -f2 | tr -d ' ')
+					# Single awk replaces head|cut|tr 3-process pipe
+				GPU_MEMORY_MB=$(awk -F',' 'NR==1 {gsub(/[[:space:]]/,"",$2); print $2}' <<< "$_query_info")
 				fi
 			fi
 

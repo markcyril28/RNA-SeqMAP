@@ -272,26 +272,39 @@ export _ERROR_PATTERN _WARN_PATTERN
 capture_stderr_errors() {
 	# Monitor stderr/stdout stream and capture errors to error log
 	# Usage: command 2>&1 | capture_stderr_errors
-	# Uses POSIX-compatible awk (date command via getline for timestamps,
-	# instead of gawk-specific strftime/systime that fail on mawk/nawk)
-	# Optimization: batch timestamp - only call date when second changes,
-	# avoiding 100s of process spawns for error-heavy commands
+	# Big O: O(L) where L = number of output lines; timestamp is O(1) per line.
+	# Performance: uses gawk systime()/strftime() when available (zero subprocess
+	# spawns) with automatic fallback to date(1) for mawk/nawk (caches timestamp
+	# per epoch-second, reducing spawns from L to ~1 for burst output).
 	awk -v err_file="$ERROR_WARN_FILE" \
 		-v err_pat="$_ERROR_PATTERN" \
 		-v warn_pat="$_WARN_PATTERN" '
-	BEGIN { ts = ""; last_epoch = 0 }
+	BEGIN {
+		ts = ""; last_epoch = 0
+		# Detect gawk: systime() returns >0 on gawk, causes error on mawk/nawk
+		has_systime = 0
+		if (PROCINFO["version"] != "") has_systime = 1  # PROCINFO is gawk-only
+	}
 	function get_ts() {
-		# Cache timestamp: only spawn date when the epoch second changes.
-		# For error-heavy output (100s of lines), this reduces process spawns from N to ~1.
-		cmd = "date +\"%Y-%m-%d %H:%M:%S %s\""
-		cmd | getline raw_ts
-		close(cmd)
-		n = split(raw_ts, parts, " ")
-		epoch = parts[n] + 0
-		if (epoch != last_epoch) {
-			last_epoch = epoch
-			ts = parts[1]
-			for (i = 2; i < n; i++) ts = ts " " parts[i]
+		if (has_systime) {
+			# gawk path: zero subprocess spawns — O(1) built-in call
+			epoch = systime()
+			if (epoch != last_epoch) {
+				last_epoch = epoch
+				ts = strftime("%Y-%m-%d %H:%M:%S", epoch)
+			}
+		} else {
+			# POSIX fallback: spawn date only when epoch second changes
+			cmd = "date +\"%Y-%m-%d %H:%M:%S %s\""
+			cmd | getline raw_ts
+			close(cmd)
+			n = split(raw_ts, parts, " ")
+			epoch = parts[n] + 0
+			if (epoch != last_epoch) {
+				last_epoch = epoch
+				ts = parts[1]
+				for (i = 2; i < n; i++) ts = ts " " parts[i]
+			}
 		}
 	}
 	{
@@ -526,6 +539,8 @@ catalog_all_software() {
 		"R:R --version"
 	)
 
+	# O(F) wall-clock (parallel) vs O(F) sequential — F tool version subshells run concurrently;
+	# each subshell is O(1) process spawn; wait loop is O(F) to reap all background pids
 	# Batch version checks: collect all installed tools and run version commands
 	# concurrently via background subshells (reduces ~18 sequential spawns to parallel)
 	local _ver_tmpdir
@@ -597,7 +612,8 @@ rotate_old_logs() {
 
 	[[ ! -d "$base_dir" ]] && return 0
 
-	# Single find pass: delete old logs and count via -printf (replaces 2 find calls)
+	# O(F) — single find traversal over F log/csv files; -delete and -printf are inline actions
+	# avoiding a second traversal pass that a separate rm invocation would require
 	local count
 	count=$(find "$base_dir" -type f \( -name '*.log' -o -name '*.csv' \) -mtime +"$max_age" -delete -printf '.' 2>/dev/null | wc -c)
 	if [[ "$count" -gt 0 ]]; then
