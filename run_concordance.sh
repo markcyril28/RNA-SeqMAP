@@ -237,14 +237,16 @@ wait "$_pid3" || _step3_rc=$?
 cat "$_step2_log" "$_step3_log" 2>/dev/null
 rm -f "$_step2_log" "$_step3_log"
 
+_any_failed=0
 if [[ $_step2_rc -ne 0 ]]; then
     log_error "Step 2 (Quantification Concordance) failed (exit=$_step2_rc)!"
-    exit 1
+    _any_failed=1
 fi
 if [[ $_step3_rc -ne 0 ]]; then
     log_error "Step 3 (Ranking Stability) failed (exit=$_step3_rc)!"
-    exit 1
+    _any_failed=1
 fi
+[[ $_any_failed -ne 0 ]] && exit 1
 log_info "Steps 2 and 3 completed successfully"
 
 # Step 4 reads outputs from both steps 2 and 3
