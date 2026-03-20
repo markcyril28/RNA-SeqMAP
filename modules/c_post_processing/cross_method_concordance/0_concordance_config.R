@@ -75,7 +75,8 @@ if (!exists("GENE_GROUPS_DIR") || !nzchar(GENE_GROUPS_DIR)) {
 
 # Methods to compare
 METHODS_STR <- Sys.getenv("METHODS", "M1_HISAT2_RefGuided M2_HISAT2_DeNovo M3_STAR_Align M4_Salmon_Saf M5_RSEM_Bowtie2")
-CONCORDANCE_METHODS <- trimws(strsplit(METHODS_STR, " ")[[1]])
+CONCORDANCE_METHODS <- trimws(strsplit(trimws(METHODS_STR), "\\s+")[[1]])
+CONCORDANCE_METHODS <- CONCORDANCE_METHODS[nzchar(CONCORDANCE_METHODS)]
 
 # Short labels for display
 METHOD_SHORT_NAMES <- c(
