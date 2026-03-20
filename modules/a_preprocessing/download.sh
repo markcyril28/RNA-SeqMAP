@@ -84,7 +84,10 @@ download_srrs_wget() {
 		[[ -z "$ena_links" ]] && { log_warn "No ENA links for $SRR"; continue; }
 		
 		log_info "Downloading $SRR from ENA..."
-		wget -q -c -P "$raw_dir" "ftp://$(echo "$ena_links" | cut -f1 -d';')" "ftp://$(echo "$ena_links" | cut -f2 -d';')" || {
+		# Single IFS split replaces 4 subshell spawns (2× echo|cut)
+		local _link1 _link2
+		IFS=';' read -r _link1 _link2 <<< "$ena_links"
+		wget -q -c -P "$raw_dir" "ftp://$_link1" "ftp://$_link2" || {
 			log_warn "ENA download failed for $SRR, trying SRA..."
 			download_srrs "$SRR"
 		}
