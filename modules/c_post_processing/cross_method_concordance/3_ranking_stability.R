@@ -62,9 +62,16 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
   }
 
   gene_df <- read.csv(csv_file, stringsAsFactors = FALSE, header = TRUE)
+  if (!"Gene_ID" %in% colnames(gene_df)) {
+    cat("  [WARN] Gene group CSV lacks 'Gene_ID' column:", csv_file, "\n")
+    next
+  }
   gene_ids <- trimws(gene_df$Gene_ID)
+  # Filter out empty/NA gene IDs that would create invalid lookup keys
+  valid_mask <- nzchar(gene_ids) & !is.na(gene_ids)
+  gene_ids <- gene_ids[valid_mask]
   gene_names <- if ("Shortened_Name" %in% colnames(gene_df)) {
-    setNames(trimws(gene_df$Shortened_Name), gene_ids)
+    setNames(trimws(gene_df$Shortened_Name[valid_mask]), gene_ids)
   } else {
     setNames(gene_ids, gene_ids)
   }
@@ -109,7 +116,6 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
   n_meth <- ncol(rank_matrix)
   rank_range <- .rowMaxs(rank_matrix) - .rowMins(rank_matrix)
   rank_sd <- sqrt(rowSums((rank_matrix - rank_row_means)^2) / (n_meth - 1))
-  rank_cv <- rank_sd / rank_row_means
   median_rank <- .rowMedians(rank_matrix)
 
   # Fractional rank change: max rank shift / total genes
@@ -245,8 +251,8 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
   log2_mean_tpm <- log2(mean_tpm_matrix + 1)
   zscore_grp <- t(scale(t(log2_mean_tpm)))
   zscore_grp[is.nan(zscore_grp)] <- 0
-  grp_row_mins <- apply(zscore_grp, 1, min, na.rm = TRUE)
-  grp_row_maxs <- apply(zscore_grp, 1, max, na.rm = TRUE)
+  grp_row_mins <- .rowMins(zscore_grp)
+  grp_row_maxs <- .rowMaxs(zscore_grp)
   grp_row_range <- grp_row_maxs - grp_row_mins
   zscore_grp_scaled <- (zscore_grp - grp_row_mins) / ifelse(grp_row_range == 0, 1, grp_row_range) * 10
   zscore_grp_scaled[grp_row_range == 0, ] <- 5.0
