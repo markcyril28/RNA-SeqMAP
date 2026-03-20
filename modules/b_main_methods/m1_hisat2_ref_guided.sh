@@ -268,7 +268,11 @@ _m1_collect_bam_metrics() {
 		clip_pct=$(awk "BEGIN{printf \"%.1f\", 100*$bases_clipped/$total_bases}")
 		local _cp_int=${clip_pct%.*}
 		if (( _cp_int > 10 )); then
-			_parallel_log "$method" "$srr" WARN "Bases trimmed ${clip_pct}% of mapped bases — may indicate quality issues or adapter contamination"
+			if [[ -n "${abs_error_warn_file:-}" ]]; then
+				_parallel_log "$method" "$srr" WARN "Bases trimmed ${clip_pct}% of mapped bases — may indicate quality issues or adapter contamination"
+			else
+				log_warn "[$method] $srr: Bases trimmed ${clip_pct}% of mapped bases — may indicate quality issues or adapter contamination"
+			fi
 		fi
 	fi
 
@@ -277,7 +281,11 @@ _m1_collect_bam_metrics() {
 		local mean_int=${insert_mean%.*}
 		if [[ "$mean_int" -gt 0 ]]; then
 			if [[ "$mean_int" -lt 100 || "$mean_int" -gt 800 ]]; then
-				_parallel_log "$method" "$srr" WARN "Unusual insert size: mean=${insert_mean}, SD=${insert_sd:-N/A} (expected 100-800 bp for RNA-seq)"
+				if [[ -n "${abs_error_warn_file:-}" ]]; then
+					_parallel_log "$method" "$srr" WARN "Unusual insert size: mean=${insert_mean}, SD=${insert_sd:-N/A} (expected 100-800 bp for RNA-seq)"
+				else
+					log_warn "[$method] $srr: Unusual insert size: mean=${insert_mean}, SD=${insert_sd:-N/A} (expected 100-800 bp for RNA-seq)"
+				fi
 			fi
 		fi
 	fi
@@ -523,6 +531,12 @@ hisat2_ref_guided_pipeline() {
 		[[ $par_exit -ne 0 ]] && log_warn "[PARALLEL] Some jobs failed - check $HISAT2_REF_GUIDED_ROOT/parallel_hisat2_refguided_align.log"
 	else
 		# Sequential fallback
+		# Pre-compute sort params once (invariant across samples in sequential mode)
+		local _seq_sort_threads=$(( THREADS < 4 ? THREADS : 4 ))
+		(( _seq_sort_threads < 1 )) && _seq_sort_threads=1
+		local _seq_sort_mem _seq_sort_wi_flag=""
+		_seq_sort_mem=$(_samtools_sort_mem "$_seq_sort_threads" 1)
+		_samtools_has_write_index && _seq_sort_wi_flag="--write-index"
 		for SRR in "${rnaseq_list[@]}"; do
 			local HISAT2_DIR="$HISAT2_REF_GUIDED_ROOT/$SRR"
 			mkdir -p "$HISAT2_DIR"
@@ -542,21 +556,15 @@ hisat2_ref_guided_pipeline() {
 				local summary_file="$HISAT2_DIR/${SRR}_${fasta_tag}_ref_guided_alignment_summary.txt"
 
 				# Pipe hisat2 directly into samtools sort — eliminates 10-50GB SAM intermediate per sample
-				# Cap sort threads at 4: I/O-bound beyond that, and sort memory is per-thread
-				# Cap sort threads: min(THREADS, 4); at least 1
-				local sort_threads=$(( THREADS < 4 ? THREADS : 4 ))
-				(( sort_threads < 1 )) && sort_threads=1
-				local sort_mem _sort_wi_flag=""
-				sort_mem=$(_samtools_sort_mem "$sort_threads" 1)
-				_samtools_has_write_index && _sort_wi_flag="--write-index"
+				# sort_threads, sort_mem, _sort_wi_flag pre-computed before loop
 				if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
 					hisat2 -p "${THREADS}" --dta $hisat2_strand_opts -x "$index_prefix" \
 						-1 "$trimmed1" -2 "$trimmed2" 2>"$summary_file" \
-						| samtools sort -@ "$sort_threads" -m "$sort_mem" $_sort_wi_flag -o "$bam"
+						| samtools sort -@ "$_seq_sort_threads" -m "$_seq_sort_mem" $_seq_sort_wi_flag -o "$bam"
 				else
 					hisat2 -p "${THREADS}" --dta $hisat2_strand_opts -x "$index_prefix" \
 						-U "$trimmed1" 2>"$summary_file" \
-						| samtools sort -@ "$sort_threads" -m "$sort_mem" $_sort_wi_flag -o "$bam"
+						| samtools sort -@ "$_seq_sort_threads" -m "$_seq_sort_mem" $_seq_sort_wi_flag -o "$bam"
 				fi
 				local _ps=("${PIPESTATUS[@]}")
 				# Display alignment summary (strip ANSI codes for clean log output)
@@ -575,7 +583,7 @@ hisat2_ref_guided_pipeline() {
 
 				# Only run separate index if --write-index was not used
 				# Cap index threads at 4 — samtools index is I/O-bound
-				if [[ -z "$_sort_wi_flag" ]]; then
+				if [[ -z "$_seq_sort_wi_flag" ]]; then
 					local _idx_t=$THREADS; (( _idx_t > 4 )) && _idx_t=4
 					run_with_space_time_log samtools index -@ "$_idx_t" "$bam"
 				fi
