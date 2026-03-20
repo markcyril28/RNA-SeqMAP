@@ -132,15 +132,23 @@ sp_full <- concordance$median_spearman
 diag(sp_full) <- NA
 sp_full[lower.tri(sp_full)] <- NA
 
-sp_best_idx <- which(sp_full == max(sp_full, na.rm = TRUE), arr.ind = TRUE)
-sp_worst_idx <- which(sp_full == min(sp_full, na.rm = TRUE), arr.ind = TRUE)
+sp_full_max <- max(sp_full, na.rm = TRUE)
+sp_full_min <- min(sp_full, na.rm = TRUE)
 
-sp_best_name <- if (nrow(sp_best_idx) > 0) {
-  paste0(rownames(sp_full)[sp_best_idx[1,1]], " & ", colnames(sp_full)[sp_best_idx[1,2]])
-} else { "N/A" }
-sp_worst_name <- if (nrow(sp_worst_idx) > 0) {
-  paste0(rownames(sp_full)[sp_worst_idx[1,1]], " & ", colnames(sp_full)[sp_worst_idx[1,2]])
-} else { "N/A" }
+sp_best_name <- "N/A"
+sp_worst_name <- "N/A"
+if (is.finite(sp_full_max)) {
+  sp_best_idx <- which(sp_full == sp_full_max, arr.ind = TRUE)
+  if (nrow(sp_best_idx) > 0) {
+    sp_best_name <- paste0(rownames(sp_full)[sp_best_idx[1,1]], " & ", colnames(sp_full)[sp_best_idx[1,2]])
+  }
+}
+if (is.finite(sp_full_min)) {
+  sp_worst_idx <- which(sp_full == sp_full_min, arr.ind = TRUE)
+  if (nrow(sp_worst_idx) > 0) {
+    sp_worst_name <- paste0(rownames(sp_full)[sp_worst_idx[1,1]], " & ", colnames(sp_full)[sp_worst_idx[1,2]])
+  }
+}
 
 add("#### Interpretation")
 add("")
@@ -175,9 +183,9 @@ add("")
 # Best/worst pairs
 if (is.finite(sp_overall)) {
   add("- **Most concordant:** ", sp_best_name, " (\u03C1 = ",
-      sprintf("%.3f", max(sp_full, na.rm = TRUE)), ")")
+      sprintf("%.3f", sp_full_max), ")")
   add("- **Least concordant:** ", sp_worst_name, " (\u03C1 = ",
-      sprintf("%.3f", min(sp_full, na.rm = TRUE)), ")")
+      sprintf("%.3f", sp_full_min), ")")
 }
 add("")
 
