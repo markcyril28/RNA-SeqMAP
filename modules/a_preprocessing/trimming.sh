@@ -55,47 +55,71 @@ _trim_single_srr() {
 	# Get trim parameters for this specific SRR from profile
 	get_trim_params "$SRR"
 	
-	log_info "Trimming $SRR with TrimGalore..."
-	run_with_space_time_log trim_galore --cores "${THREADS_PER_JOB:-2}" \
-		--paired "$raw1" "$raw2" --output_dir "$trim_dir"
-	
-	# Trimmomatic HEADCROP with profile-based parameters
-	log_info "Applying HEADCROP:${HEADCROP_BASES} for $SRR..."
-	local tg_r1="$trim_dir/${SRR}_1_val_1.fq"
-	local tg_r2="$trim_dir/${SRR}_2_val_2.fq"
-	# Decompress R1 and R2 concurrently with pigz (multi-threaded) if available
 	local _decompress_cmd="gunzip"
 	[[ "$_TRIMMING_HAS_PIGZ" == "true" ]] && _decompress_cmd="pigz -d -p ${THREADS_PER_JOB:-4}"
-	if [[ -f "${tg_r1}.gz" && -f "${tg_r2}.gz" ]]; then
-		$_decompress_cmd "${tg_r1}.gz" &
-		local _pid1=$!
-		$_decompress_cmd "${tg_r2}.gz" &
-		local _pid2=$!
-		wait $_pid1 $_pid2
-	elif [[ -f "${tg_r1}.gz" ]]; then
-		$_decompress_cmd "${tg_r1}.gz"
-	elif [[ -f "${tg_r2}.gz" ]]; then
-		$_decompress_cmd "${tg_r2}.gz"
-	fi
 
-	local tmp_r1="$trim_dir/${SRR}_1_headcrop.fq"
-	local tmp_r2="$trim_dir/${SRR}_2_headcrop.fq"
-	run_with_space_time_log trimmomatic PE -threads "${THREADS_PER_JOB:-2}" \
-		"$tg_r1" "$tg_r2" "$tmp_r1" /dev/null "$tmp_r2" /dev/null \
-		HEADCROP:${HEADCROP_BASES}
-	mv "$tmp_r1" "$tg_r1"
-	mv "$tmp_r2" "$tg_r2"
-	
-	# Apply TAILCROP if > 0
-	if [[ "${TAILCROP_BASES}" -gt 0 ]]; then
-		log_info "Applying TAILCROP:${TAILCROP_BASES} for $SRR..."
-		run_with_error_capture cutadapt -u -${TAILCROP_BASES} -U -${TAILCROP_BASES} \
-			-o "${tg_r1}.tmp" -p "${tg_r2}.tmp" "$tg_r1" "$tg_r2"
-		mv "${tg_r1}.tmp" "$tg_r1"
-		mv "${tg_r2}.tmp" "$tg_r2"
+	if [[ -n "$raw2" && -f "$raw2" ]]; then
+		# ── Paired-end ──
+		log_info "Trimming $SRR (PE) with TrimGalore..."
+		run_with_space_time_log trim_galore --cores "${THREADS_PER_JOB:-2}" \
+			--paired "$raw1" "$raw2" --output_dir "$trim_dir"
+
+		log_info "Applying HEADCROP:${HEADCROP_BASES} for $SRR..."
+		local tg_r1="$trim_dir/${SRR}_1_val_1.fq"
+		local tg_r2="$trim_dir/${SRR}_2_val_2.fq"
+		if [[ -f "${tg_r1}.gz" && -f "${tg_r2}.gz" ]]; then
+			$_decompress_cmd "${tg_r1}.gz" &
+			local _pid1=$!
+			$_decompress_cmd "${tg_r2}.gz" &
+			local _pid2=$!
+			wait $_pid1 $_pid2
+		elif [[ -f "${tg_r1}.gz" ]]; then
+			$_decompress_cmd "${tg_r1}.gz"
+		elif [[ -f "${tg_r2}.gz" ]]; then
+			$_decompress_cmd "${tg_r2}.gz"
+		fi
+
+		local tmp_r1="$trim_dir/${SRR}_1_headcrop.fq"
+		local tmp_r2="$trim_dir/${SRR}_2_headcrop.fq"
+		run_with_space_time_log trimmomatic PE -threads "${THREADS_PER_JOB:-2}" \
+			"$tg_r1" "$tg_r2" "$tmp_r1" /dev/null "$tmp_r2" /dev/null \
+			HEADCROP:${HEADCROP_BASES}
+		mv "$tmp_r1" "$tg_r1"
+		mv "$tmp_r2" "$tg_r2"
+
+		if [[ "${TAILCROP_BASES}" -gt 0 ]]; then
+			log_info "Applying TAILCROP:${TAILCROP_BASES} for $SRR..."
+			run_with_error_capture cutadapt -u -${TAILCROP_BASES} -U -${TAILCROP_BASES} \
+				-o "${tg_r1}.tmp" -p "${tg_r2}.tmp" "$tg_r1" "$tg_r2"
+			mv "${tg_r1}.tmp" "$tg_r1"
+			mv "${tg_r2}.tmp" "$tg_r2"
+		fi
+
+		verify_trimming_and_cleanup "$SRR" "$tg_r1" "$tg_r2" "$raw1" "$raw2"
+	else
+		# ── Single-end ──
+		log_info "Trimming $SRR (SE) with TrimGalore..."
+		run_with_space_time_log trim_galore --cores "${THREADS_PER_JOB:-2}" \
+			"$raw1" --output_dir "$trim_dir"
+
+		log_info "Applying HEADCROP:${HEADCROP_BASES} for $SRR..."
+		local tg_r1="$trim_dir/${SRR}_trimmed.fq"
+		[[ -f "${tg_r1}.gz" ]] && $_decompress_cmd "${tg_r1}.gz"
+
+		local tmp_r1="$trim_dir/${SRR}_headcrop.fq"
+		run_with_space_time_log trimmomatic SE -threads "${THREADS_PER_JOB:-2}" \
+			"$tg_r1" "$tmp_r1" HEADCROP:${HEADCROP_BASES}
+		mv "$tmp_r1" "$tg_r1"
+
+		if [[ "${TAILCROP_BASES}" -gt 0 ]]; then
+			log_info "Applying TAILCROP:${TAILCROP_BASES} for $SRR..."
+			run_with_error_capture cutadapt -u -${TAILCROP_BASES} \
+				-o "${tg_r1}.tmp" "$tg_r1"
+			mv "${tg_r1}.tmp" "$tg_r1"
+		fi
+
+		verify_trimming_and_cleanup "$SRR" "$tg_r1" "" "$raw1" ""
 	fi
-	
-	verify_trimming_and_cleanup "$SRR" "$tg_r1" "$tg_r2" "$raw1" "$raw2"
 }
 
 # ==============================================================================
@@ -162,6 +186,23 @@ trim_srrs_trimmomatic() {
 }
 
 # ==============================================================================
+# SERIALIZATION HELPER
+# ==============================================================================
+
+# Serialize SRR_TRIM_PROFILE_MAP associative array to a semicolon-delimited string
+# for export to GNU Parallel subshells (associative arrays can't be exported).
+# Usage: export SERIALIZED_TRIM_PROFILES="$(_serialize_trim_profiles)"
+_serialize_trim_profiles() {
+	local -a _prof_parts=()
+	for key in "${!SRR_TRIM_PROFILE_MAP[@]}"; do
+		_prof_parts+=("${key}=${SRR_TRIM_PROFILE_MAP[$key]}")
+	done
+	# Join with IFS directly — avoids printf subprocess fork
+	local IFS=';'
+	echo "${_prof_parts[*]}"
+}
+
+# ==============================================================================
 # COMBINED AND PARALLEL VARIANTS
 # ==============================================================================
 # These functions combine download+trim or run either method in parallel via GNU Parallel.
@@ -222,16 +263,8 @@ download_and_trim_srrs_parallel() {
 	export TIME_DIR TIME_FILE TIME_TEMP SPACE_TIME_FILE ERROR_WARN_FILE
 	export TRIM_PROFILE_DEFAULT DELETE_RAW_SRR_AFTER_DOWNLOAD_and_TRIMMING
 	
-	# Serialize SRR_TRIM_PROFILE_MAP to a string for export (associative arrays can't be exported)
-	# Build indexed array then join once with IFS (avoids O(n²) string concatenation)
-	local -a _prof_parts=()
-	for key in "${!SRR_TRIM_PROFILE_MAP[@]}"; do
-		_prof_parts+=("${key}=${SRR_TRIM_PROFILE_MAP[$key]}")
-	done
-	local serialized_profiles
-	serialized_profiles="$(IFS=';'; printf '%s;' "${_prof_parts[*]}")"
-	export SERIALIZED_TRIM_PROFILES="$serialized_profiles"
-	
+	export SERIALIZED_TRIM_PROFILES="$(_serialize_trim_profiles)"
+
 	export -f timestamp log log_info log_warn log_error run_with_space_time_log run_with_error_capture
 	export -f find_trimmed_fastq find_raw_fastq verify_trimming_and_cleanup
 
@@ -265,23 +298,6 @@ download_and_trim_srrs_parallel() {
 
 		[[ -z "$raw1" ]] && { log_warn "No raw for $SRR"; return 1; }
 
-		trim_galore --cores "${THREADS_PER_JOB:-2}" --paired "$raw1" "$raw2" --output_dir "$trim_dir"
-		local tg_r1="$trim_dir/${SRR}_1_val_1.fq"
-		local tg_r2="$trim_dir/${SRR}_2_val_2.fq"
-		# Decompress concurrently with pigz if available
-		local _dcmd="gunzip"
-		[[ "$_TRIMMING_HAS_PIGZ" == "true" ]] && _dcmd="pigz -d -p ${THREADS_PER_JOB:-2}"
-		if [[ -f "${tg_r1}.gz" && -f "${tg_r2}.gz" ]]; then
-			$_dcmd "${tg_r1}.gz" &
-			local _p1=$!
-			$_dcmd "${tg_r2}.gz" &
-			local _p2=$!
-			wait $_p1 $_p2
-		else
-			[[ -f "${tg_r1}.gz" ]] && $_dcmd "${tg_r1}.gz"
-			[[ -f "${tg_r2}.gz" ]] && $_dcmd "${tg_r2}.gz"
-		fi
-		
 		# Deserialize trim profiles: O(1) awk lookup replaces O(n) while-read scan
 		local profile
 		profile=$(awk -F'=' -v srr="$SRR" 'BEGIN{RS=";"} $1==srr{print $2; exit}' <<< "$SERIALIZED_TRIM_PROFILES")
@@ -289,22 +305,58 @@ download_and_trim_srrs_parallel() {
 
 		local HEADCROP_BASES TAILCROP_BASES MINLEN SW_SIZE SW_QUAL
 		IFS=':' read -r HEADCROP_BASES TAILCROP_BASES MINLEN SW_SIZE SW_QUAL <<< "$profile"
-		
-		trimmomatic PE -threads "${THREADS_PER_JOB:-2}" "$tg_r1" "$tg_r2" \
-			"${tg_r1}.tmp" /dev/null "${tg_r2}.tmp" /dev/null HEADCROP:${HEADCROP_BASES}
-		mv "${tg_r1}.tmp" "$tg_r1"
-		mv "${tg_r2}.tmp" "$tg_r2"
 
-		# Apply TAILCROP if > 0
-		if [[ "${TAILCROP_BASES:-0}" -gt 0 ]]; then
-			log_info "Applying TAILCROP:${TAILCROP_BASES} for $SRR..."
-			cutadapt -u -${TAILCROP_BASES} -U -${TAILCROP_BASES} \
-				-o "${tg_r1}.tmp" -p "${tg_r2}.tmp" "$tg_r1" "$tg_r2"
+		local _dcmd="gunzip"
+		[[ "$_TRIMMING_HAS_PIGZ" == "true" ]] && _dcmd="pigz -d -p ${THREADS_PER_JOB:-2}"
+
+		if [[ -n "$raw2" && -f "$raw2" ]]; then
+			# ── Paired-end ──
+			trim_galore --cores "${THREADS_PER_JOB:-2}" --paired "$raw1" "$raw2" --output_dir "$trim_dir"
+			local tg_r1="$trim_dir/${SRR}_1_val_1.fq"
+			local tg_r2="$trim_dir/${SRR}_2_val_2.fq"
+			if [[ -f "${tg_r1}.gz" && -f "${tg_r2}.gz" ]]; then
+				$_dcmd "${tg_r1}.gz" &
+				local _p1=$!
+				$_dcmd "${tg_r2}.gz" &
+				local _p2=$!
+				wait $_p1 $_p2
+			else
+				[[ -f "${tg_r1}.gz" ]] && $_dcmd "${tg_r1}.gz"
+				[[ -f "${tg_r2}.gz" ]] && $_dcmd "${tg_r2}.gz"
+			fi
+
+			trimmomatic PE -threads "${THREADS_PER_JOB:-2}" "$tg_r1" "$tg_r2" \
+				"${tg_r1}.tmp" /dev/null "${tg_r2}.tmp" /dev/null HEADCROP:${HEADCROP_BASES}
 			mv "${tg_r1}.tmp" "$tg_r1"
 			mv "${tg_r2}.tmp" "$tg_r2"
-		fi
 
-		verify_trimming_and_cleanup "$SRR" "$tg_r1" "$tg_r2" "$raw1" "$raw2"
+			if [[ "${TAILCROP_BASES:-0}" -gt 0 ]]; then
+				log_info "Applying TAILCROP:${TAILCROP_BASES} for $SRR..."
+				cutadapt -u -${TAILCROP_BASES} -U -${TAILCROP_BASES} \
+					-o "${tg_r1}.tmp" -p "${tg_r2}.tmp" "$tg_r1" "$tg_r2"
+				mv "${tg_r1}.tmp" "$tg_r1"
+				mv "${tg_r2}.tmp" "$tg_r2"
+			fi
+
+			verify_trimming_and_cleanup "$SRR" "$tg_r1" "$tg_r2" "$raw1" "$raw2"
+		else
+			# ── Single-end ──
+			trim_galore --cores "${THREADS_PER_JOB:-2}" "$raw1" --output_dir "$trim_dir"
+			local tg_r1="$trim_dir/${SRR}_trimmed.fq"
+			[[ -f "${tg_r1}.gz" ]] && $_dcmd "${tg_r1}.gz"
+
+			trimmomatic SE -threads "${THREADS_PER_JOB:-2}" "$tg_r1" \
+				"${tg_r1}.tmp" HEADCROP:${HEADCROP_BASES}
+			mv "${tg_r1}.tmp" "$tg_r1"
+
+			if [[ "${TAILCROP_BASES:-0}" -gt 0 ]]; then
+				log_info "Applying TAILCROP:${TAILCROP_BASES} for $SRR..."
+				cutadapt -u -${TAILCROP_BASES} -o "${tg_r1}.tmp" "$tg_r1"
+				mv "${tg_r1}.tmp" "$tg_r1"
+			fi
+
+			verify_trimming_and_cleanup "$SRR" "$tg_r1" "" "$raw1" ""
+		fi
 	}
 	export -f _parallel_worker
 	
@@ -338,16 +390,8 @@ trim_srrs_trimmomatic_parallel() {
 	export TIME_DIR TIME_FILE TIME_TEMP SPACE_TIME_FILE ERROR_WARN_FILE
 	export TRIM_PROFILE_DEFAULT DELETE_RAW_SRR_AFTER_DOWNLOAD_and_TRIMMING
 	
-	# Serialize SRR_TRIM_PROFILE_MAP to a string for export (associative arrays can't be exported)
-	# Build indexed array then join once with IFS (avoids O(n²) string concatenation)
-	local -a _prof_parts=()
-	for key in "${!SRR_TRIM_PROFILE_MAP[@]}"; do
-		_prof_parts+=("${key}=${SRR_TRIM_PROFILE_MAP[$key]}")
-	done
-	local serialized_profiles
-	serialized_profiles="$(IFS=';'; printf '%s;' "${_prof_parts[*]}")"
-	export SERIALIZED_TRIM_PROFILES="$serialized_profiles"
-	
+	export SERIALIZED_TRIM_PROFILES="$(_serialize_trim_profiles)"
+
 	export -f timestamp log log_info log_warn log_error run_with_space_time_log run_with_error_capture
 	export -f find_trimmed_fastq find_raw_fastq verify_trimming_and_cleanup
 
@@ -382,20 +426,37 @@ trim_srrs_trimmomatic_parallel() {
 		
 		log_info "Trimming $SRR with Trimmomatic (HEADCROP:$HEADCROP_BASES, TAILCROP:$TAILCROP_BASES, MINLEN:$MINLEN, SW:$SW_SIZE:$SW_QUAL)..."
 
-		run_with_space_time_log trimmomatic PE -threads "${THREADS_PER_JOB:-${THREADS:-4}}" \
-			"$raw1" "$raw2" "$out1" /dev/null "$out2" /dev/null \
-			ILLUMINACLIP:TruSeq3-PE-2.fa:2:30:10:2:True \
-			HEADCROP:${HEADCROP_BASES} SLIDINGWINDOW:${SW_SIZE}:${SW_QUAL} MINLEN:${MINLEN}
+		if [[ -n "$raw2" && -f "$raw2" ]]; then
+			# ── Paired-end ──
+			run_with_space_time_log trimmomatic PE -threads "${THREADS_PER_JOB:-${THREADS:-4}}" \
+				"$raw1" "$raw2" "$out1" /dev/null "$out2" /dev/null \
+				ILLUMINACLIP:TruSeq3-PE-2.fa:2:30:10:2:True \
+				HEADCROP:${HEADCROP_BASES} SLIDINGWINDOW:${SW_SIZE}:${SW_QUAL} MINLEN:${MINLEN}
 
-		if [[ "${TAILCROP_BASES:-0}" -gt 0 ]]; then
-			log_info "Applying TAILCROP:${TAILCROP_BASES} for $SRR..."
-			run_with_error_capture cutadapt -u -${TAILCROP_BASES} -U -${TAILCROP_BASES} \
-				-o "${out1}.tmp" -p "${out2}.tmp" "$out1" "$out2"
-			mv "${out1}.tmp" "$out1"
-			mv "${out2}.tmp" "$out2"
+			if [[ "${TAILCROP_BASES:-0}" -gt 0 ]]; then
+				log_info "Applying TAILCROP:${TAILCROP_BASES} for $SRR..."
+				run_with_error_capture cutadapt -u -${TAILCROP_BASES} -U -${TAILCROP_BASES} \
+					-o "${out1}.tmp" -p "${out2}.tmp" "$out1" "$out2"
+				mv "${out1}.tmp" "$out1"
+				mv "${out2}.tmp" "$out2"
+			fi
+
+			verify_trimming_and_cleanup "$SRR" "$out1" "$out2" "$raw1" "$raw2"
+		else
+			# ── Single-end ──
+			run_with_space_time_log trimmomatic SE -threads "${THREADS_PER_JOB:-${THREADS:-4}}" \
+				"$raw1" "$out1" \
+				ILLUMINACLIP:TruSeq3-SE.fa:2:30:10 \
+				HEADCROP:${HEADCROP_BASES} SLIDINGWINDOW:${SW_SIZE}:${SW_QUAL} MINLEN:${MINLEN}
+
+			if [[ "${TAILCROP_BASES:-0}" -gt 0 ]]; then
+				log_info "Applying TAILCROP:${TAILCROP_BASES} for $SRR..."
+				run_with_error_capture cutadapt -u -${TAILCROP_BASES} -o "${out1}.tmp" "$out1"
+				mv "${out1}.tmp" "$out1"
+			fi
+
+			verify_trimming_and_cleanup "$SRR" "$out1" "" "$raw1" ""
 		fi
-
-		verify_trimming_and_cleanup "$SRR" "$out1" "$out2" "$raw1" "$raw2"
 	}
 	export -f _trimmomatic_parallel_worker
 

@@ -113,6 +113,10 @@ verify_trimming_and_cleanup() {
 		log_info "Trimming completed for $SRR"
 		
 		if [[ "$DELETE_RAW_SRR_AFTER_DOWNLOAD_and_TRIMMING" == "TRUE" && -n "$raw1" ]]; then
+			if [[ -z "${RAW_DIR_ROOT:-}" || -z "$SRR" ]]; then
+				log_error "RAW_DIR_ROOT or SRR is empty — refusing to delete"
+				return 1
+			fi
 			log_info "Cleaning up raw files for $SRR..."
 			rm -f "$raw1" "$raw2"
 			rm -rf "$RAW_DIR_ROOT/$SRR/$SRR"
@@ -178,6 +182,13 @@ should_use_parallel() {
 # ==============================================================================
 
 gzip_trimmed_fastq_files() {
+	# Early exit: skip find+xargs pipeline when no .fq files exist (common on resume runs)
+	local _fq_count
+	_fq_count=$(find "$TRIM_DIR_ROOT" -type f -name "*.fq" -print -quit 2>/dev/null)
+	if [[ -z "$_fq_count" ]]; then
+		log_info "No uncompressed .fq files found in $TRIM_DIR_ROOT — skipping compression"
+		return 0
+	fi
 	log_info "Compressing trimmed FASTQ files in $TRIM_DIR_ROOT..."
 	local _compress_cmd="gzip" _parallel_jobs
 	# Use cached pigz detection (set at module load) instead of per-call command -v
@@ -233,11 +244,13 @@ delete_trimmed_fastq_by_srr_list() {
 delete_raw_srr_by_srr_list() {
 	local SRR_LIST=("$@")
 	[[ ${#SRR_LIST[@]} -eq 0 ]] && { log_warn "No SRR IDs provided for deletion"; return 1; }
-	
+	[[ -z "${RAW_DIR_ROOT:-}" ]] && { log_error "RAW_DIR_ROOT is empty — refusing to delete"; return 1; }
+
 	log_info "Deleting raw SRR files for ${#SRR_LIST[@]} SRR(s)..."
 	local deleted_count=0
-	
+
 	for SRR in "${SRR_LIST[@]}"; do
+		[[ -z "$SRR" ]] && { log_warn "Empty SRR ID — skipping"; continue; }
 		local raw_dir="$RAW_DIR_ROOT/$SRR"
 		if [[ -d "$raw_dir" ]]; then
 			log_info "Deleting raw files for $SRR..."
