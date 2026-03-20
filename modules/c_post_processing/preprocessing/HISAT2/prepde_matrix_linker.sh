@@ -25,11 +25,11 @@ MASTER_REFERENCE="${MASTER_REFERENCE:-All_Smel_Genes}"
 # Source logging utilities for consistent pipeline logging
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${BASE_DIR}/modules/logging/logging_utils.sh" 2>/dev/null || {
-    # Fallback: define minimal logging functions if logging_utils.sh is unavailable
-    log_info()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] $*"; }
-    log_warn()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [WARN] $*" >&2; }
-    log_error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $*" >&2; }
-    log_step()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [STEP] $*"; }
+    # Fallback: prefer bash built-in printf %T (no fork) over date subshell
+    log_info()  { local _t; printf -v _t '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _t=$(date '+%Y-%m-%d %H:%M:%S'); echo "[$_t] [INFO] $*"; }
+    log_warn()  { local _t; printf -v _t '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _t=$(date '+%Y-%m-%d %H:%M:%S'); echo "[$_t] [WARN] $*" >&2; }
+    log_error() { local _t; printf -v _t '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _t=$(date '+%Y-%m-%d %H:%M:%S'); echo "[$_t] [ERROR] $*" >&2; }
+    log_step()  { local _t; printf -v _t '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _t=$(date '+%Y-%m-%d %H:%M:%S'); echo "[$_t] [STEP] $*"; }
 }
 
 # Source location (produced by prepDE.py during alignment)
@@ -80,7 +80,7 @@ if [[ -z "$first_gene" || "$first_gene" == "," ]]; then
     log_error "gene_count_matrix.csv has empty gene names in first column"
     exit 1
 fi
-if ! [[ "$first_count" =~ ^[0-9]+\.?[0-9]*$ ]]; then
+if ! [[ "$first_count" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
     log_error "gene_count_matrix.csv contains non-numeric count values (got: '$first_count')"
     exit 1
 fi

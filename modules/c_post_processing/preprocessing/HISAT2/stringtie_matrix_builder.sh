@@ -24,10 +24,11 @@ set -euo pipefail
 
 # Source logging utilities for consistent pipeline logging (fallback to echo if unavailable)
 source "${BASE_DIR:-$PWD}/modules/logging/logging_utils.sh" 2>/dev/null || {
-    log_info()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] $*"; }
-    log_warn()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [WARN] $*" >&2; }
-    log_error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $*" >&2; }
-    log_step()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [STEP] $*"; }
+    # Fallback logging: prefer bash built-in printf %T (no fork) over date subshell
+    log_info()  { local _t; printf -v _t '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _t=$(date '+%Y-%m-%d %H:%M:%S'); echo "[$_t] [INFO] $*"; }
+    log_warn()  { local _t; printf -v _t '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _t=$(date '+%Y-%m-%d %H:%M:%S'); echo "[$_t] [WARN] $*" >&2; }
+    log_error() { local _t; printf -v _t '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _t=$(date '+%Y-%m-%d %H:%M:%S'); echo "[$_t] [ERROR] $*" >&2; }
+    log_step()  { local _t; printf -v _t '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _t=$(date '+%Y-%m-%d %H:%M:%S'); echo "[$_t] [STEP] $*"; }
 }
 
 # ===============================================
@@ -114,9 +115,9 @@ TPM_COL=9
 # LOAD SAMPLE IDS FROM CSV
 # ===============================================
 # SRR_CSV_DIR is exported by run_post_processing.sh
-# Fallback to inputs/SRR_csv relative to the project root
+# Fallback to inputs/3_post_proc_inputs/SRR_csv relative to the project root
 
-SRR_CSV_DIR="${SRR_CSV_DIR:-$SCRIPT_DIR/../../../../inputs/SRR_csv}"
+SRR_CSV_DIR="${SRR_CSV_DIR:-$SCRIPT_DIR/../../../../inputs/3_post_proc_inputs/SRR_csv}"
 
 load_samples_from_csv() {
     local csv_dir="$1"
@@ -444,7 +445,7 @@ build_full_transcriptome_matrix() {
 # ===============================================
 
 # Centralized gene groups CSV directory
-GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-$SCRIPT_DIR/../../../../inputs/gene_groups_csv}}"
+GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-$SCRIPT_DIR/../../../../inputs/3_post_proc_inputs/gene_groups_csv}}"
 
 log_info "Gene groups CSV directory: $GENE_GROUPS_CSV_DIR"
 log_step "Starting count matrix generation for ${#GENE_GROUPS[@]} gene groups"
