@@ -48,7 +48,6 @@ CONFIG_FILES=(
 # ==============================================================================
 
 # Build associative array from PIPELINE_STAGES for O(1) lookup — zero subshell spawns.
-# Old approach: 14 calls to _has_stage() = 14 subshell spawns via $().
 set_pipeline_flags() {
 	# Build stage lookup set (single pass)
 	local -A _stage_set=()
