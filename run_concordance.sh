@@ -33,6 +33,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="${SCRIPT_DIR}"
+REPORT_BASE="${REPORT_BASE:-${BASE_DIR}/4_CONCORDANCE_ANALYSIS}"
 
 #===============================================================================
 # CONDA ENVIRONMENT
@@ -277,6 +278,57 @@ METHODS="${METHODS:-
     M4_Salmon_Saf 
     M5_RSEM_Bowtie2
 }"
+
+# Enforce method/reference compatibility:
+# - *_genome references:      M1, M3
+# - *transcript* references:  M2, M4, M5
+# Set ENFORCE_REFERENCE_METHOD_COMPATIBILITY=FALSE to disable filtering.
+ENFORCE_REFERENCE_METHOD_COMPATIBILITY="${ENFORCE_REFERENCE_METHOD_COMPATIBILITY:-TRUE}"
+if [[ "${ENFORCE_REFERENCE_METHOD_COMPATIBILITY^^}" == "TRUE" ]]; then
+    _methods_filtered=""
+    _methods_dropped=""
+    _has_rule=0
+
+    if [[ "${MASTER_REFERENCE}" == *_genome ]]; then
+        _has_rule=1
+        _allowed_methods=("M1_HISAT2_RefGuided" "M3_STAR_Align")
+    elif [[ "${MASTER_REFERENCE}" == *transcript* ]]; then
+        _has_rule=1
+        _allowed_methods=("M2_HISAT2_DeNovo" "M4_Salmon_Saf" "M5_RSEM_Bowtie2")
+    fi
+
+    if [[ $_has_rule -eq 1 ]]; then
+        for _m in ${METHODS}; do
+            _is_allowed=0
+            for _a in "${_allowed_methods[@]}"; do
+                if [[ "$_m" == "$_a" ]]; then
+                    _is_allowed=1
+                    break
+                fi
+            done
+
+            if [[ $_is_allowed -eq 1 ]]; then
+                _methods_filtered="${_methods_filtered:+${_methods_filtered} }${_m}"
+            else
+                _methods_dropped="${_methods_dropped:+${_methods_dropped} }${_m}"
+            fi
+        done
+
+        if [[ -z "$_methods_filtered" ]]; then
+            log_error "No compatible methods left for MASTER_REFERENCE='${MASTER_REFERENCE}' after filtering"
+            exit 1
+        fi
+
+        if [[ -n "$_methods_dropped" ]]; then
+            log_warn "Dropped incompatible methods for ${MASTER_REFERENCE}: ${_methods_dropped}"
+            log_info "Using compatible methods: ${_methods_filtered}"
+        fi
+
+        METHODS="$_methods_filtered"
+    fi
+
+    unset _methods_filtered _methods_dropped _has_rule _allowed_methods _m _a _is_allowed
+fi
 
 # Method-specific reference directory names
 # M1/M3 align to genome; M2/M4/M5 align to transcriptome
