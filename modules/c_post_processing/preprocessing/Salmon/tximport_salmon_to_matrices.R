@@ -71,8 +71,8 @@ MATRICES_OUTPUT_DIR <- if (nzchar(BASE_DIR)) {
 # Use shared GENE_GROUPS_DIR from 0_shared_config.R (already sourced)
 
 # Toggle to generate both gene-level and isoform-level matrices (overridable via env vars)
-GENERATE_GENE_LEVEL <- as.logical(Sys.getenv("SALMON_GENERATE_GENE_LEVEL", unset = "TRUE"))
-GENERATE_ISOFORM_LEVEL <- as.logical(Sys.getenv("SALMON_GENERATE_ISOFORM_LEVEL", unset = "TRUE"))
+GENERATE_GENE_LEVEL <- isTRUE(as.logical(Sys.getenv("SALMON_GENERATE_GENE_LEVEL", unset = "TRUE")))
+GENERATE_ISOFORM_LEVEL <- isTRUE(as.logical(Sys.getenv("SALMON_GENERATE_ISOFORM_LEVEL", unset = "TRUE")))
 
 # Use SAMPLE_IDS from shared config (0_shared_config.R)
 # Override here if needed for method-specific samples

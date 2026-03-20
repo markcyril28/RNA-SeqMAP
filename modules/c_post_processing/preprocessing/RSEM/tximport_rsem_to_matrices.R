@@ -55,8 +55,8 @@ MATRICES_OUTPUT_DIR <- if (nzchar(base_dir)) {
 # Use shared GENE_GROUPS_DIR from 0_shared_config.R (already sourced)
 
 # Toggle to generate both gene-level and isoform-level matrices
-GENERATE_GENE_LEVEL    <- as.logical(Sys.getenv("RSEM_GENERATE_GENE_LEVEL",    "TRUE"))  # Use .genes.results (aggregated)
-GENERATE_ISOFORM_LEVEL <- as.logical(Sys.getenv("RSEM_GENERATE_ISOFORM_LEVEL", "TRUE"))  # Use .isoforms.results (transcript-specific)
+GENERATE_GENE_LEVEL    <- isTRUE(as.logical(Sys.getenv("RSEM_GENERATE_GENE_LEVEL",    "TRUE")))  # Use .genes.results (aggregated)
+GENERATE_ISOFORM_LEVEL <- isTRUE(as.logical(Sys.getenv("RSEM_GENERATE_ISOFORM_LEVEL", "TRUE")))  # Use .isoforms.results (transcript-specific)
 
 # Use SAMPLE_IDS and SAMPLE_LABELS from shared config (0_shared_config.R)
 # Already sourced above - no duplication needed
@@ -291,7 +291,7 @@ for (level_name in names(processing_levels)) {
   # Deduplicate by basename — recursive search may find the same gene group in multiple
   # subdirectories (e.g. gene_sets/ and experimental/Eggplant_V4.1/); keep the first match.
   if (length(gene_group_files) > 1) {
-    dup_idx <- duplicated(basename(gene_group_files))
+    dup_idx <- duplicated(tools::file_path_sans_ext(basename(gene_group_files)))
     if (any(dup_idx)) {
       cat("  Note: removing", sum(dup_idx), "duplicate gene group file(s) by basename\n")
       gene_group_files <- gene_group_files[!dup_idx]

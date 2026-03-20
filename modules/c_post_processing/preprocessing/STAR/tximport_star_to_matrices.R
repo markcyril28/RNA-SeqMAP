@@ -49,8 +49,8 @@ QUANT_DIR     <- if (nzchar(.base_dir)) {
 MATRICES_DIR  <- "count_matrices_from_STAR"
 # Note: MASTER_REFERENCE is already set by 0_shared_config.R above; no re-assignment needed.
 
-GENERATE_GENE_LEVEL     <- as.logical(Sys.getenv("STAR_GENERATE_GENE_LEVEL",    "TRUE"))
-GENERATE_ISOFORM_LEVEL  <- as.logical(Sys.getenv("STAR_GENERATE_ISOFORM_LEVEL", "TRUE"))
+GENERATE_GENE_LEVEL     <- isTRUE(as.logical(Sys.getenv("STAR_GENERATE_GENE_LEVEL",    "TRUE")))
+GENERATE_ISOFORM_LEVEL  <- isTRUE(as.logical(Sys.getenv("STAR_GENERATE_ISOFORM_LEVEL", "TRUE")))
 
 # ===============================================
 # HELPER: SAVE MATRICES WITH STANDARD NAMING
