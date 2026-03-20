@@ -25,20 +25,26 @@ MAX_PARALLEL_SAMPLES="${MAX_PARALLEL_SAMPLES:-2}"
 
 # Threads allocated per RSEM job (auto-calculated from THREADS / MAX_PARALLEL_SAMPLES)
 # Memory-aware: RSEM uses ~2-3GB per thread; cap to prevent OOM on constrained systems.
-if [[ -z "${THREADS_PER_RSEM_JOB:-}" ]]; then
-	THREADS_PER_RSEM_JOB=$((THREADS / MAX_PARALLEL_SAMPLES))
-	# Memory guard: estimate available RAM and cap threads so total < 75% of RAM
-	# RSEM uses ~2.5GB per thread on average
-	_rsem_avail_mb=$(_get_available_ram_mb 2>/dev/null || echo 16384)
-	_rsem_usable_mb=$(( _rsem_avail_mb * 75 / 100 ))
-	_rsem_max_threads_per_job=$(( _rsem_usable_mb / 2560 / MAX_PARALLEL_SAMPLES ))
-	[[ $_rsem_max_threads_per_job -lt 1 ]] && _rsem_max_threads_per_job=1
-	[[ $THREADS_PER_RSEM_JOB -gt $_rsem_max_threads_per_job ]] && THREADS_PER_RSEM_JOB=$_rsem_max_threads_per_job
-	unset _rsem_avail_mb _rsem_usable_mb _rsem_max_threads_per_job
-fi
-[[ $THREADS_PER_RSEM_JOB -lt 1 ]] && THREADS_PER_RSEM_JOB=1
-# Safety cap: never exceed total THREADS (edge case with MAX_PARALLEL_SAMPLES=1 and low RAM)
-[[ $THREADS_PER_RSEM_JOB -gt $THREADS ]] && THREADS_PER_RSEM_JOB=$THREADS
+# Deferred RSEM thread calculation — only computed when first needed via _ensure_rsem_threads()
+_RSEM_THREADS_COMPUTED=false
+_ensure_rsem_threads() {
+	[[ "$_RSEM_THREADS_COMPUTED" == "true" ]] && return 0
+	_RSEM_THREADS_COMPUTED=true
+	if [[ -z "${THREADS_PER_RSEM_JOB:-}" ]]; then
+		THREADS_PER_RSEM_JOB=$((THREADS / MAX_PARALLEL_SAMPLES))
+		# Memory guard: estimate available RAM and cap threads so total < 75% of RAM
+		# RSEM uses ~2.5GB per thread on average
+		local _rsem_avail_mb _rsem_usable_mb _rsem_max_threads_per_job
+		_rsem_avail_mb=$(_get_available_ram_mb 2>/dev/null || echo 16384)
+		_rsem_usable_mb=$(( _rsem_avail_mb * 75 / 100 ))
+		_rsem_max_threads_per_job=$(( _rsem_usable_mb / 2560 / MAX_PARALLEL_SAMPLES ))
+		[[ $_rsem_max_threads_per_job -lt 1 ]] && _rsem_max_threads_per_job=1
+		[[ $THREADS_PER_RSEM_JOB -gt $_rsem_max_threads_per_job ]] && THREADS_PER_RSEM_JOB=$_rsem_max_threads_per_job
+	fi
+	[[ $THREADS_PER_RSEM_JOB -lt 1 ]] && THREADS_PER_RSEM_JOB=1
+	# Safety cap: never exceed total THREADS (edge case with MAX_PARALLEL_SAMPLES=1 and low RAM)
+	[[ $THREADS_PER_RSEM_JOB -gt $THREADS ]] && THREADS_PER_RSEM_JOB=$THREADS
+}
 
 # Library strandedness: none (unstranded), forward (sense), reverse (antisense/dUTP)
 # Set to "reverse" for dUTP-based stranded libraries (most modern Illumina RNA-seq)
@@ -64,7 +70,7 @@ _rsem_detect_strandedness() {
 
 	# Return cached result if available (must be non-empty and a valid strandedness value)
 	if [[ -s "$cache_file" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
-		RSEM_STRANDEDNESS=$(cat "$cache_file")
+		RSEM_STRANDEDNESS=$(<"$cache_file")
 		case "$RSEM_STRANDEDNESS" in
 			none|forward|reverse)
 				log_info "[STRANDEDNESS] Using cached result: $RSEM_STRANDEDNESS (from $cache_file)"
@@ -212,6 +218,7 @@ _rsem_detect_strandedness() {
 # ==============================================================================
 
 bowtie2_rsem_pipeline() {
+	_ensure_rsem_threads
 	local fasta="" rnaseq_list=()
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
