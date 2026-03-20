@@ -203,6 +203,10 @@ for (level_name in names(processing_levels)) {
     # Detect column order: tximport needs c(TXNAME, GENEID)
     raw <- read.delim(tx2gene_file, header = FALSE, stringsAsFactors = FALSE,
                       colClasses = "character")
+    if (nrow(raw) == 0) {
+      cat("ERROR: tx2gene file is empty (0 rows):", tx2gene_file, "\n")
+      next
+    }
     if (ncol(raw) < 2) {
       cat("ERROR: tx2gene file has", ncol(raw), "column(s), expected >= 2:", tx2gene_file, "\n")
       next
@@ -261,6 +265,18 @@ for (level_name in names(processing_levels)) {
     cat("Skipping level:", level_name, "\n\n")
     next
   }
+
+  # Filter entries with zero effective length (prevents NaN/Inf in DESeq2 normalization)
+  if (!is.null(txi$length)) {
+    zero_mask <- rowSums(txi$length == 0) > 0
+    if (any(zero_mask)) {
+      cat("  Filtering", sum(zero_mask), "entries with zero effective length\n")
+      txi$counts    <- txi$counts[!zero_mask, , drop = FALSE]
+      txi$abundance <- txi$abundance[!zero_mask, , drop = FALSE]
+      txi$length    <- txi$length[!zero_mask, , drop = FALSE]
+    }
+  }
+
   if (nrow(txi$counts) == 0 || ncol(txi$counts) == 0) {
     message("ERROR: tximport returned empty counts matrix (",
             nrow(txi$counts), " rows x ", ncol(txi$counts), " cols)")
