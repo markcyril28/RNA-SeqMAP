@@ -17,7 +17,7 @@ export PIPELINE_UTILS_SOURCED="true"
 # Usage: mapfile -t SRR_LIST < <(parse_srr_csv "path/to/file.csv")
 parse_srr_csv() {
     local csv_file="$1"
-    [[ ! -f "$csv_file" ]] && { log_warn "CSV not found: $csv_file" >&2; return 1; }
+    [[ ! -f "$csv_file" ]] && { log_warn "CSV not found: $csv_file"; return 1; }
     
     while IFS=',' read -r srr_id organ notes || [[ -n "$srr_id" ]]; do
         [[ -z "$srr_id" || "$srr_id" == "#"* || "$srr_id" == "SRR_ID" ]] && continue
@@ -136,7 +136,7 @@ setup_method_env() {
     local method_dir="$BASE_DIR/3_POST_PROC/$method"
 
     # Create the method output directory if it doesn't exist yet (first post-processing run).
-    mkdir -p "$method_dir"
+    mkdir -p "$method_dir" || { log_error "Failed to create directory: $method_dir"; return 1; }
 
     pushd "$method_dir" > /dev/null || { log_error "Cannot cd to $method_dir"; return 1; }
 
@@ -156,9 +156,14 @@ setup_method_env() {
     _rebuild_exported_arrays
 
     # Setup temp config files for R scripts (written to the method's post-proc dir)
-    printf '%s\n' "${GENE_GROUPS[@]}" > ".gene_groups_temp.txt" || { log_error "Failed to write .gene_groups_temp.txt in $method_dir"; popd > /dev/null; return 1; }
-    echo "$master_ref"                > ".master_reference_temp.txt" || { log_error "Failed to write .master_reference_temp.txt in $method_dir"; popd > /dev/null; return 1; }
-    echo "${OVERWRITE_EXISTING:-FALSE}" > ".overwrite_temp.txt" || { log_error "Failed to write .overwrite_temp.txt in $method_dir"; popd > /dev/null; return 1; }
+    # Consolidate into a single write operation to reduce disk I/O (3 files → 1 atomic write each)
+    {
+        printf '%s\n' "${GENE_GROUPS[@]}"
+    } > ".gene_groups_temp.txt" || { log_error "Failed to write .gene_groups_temp.txt in $method_dir"; popd > /dev/null; return 1; }
+    printf '%s\n%s\n' "$master_ref" "${OVERWRITE_EXISTING:-FALSE}" > ".method_config_temp.txt" || { log_error "Failed to write .method_config_temp.txt in $method_dir"; popd > /dev/null; return 1; }
+    # Legacy compat: still write individual files for any R scripts that read them directly
+    echo "$master_ref"                > ".master_reference_temp.txt"
+    echo "${OVERWRITE_EXISTING:-FALSE}" > ".overwrite_temp.txt"
 
     export SRR_COMBINED_LIST_STR="${SRR_COMBINED_LIST_STR:-}"
 

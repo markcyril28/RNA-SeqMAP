@@ -11,6 +11,7 @@ Definition used here:
 from __future__ import annotations
 
 import argparse
+import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -204,6 +205,13 @@ def main() -> None:
     args = parser.parse_args()
 
     gtf_path = Path(args.gtf)
+    if not gtf_path.is_file():
+        print(f"ERROR: GTF file not found: {gtf_path}", file=sys.stderr)
+        sys.exit(1)
+    if args.genome_fasta and not Path(args.genome_fasta).is_file():
+        print(f"ERROR: Genome FASTA not found: {args.genome_fasta}", file=sys.stderr)
+        sys.exit(1)
+
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
