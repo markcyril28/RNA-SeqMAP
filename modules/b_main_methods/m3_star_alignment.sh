@@ -399,6 +399,10 @@ star_alignment_pipeline() {
 	# Resolve effective genome load. --twopassMode Basic is incompatible with LoadAndKeep;
 	# override and warn rather than silently degrading to 1-pass alignment.
 	# effective_genome_load is not declared local so it can be exported for parallel workers.
+	# OPTIMIZATION NOTE: For multi-sample sequential runs against the same genome,
+	# LoadAndRemove on the last sample (or LoadAndKeep + STAR --genomeRemove at cleanup)
+	# can save 15-25 min of genome loading per reference. Requires restructuring the
+	# alignment loop to track first/last sample, so deferred for now.
 	effective_genome_load="${STAR_GENOME_LOAD:-NoSharedMemory}"
 	if [[ "$effective_genome_load" == "LoadAndKeep" ]]; then
 		log_warn "[STAR] STAR_GENOME_LOAD=LoadAndKeep is incompatible with --twopassMode Basic. Overriding to NoSharedMemory."
