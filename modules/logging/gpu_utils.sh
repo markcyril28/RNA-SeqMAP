@@ -98,13 +98,13 @@ if ! declare -f log_info &>/dev/null; then
 	}
 fi
 
-# Log system info at start
+# Log system info (called lazily via _ensure_gpu_detected)
 _log_system_info() {
 	_write_log "INFO" "========================================"
 	_write_log "INFO" "GPU Utils initialized"
-	_write_log "INFO" "Host: $(hostname)"
-	_write_log "INFO" "User: $(whoami)"
-	_write_log "INFO" "Kernel: $(uname -r)"
+	_write_log "INFO" "Host: ${HOSTNAME:-$(hostname 2>/dev/null || echo unknown)}"
+	_write_log "INFO" "User: ${USER:-$(whoami 2>/dev/null || echo unknown)}"
+	_write_log "INFO" "Kernel: $(uname -r 2>/dev/null || echo unknown)"
 	_write_log "INFO" "WSL: $(is_wsl && echo 'yes' || echo 'no')"
 	_write_log "INFO" "========================================"
 }
@@ -220,7 +220,7 @@ detect_gpu() {
 				local _query_info
 				_query_info=$(nvidia-smi --query-gpu=count,memory.total,name,driver_version --format=csv,noheader,nounits 2>/dev/null)
 				if [[ -n "$_query_info" ]]; then
-					GPU_COUNT=$(echo "$_query_info" | wc -l)
+					GPU_COUNT=$(grep -c '' <<< "$_query_info")
 					GPU_MEMORY_MB=$(echo "$_query_info" | head -1 | cut -d',' -f2 | tr -d ' ')
 				fi
 			fi
@@ -235,18 +235,21 @@ detect_gpu() {
 	export GPU_AVAILABLE GPU_COUNT GPU_MEMORY_MB CUDA_VERSION CUDA_READY
 }
 
-# Check if GPU is available
+# Check if GPU is available (triggers lazy detection on first call)
 has_gpu() {
+	_ensure_gpu_detected
 	[[ "$GPU_AVAILABLE" == "true" ]]
 }
 
-# Check if CUDA is ready for use
+# Check if CUDA is ready for use (triggers lazy detection on first call)
 is_cuda_ready() {
+	_ensure_gpu_detected
 	[[ "$CUDA_READY" == "true" ]]
 }
 
-# Log GPU status
+# Log GPU status (triggers lazy detection on first call)
 log_gpu_status() {
+	_ensure_gpu_detected
 	if has_gpu; then
 		log_info "[GPU] Detected $GPU_COUNT GPU(s), ${GPU_MEMORY_MB}MB memory, CUDA: $CUDA_VERSION"
 		if is_cuda_ready; then
@@ -722,15 +725,20 @@ gpu_prep_main() {
 }
 
 # ==============================================================================
-# INITIALIZE GPU DETECTION
+# LAZY GPU DETECTION
 # ==============================================================================
+# GPU detection is deferred until first use (has_gpu / is_cuda_ready / log_gpu_status).
+# This avoids ~1-2s of nvidia-smi + system-info overhead on every source of
+# modules_loader.sh — which matters when GPU is never used (most pipeline runs).
 
-# Initialize logging
-_log_system_info
+_GPU_DETECTED=false
 
-detect_gpu
-configure_cuda_env 2>/dev/null || true
-
-# Log GPU detection results
-_write_log "INFO" "GPU_AVAILABLE=$GPU_AVAILABLE, GPU_COUNT=$GPU_COUNT, GPU_MEMORY_MB=$GPU_MEMORY_MB"
-_write_log "INFO" "CUDA_VERSION=$CUDA_VERSION, CUDA_READY=$CUDA_READY"
+_ensure_gpu_detected() {
+	[[ "$_GPU_DETECTED" == "true" ]] && return 0
+	_GPU_DETECTED=true
+	_log_system_info
+	detect_gpu
+	configure_cuda_env 2>/dev/null || true
+	_write_log "INFO" "GPU_AVAILABLE=$GPU_AVAILABLE, GPU_COUNT=$GPU_COUNT, GPU_MEMORY_MB=$GPU_MEMORY_MB"
+	_write_log "INFO" "CUDA_VERSION=$CUDA_VERSION, CUDA_READY=$CUDA_READY"
+}
