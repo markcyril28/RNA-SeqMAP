@@ -46,16 +46,19 @@ save_count_matrices <- function(counts, output_dir, prefix, master_ref, level,
 
   # Always save Gene_ID (needed as source for Shortened_Name and by DESeq2)
   save_matrix(counts, count_type_label, "Gene_ID")
+
+  # Hoist gene_group_for_map computation — used by both counts and TPM Shortened_Name paths.
+  # Do NOT pre-apply convert_to_organ_labels() here — column label conversion
+  # is handled at runtime by apply_labels() in the processing engine.
+  # Pre-applying Organ labels bakes them into the file, making it impossible
+  # for the processing engine to produce SRR_ID-labeled output from this file.
+  # Row name conversion (Gene_ID -> Shortened_Name) is safe to bake in since
+  # apply_labels() detects already-shortened names and skips re-conversion.
+  gene_group_for_map <- if (nzchar(CURRENT_DATASET)) {
+    sub(paste0("_in_", CURRENT_DATASET, "$"), "", prefix)
+  } else prefix
+
   if ("Shortened_Name" %in% GENE_TYPES) {
-    # Do NOT pre-apply convert_to_organ_labels() here — column label conversion
-    # is handled at runtime by apply_labels() in the processing engine.
-    # Pre-applying Organ labels bakes them into the file, making it impossible
-    # for the processing engine to produce SRR_ID-labeled output from this file.
-    # Row name conversion (Gene_ID -> Shortened_Name) is safe to bake in since
-    # apply_labels() detects already-shortened names and skips re-conversion.
-    gene_group_for_map <- if (nzchar(CURRENT_DATASET)) {
-      sub(paste0("_in_", CURRENT_DATASET, "$"), "", prefix)
-    } else prefix
     counts_short <- tryCatch(
       convert_to_shortened_names(counts, gene_group_for_map),
       error = function(e) counts
@@ -66,9 +69,6 @@ save_count_matrices <- function(counts, output_dir, prefix, master_ref, level,
   if (!is.null(tpm)) {
     save_matrix(tpm, "tpm", "Gene_ID")
     if ("Shortened_Name" %in% GENE_TYPES) {
-      gene_group_for_map <- if (nzchar(CURRENT_DATASET)) {
-        sub(paste0("_in_", CURRENT_DATASET, "$"), "", prefix)
-      } else prefix
       tpm_short <- tryCatch(
         convert_to_shortened_names(tpm, gene_group_for_map),
         error = function(e) tpm
@@ -98,8 +98,13 @@ filter_by_gene_group <- function(counts_matrix, gene_list_file) {
   file_ext <- tools::file_ext(gene_list_file)
 
   if (tolower(file_ext) == "csv") {
+    # Use data.table::fread when available (10-50x faster for large CSVs)
     gene_df <- tryCatch(
-      read.csv(gene_list_file, stringsAsFactors = FALSE, header = TRUE),
+      if (.HAS_DATATABLE) {
+        as.data.frame(data.table::fread(gene_list_file, header = TRUE))
+      } else {
+        read.csv(gene_list_file, stringsAsFactors = FALSE, header = TRUE)
+      },
       error = function(e) NULL)
     if (is.null(gene_df) || nrow(gene_df) == 0) {
       cat("Failed to read CSV gene list\n")
@@ -185,6 +190,7 @@ run_matrix_saving <- function(results, output_dir, master_ref,
 
     # Gene-group-filtered matrices
     if (!is.null(.gg_file_map)) {
+      # O(G × F) where G = gene groups, F = filter + save cost per group
       for (gene_group in config$gene_groups) {
         gf <- file.path(gene_groups_dir, paste0(gene_group, ".csv"))
         if (!file.exists(gf)) gf <- file.path(gene_groups_dir, paste0(gene_group, ".txt"))

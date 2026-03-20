@@ -109,7 +109,9 @@ gpu_prcomp <- function(x, center = TRUE, scale. = FALSE, rank. = NULL) {
         col_sds <- if (requireNamespace("matrixStats", quietly = TRUE)) {
           matrixStats::colSds(x_mat, na.rm = TRUE)
         } else {
-          apply(x_mat, 2, sd, na.rm = TRUE)
+          # Vectorized fallback: O(n×p) vs apply()'s O(n×p + p×alloc) overhead
+          col_means <- colMeans(x_mat, na.rm = TRUE)
+          sqrt(colSums((sweep(x_mat, 2, col_means))^2, na.rm = TRUE) / (nrow(x_mat) - 1))
         }
         col_sds[col_sds == 0] <- 1
         x_mat <- sweep(x_mat, 2, col_sds, "/")
@@ -220,7 +222,24 @@ gpu_dist <- function(x, method = "euclidean") {
 # FILE I/O FUNCTIONS
 # ===============================================
 
+# In-memory matrix cache: avoids redundant readRDS() deserialization when the
+# processing engine reads the same matrix file across multiple (gene_type ×
+# label_type × norm_scheme) iterations within a single Rscript session.
+# Big O: O(1) hash lookup per cache hit; O(genes × samples) on cache miss.
+.matrix_memory_cache <- new.env(hash = TRUE, parent = emptyenv())
+
+# Big O: O(genes × samples) for parsing; O(1) for in-memory cache hit;
+# O(deserialize) for .rds cache hit (10-50x faster than TSV parsing).
+# data.table::fread is O(n) with memory-mapped I/O vs O(n) with higher constant for read.table.
 read_count_matrix <- function(file_path) {
+  # In-memory cache: skip all I/O if this file was already read in this R session.
+  # Trade-off: uses ~(genes × samples × 8 bytes) RAM per cached matrix.
+  # For typical gene groups (100-5000 genes × 10-50 samples), this is 4KB-2MB each.
+  .cache_key <- file_path
+  if (exists(.cache_key, envir = .matrix_memory_cache, inherits = FALSE)) {
+    return(get(.cache_key, envir = .matrix_memory_cache, inherits = FALSE))
+  }
+
   tryCatch({
     # .rds cache: readRDS is ~10-50x faster than TSV parsing for repeated reads.
     # Each analysis module (heatmap, PCA, DEA, etc.) re-reads the same matrix files;
@@ -228,7 +247,9 @@ read_count_matrix <- function(file_path) {
     rds_path <- paste0(file_path, ".rds")
     if (file.exists(rds_path) &&
         file.mtime(rds_path) >= file.mtime(file_path)) {
-      return(readRDS(rds_path))
+      .cached_mat <- readRDS(rds_path)
+      assign(file_path, .cached_mat, envir = .matrix_memory_cache)
+      return(.cached_mat)
     }
 
     # data.table::fread() is 10-50x faster than read.table() for large matrices
@@ -260,6 +281,9 @@ read_count_matrix <- function(file_path) {
 
     # Save .rds cache for subsequent reads by other analysis modules
     tryCatch(saveRDS(data_matrix, rds_path), error = function(e) NULL)
+
+    # Store in session-level memory cache
+    assign(file_path, data_matrix, envir = .matrix_memory_cache)
 
     return(data_matrix)
   }, error = function(e) {
@@ -334,6 +358,8 @@ truncate_labels <- function(labels, max_length = 25) {
 # Used by: filter_by_gene_group(), tximport_salmon_to_matrices.R,
 #           tximport_star_to_matrices.R
 
+# Big O: O(n + m) where n=length(data_rownames), m=length(gene_list).
+# Hash-based lookup via environment avoids O(n×m) brute-force matching.
 match_gene_ids <- function(gene_list, data_rownames) {
   # Precompute base IDs by stripping version suffixes (.X.XX then .X)
   base_ids <- sub("\\.[0-9]+\\.[0-9]+$", "", data_rownames)
@@ -359,6 +385,7 @@ match_gene_ids <- function(gene_list, data_rownames) {
   matched_list <- list(gene_list[exact_mask])
 
   # Non-exact: try forward match (gene_list ID is base -> find suffixed data rows)
+  # O(m) where m = unmatched genes; each lookup is O(1) via hash env + O(1) suffix strip fallback
   # Pre-allocate list to avoid O(n²) c() concatenation
   non_exact <- gene_list[!exact_mask]
   if (length(non_exact) > 0) {
@@ -396,6 +423,7 @@ preprocess_for_raw <- function(data_matrix) {
   return(data_matrix)
 }
 
+# Big O: O(genes × samples) — vectorized sweep + log2.
 preprocess_for_cpm <- function(data_matrix, count_type = "expected_count") {
   # Counts Per Million (CPM): library-size normalization
   # Formula: CPM = (count / total_library_count) * 1e6
@@ -438,10 +466,10 @@ preprocess_for_zscore <- function(data_matrix, count_type, .log2_cache = NULL) {
   data_norm <- if (!is.null(.log2_cache)) .log2_cache else preprocess_for_count_type_normalized(data_matrix, count_type)
   if (nrow(data_norm) > 1 && ncol(data_norm) > 1) {
     # Global z-score (preserves relative stability across genes)
-    # Single as.matrix() conversion (was called twice — saves one full matrix copy)
-    .mat_vals <- as.matrix(data_norm)
-    global_mean <- mean(.mat_vals, na.rm = TRUE)
-    global_sd <- sd(.mat_vals, na.rm = TRUE)
+    # data_norm is already a matrix from preprocess_for_count_type_normalized or .log2_cache;
+    # skip redundant as.matrix() coercion to avoid a full matrix copy. O(genes × samples).
+    global_mean <- mean(data_norm, na.rm = TRUE)
+    global_sd <- sd(data_norm, na.rm = TRUE)
     if (global_sd == 0 || !is.finite(global_sd)) global_sd <- 1
     data_zscore <- (data_norm - global_mean) / global_sd
     data_zscore[is.na(data_zscore) | is.infinite(data_zscore)] <- 0
@@ -450,6 +478,7 @@ preprocess_for_zscore <- function(data_matrix, count_type, .log2_cache = NULL) {
   return(data_norm)
 }
 
+# Big O: O(genes × samples) — vectorized rowMeans + rowSums.
 preprocess_for_zscore_row <- function(data_matrix, count_type, .log2_cache = NULL) {
   # Z-score normalization: ROW-WISE (per-gene) standardization
   # Each gene is scaled to its own mean and sd across samples
@@ -497,6 +526,8 @@ preprocess_for_zscore_scaled_to_ten <- function(data_matrix, count_type, .log2_c
   return(data_scaled)
 }
 
+# Big O: O(genes × samples) — geometric mean + median-of-ratios + sweep.
+# colMedians (matrixStats) is O(genes × samples) with partial sort per column.
 preprocess_for_deseq2_normalized <- function(data_matrix, count_type = "expected_count") {
   # DESeq2-style median-of-ratios normalization
   # Computes size factors based on geometric mean of each gene across samples
@@ -685,6 +716,7 @@ load_gene_name_mapping <- function(gene_group, gene_groups_dir = GENE_GROUPS_DIR
         file.path(dirname(dirname(gene_groups_dir)), "inputs"),
         "../../../../inputs"
       )
+      # O(P) where P = candidate paths (≤3); breaks on first valid directory
       for (path in potential_paths) {
         if (dir.exists(path)) {
           input_fastas_dir <- normalizePath(path, mustWork = FALSE)
@@ -742,6 +774,8 @@ load_gene_name_mapping <- function(gene_group, gene_groups_dir = GENE_GROUPS_DIR
 # Convert Gene_ID to Shortened_Name in row names
 # Handles both gene-level IDs (SMEL4.1_06g023900) and 
 # transcript-level IDs (SMEL4.1_06g023900.1.01)
+# Big O: O(n) where n=nrow(counts_matrix). Cascading named-vector lookups are O(1) each.
+# Reverse lookup adds O(k) where k=length(mapping) but only triggers on unmatched genes.
 convert_to_shortened_names <- function(counts_matrix, gene_group) {
   mapping <- load_gene_name_mapping(gene_group)
   if (is.null(mapping)) return(counts_matrix)
@@ -749,7 +783,10 @@ convert_to_shortened_names <- function(counts_matrix, gene_group) {
   current_rownames <- rownames(counts_matrix)
 
   # Vectorized multi-level suffix stripping: compute all variants at once,
-  # then cascade matches (exact → strip .X.XX → strip .X → reverse lookup)
+  # then cascade matches (exact → strip .XX → strip .X.XX → strip .X → reverse lookup)
+  # NOTE: base_one_level strips only the last suffix (e.g., .1.01 → .1), which is
+  # critical for M5 RSEM where gene_id = "SMEL4.1_*.1.01" but CSV key = "SMEL4.1_*.1"
+  base_one_level <- sub("\\.[0-9]+$", "", current_rownames)
   base_double <- sub("\\.[0-9]+\\.[0-9]+$", "", current_rownames)
   base_single <- sub("\\.[0-9]+$", "", base_double)
 
@@ -757,19 +794,21 @@ convert_to_shortened_names <- function(counts_matrix, gene_group) {
   new_rownames <- mapping[current_rownames]
   na_mask <- is.na(new_rownames)
   if (any(na_mask)) {
-    hits2 <- mapping[base_double[na_mask]]
-    new_rownames[na_mask] <- hits2
+    new_rownames[na_mask] <- mapping[base_one_level[na_mask]]
     na_mask <- is.na(new_rownames)
   }
   if (any(na_mask)) {
-    hits3 <- mapping[base_single[na_mask]]
-    new_rownames[na_mask] <- hits3
+    new_rownames[na_mask] <- mapping[base_double[na_mask]]
+    na_mask <- is.na(new_rownames)
+  }
+  if (any(na_mask)) {
+    new_rownames[na_mask] <- mapping[base_single[na_mask]]
     na_mask <- is.na(new_rownames)
   }
 
   # Reverse lookup: row ID is shorter than mapping key (e.g., gene-level "SMEL5_06g022750"
   # when mapping has transcript-level "SMEL5_06g022750.1" as key).
-  # Build a stripped-key mapping and try matching.
+  # Also handles row IDs longer than mapping keys via stripped-row matching.
   if (any(na_mask)) {
     mapping_keys <- names(mapping)
     stripped_keys <- sub("\\.[0-9]+$", "", mapping_keys)
@@ -779,7 +818,16 @@ convert_to_shortened_names <- function(counts_matrix, gene_group) {
       reverse_mapping <- setNames(mapping[changed], stripped_keys[changed])
       # Remove duplicates (keep first occurrence)
       reverse_mapping <- reverse_mapping[!duplicated(names(reverse_mapping))]
+      # Try raw row names first, then stripped variants
       reverse_hits <- reverse_mapping[current_rownames[na_mask]]
+      na_rev <- is.na(reverse_hits)
+      if (any(na_rev)) {
+        reverse_hits[na_rev] <- reverse_mapping[base_one_level[na_mask][na_rev]]
+        na_rev <- is.na(reverse_hits)
+      }
+      if (any(na_rev)) {
+        reverse_hits[na_rev] <- reverse_mapping[base_double[na_mask][na_rev]]
+      }
       new_rownames[na_mask] <- reverse_hits
     }
   }
@@ -797,6 +845,8 @@ convert_to_shortened_names <- function(counts_matrix, gene_group) {
 # Also reorders columns to match SAMPLE_IDS order (from CSV file)
 # NOTE: Does NOT filter out columns - only reorders columns that match SAMPLE_IDS
 #       Columns not in SAMPLE_IDS are appended at the end in their original order
+# Big O: O(samples + genes). Column reordering uses split+grouped-index for O(samples).
+# Gene name conversion delegates to convert_to_shortened_names which is O(genes).
 apply_labels <- function(counts_matrix, gene_group, gene_type, label_type) {
   result <- counts_matrix
   
@@ -823,6 +873,7 @@ apply_labels <- function(counts_matrix, gene_group, gene_type, label_type) {
       names(group_pos) <- names(col_groups)
       matched_indices <- integer(length(ordered_organs))
       n_matched <- 0L
+      # O(O) where O = ordered organs; uses pre-split group indices for O(1) position tracking
       for (organ in ordered_organs) {
         if (!is.null(col_groups[[organ]])) {
           pos <- group_pos[[organ]] + 1L

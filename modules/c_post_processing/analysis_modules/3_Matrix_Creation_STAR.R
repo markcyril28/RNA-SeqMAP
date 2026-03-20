@@ -9,8 +9,8 @@
 #   SRR_COMBINED_LIST_STR, GENE_GROUPS_STR, GENE_GROUPS_DIR,
 #   STAR_GENERATE_GENE_LEVEL, STAR_GENERATE_ISOFORM_LEVEL
 
-GENERATE_GENE_LEVEL    <- as.logical(Sys.getenv("STAR_GENERATE_GENE_LEVEL",    "TRUE"))
-GENERATE_ISOFORM_LEVEL <- as.logical(Sys.getenv("STAR_GENERATE_ISOFORM_LEVEL", "TRUE"))
+GENERATE_GENE_LEVEL    <- isTRUE(as.logical(Sys.getenv("STAR_GENERATE_GENE_LEVEL",    "TRUE")))
+GENERATE_ISOFORM_LEVEL <- isTRUE(as.logical(Sys.getenv("STAR_GENERATE_ISOFORM_LEVEL", "TRUE")))
 
 suppressPackageStartupMessages(library(tximport))
 
@@ -52,6 +52,23 @@ if (!dir.exists(quant_dir)) {
 }
 
 results <- list()
+
+# Pre-resolve quant file paths once — avoids duplicating the O(S × T) tissue
+# directory scan between gene-level and isoform-level import blocks.
+.resolved_quant_files <- setNames(file.path(quant_dir, SAMPLE_IDS, "quant.sf"), SAMPLE_IDS)
+if (sum(file.exists(.resolved_quant_files)) == 0 && dir.exists(quant_dir)) {
+  cat("  No quant.sf in flat layout; scanning tissue subdirectories (once for both levels)...\n")
+  .tissue_dirs <- list.dirs(quant_dir, recursive = FALSE, full.names = TRUE)
+  for (.sid in SAMPLE_IDS) {
+    for (.td in .tissue_dirs) {
+      .candidate <- file.path(.td, .sid, "quant.sf")
+      if (file.exists(.candidate)) {
+        .resolved_quant_files[.sid] <- .candidate
+        break
+      }
+    }
+  }
+}
 
 # ----- Gene-level (requires tx2gene mapping) --------------------------------
 if (GENERATE_GENE_LEVEL) {
@@ -102,6 +119,7 @@ if (GENERATE_GENE_LEVEL) {
     if (nrow(raw_tx2gene) == 0 || ncol(raw_tx2gene) < 2) {
       cat("  Error: tx2gene file is empty or malformed (", ncol(raw_tx2gene),
           "column(s)):", tx2gene_files[1], "\n")
+      cat("  Skipping gene-level import.\n")
     } else {
       # Detect column order: tximport needs c(TXNAME, GENEID)
       # star_alignment_pipeline writes: transcript_id TAB gene_id (col1=TX, col2=GENE)
@@ -114,22 +132,8 @@ if (GENERATE_GENE_LEVEL) {
       colnames(tx2gene) <- c("TXNAME", "GENEID")
       tx2gene$TXNAME <- trimws(tx2gene$TXNAME)
       tx2gene$GENEID <- trimws(tx2gene$GENEID)
-      quant_files <- file.path(quant_dir, SAMPLE_IDS, "quant.sf")
-      names(quant_files) <- SAMPLE_IDS
-      # Tissue-specific fallback: scan subdirectories for quant.sf files
-      if (sum(file.exists(quant_files)) == 0 && dir.exists(quant_dir)) {
-        cat("  No quant.sf in flat layout; scanning tissue subdirectories...\n")
-        tissue_dirs <- list.dirs(quant_dir, recursive = FALSE, full.names = TRUE)
-        for (sid in SAMPLE_IDS) {
-          for (td in tissue_dirs) {
-            candidate <- file.path(td, sid, "quant.sf")
-            if (file.exists(candidate)) {
-              quant_files[sid] <- candidate
-              break
-            }
-          }
-        }
-      }
+      # Use pre-resolved quant files (tissue scan already done once above)
+      quant_files <- .resolved_quant_files
       missing_qf <- quant_files[!file.exists(quant_files)]
       if (length(missing_qf) > 0) {
         cat("  Warning: Missing quant.sf for", length(missing_qf), "samples:",
@@ -197,23 +201,8 @@ if (GENERATE_GENE_LEVEL) {
 
 # ----- Isoform-level (transcript-level, no tx2gene needed) -------------------
 if (GENERATE_ISOFORM_LEVEL) {
-  quant_files <- file.path(quant_dir, SAMPLE_IDS, "quant.sf")
-  names(quant_files) <- SAMPLE_IDS
-  # Tissue-specific fallback: scan subdirectories for quant.sf files
-  if (sum(file.exists(quant_files)) == 0 && dir.exists(quant_dir)) {
-    cat("  No quant.sf in flat layout; scanning tissue subdirectories...\n")
-    tissue_dirs <- list.dirs(quant_dir, recursive = FALSE, full.names = TRUE)
-    for (sid in SAMPLE_IDS) {
-      for (td in tissue_dirs) {
-        candidate <- file.path(td, sid, "quant.sf")
-        if (file.exists(candidate)) {
-          quant_files[sid] <- candidate
-          break
-        }
-      }
-    }
-  }
-  quant_files <- quant_files[file.exists(quant_files)]
+  # Use pre-resolved quant files (tissue scan already done once above)
+  quant_files <- .resolved_quant_files[file.exists(.resolved_quant_files)]
   if (length(quant_files) < 2) {
     cat("  Error: Need >= 2 quant.sf files for isoform-level import\n")
   } else {

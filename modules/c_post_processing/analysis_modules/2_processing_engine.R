@@ -9,6 +9,11 @@
 # GENERIC PROCESSING FUNCTION
 # ===============================================
 
+# Big O: O(G × L × C × T × B × N) where G=gene_groups, L=processing_levels,
+# C=count_types, T=gene_types, B=label_types, N=norm_schemes.
+# Inner loop body is O(genes × samples) for normalization/labeling.
+# .log2_cache reduces redundant log2 computation from O(N × genes × samples) to O(genes × samples).
+# .rds caching in read_count_matrix reduces repeated file I/O from O(parse_time) to O(deserialize_time).
 process_all_combinations <- function(
   config,
   output_base_dir,

@@ -19,8 +19,8 @@
   sub("^(M[0-9]+).*", "\\1", Sys.getenv("CURRENT_METHOD", "M5")),
   "M3" = "STAR", "M4" = "SALMON", "M5" = "RSEM", "RSEM"
 )
-GENERATE_GENE_LEVEL    <- as.logical(Sys.getenv(paste0(.method_prefix, "_GENERATE_GENE_LEVEL"),    "TRUE"))
-GENERATE_ISOFORM_LEVEL <- as.logical(Sys.getenv(paste0(.method_prefix, "_GENERATE_ISOFORM_LEVEL"), "TRUE"))
+GENERATE_GENE_LEVEL    <- isTRUE(as.logical(Sys.getenv(paste0(.method_prefix, "_GENERATE_GENE_LEVEL"),    "TRUE")))
+GENERATE_ISOFORM_LEVEL <- isTRUE(as.logical(Sys.getenv(paste0(.method_prefix, "_GENERATE_ISOFORM_LEVEL"), "TRUE")))
 
 # tximport is only needed for M3/M4/M5 (salmon/RSEM/STAR), not for M1/M2 (StringTie)
 .HAS_TXIMPORT <- requireNamespace("tximport", quietly = TRUE)
@@ -56,6 +56,30 @@ import_stringtie <- function(ballgown_dir, sample_ids) {
     result$transcript <- .read_count_csv(transcript_count_file)
   }
   return(result)
+}
+
+# ===============================================
+# QUANT FILE RESOLUTION HELPER
+# ===============================================
+
+# Resolve quant.sf paths with tissue-specific directory fallback.
+# Big O: O(T × S) where T = tissue dirs, S = samples; file.exists is batched.
+# Caches result to avoid redundant filesystem scans when called for both
+# gene-level and isoform-level imports within the same run.
+.resolve_quant_files <- function(quant_dir, sample_ids) {
+  files <- setNames(file.path(quant_dir, sample_ids, "quant.sf"), sample_ids)
+  if (sum(file.exists(files)) == 0 && dir.exists(quant_dir)) {
+    tissue_dirs <- list.dirs(quant_dir, recursive = FALSE, full.names = TRUE)
+    if (length(tissue_dirs) > 0) {
+      all_cands <- outer(tissue_dirs, sample_ids, function(td, sid) file.path(td, sid, "quant.sf"))
+      all_exist <- matrix(file.exists(all_cands), nrow = length(tissue_dirs))
+      for (j in seq_along(sample_ids)) {
+        hit <- which(all_exist[, j])[1]
+        if (!is.na(hit)) files[sample_ids[j]] <- all_cands[hit, j]
+      }
+    }
+  }
+  files[file.exists(files)]
 }
 
 # ===============================================
@@ -114,19 +138,8 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
         if (is.null(tx2gene)) {
           cat("  Skipping M3 gene-level import (malformed tx2gene)\n")
         } else {
-        # Build quant.sf paths with tissue-specific directory fallback
-        .m3_quant_files <- setNames(file.path(quant_dir, sample_ids, "quant.sf"), sample_ids)
-        if (sum(file.exists(.m3_quant_files)) == 0 && dir.exists(quant_dir)) {
-          .tissue_dirs <- list.dirs(quant_dir, recursive = FALSE, full.names = TRUE)
-          # Vectorized: build all candidate paths at once, check existence in one batch
-          .all_cands <- outer(.tissue_dirs, sample_ids, function(td, sid) file.path(td, sid, "quant.sf"))
-          .all_exist <- matrix(file.exists(.all_cands), nrow = length(.tissue_dirs))
-          for (.j in seq_along(sample_ids)) {
-            .hit <- which(.all_exist[, .j])[1]
-            if (!is.na(.hit)) .m3_quant_files[sample_ids[.j]] <- .all_cands[.hit, .j]
-          }
-        }
-        .m3_quant_files <- .m3_quant_files[file.exists(.m3_quant_files)]
+        # Resolve quant.sf paths (with tissue-specific directory fallback)
+        .m3_quant_files <- .resolve_quant_files(quant_dir, sample_ids)
         if (length(.m3_quant_files) < 2) {
           cat("  Error: Need >= 2 quant.sf files for M3 gene-level import, found",
               length(.m3_quant_files), "\n")
@@ -167,20 +180,9 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
       }
     }
     if (GENERATE_ISOFORM_LEVEL) {
-      # Reuse tissue-specific fallback paths if already resolved above, else build fresh
+      # Reuse resolved quant files from gene-level, or resolve fresh
       if (!exists(".m3_quant_files") || length(.m3_quant_files) == 0) {
-        .m3_quant_files <- setNames(file.path(quant_dir, sample_ids, "quant.sf"), sample_ids)
-        if (sum(file.exists(.m3_quant_files)) == 0 && dir.exists(quant_dir)) {
-          .tissue_dirs <- list.dirs(quant_dir, recursive = FALSE, full.names = TRUE)
-          # Vectorized: build all candidate paths at once, check existence in one batch
-          .all_cands <- outer(.tissue_dirs, sample_ids, function(td, sid) file.path(td, sid, "quant.sf"))
-          .all_exist <- matrix(file.exists(.all_cands), nrow = length(.tissue_dirs))
-          for (.j in seq_along(sample_ids)) {
-            .hit <- which(.all_exist[, .j])[1]
-            if (!is.na(.hit)) .m3_quant_files[sample_ids[.j]] <- .all_cands[.hit, .j]
-          }
-        }
-        .m3_quant_files <- .m3_quant_files[file.exists(.m3_quant_files)]
+        .m3_quant_files <- .resolve_quant_files(quant_dir, sample_ids)
       }
       if (length(.m3_quant_files) < 2) {
         cat("  Error: Need >= 2 quant.sf files for M3 isoform-level import, found",
@@ -293,6 +295,7 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
           file.path(.input_fastas_dir, "mapping", paste0(master_ref, ".fa.gene_trans_map")),
           file.path(.input_fastas_dir, "mapping", paste0(master_ref, ".fasta.gene_trans_map"))
         )
+        # O(C) where C = candidate paths (≤5); breaks on first valid file
         for (.c in .cands) {
           if (nzchar(.c) && file.exists(.c)) {
             .raw <- read.table(.c, header = FALSE, sep = "\t", stringsAsFactors = FALSE,

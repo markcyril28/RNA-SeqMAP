@@ -400,15 +400,16 @@ process_cv_heatmap <- function(gene_group, gene_group_output_dir, processing_lev
   
   norm_display <- get_norm_display_name(norm_scheme)
   
+  # O(O × S) where O = orientation options (2), S = sorting options (2); 4 variants per call
   for (orient in get_orientation_options(gene_group)) {
     for (sorting in get_sorting_options()) {
-      
+
       version_dir <- file.path(
         gene_group_output_dir, processing_level, count_type, gene_type,
         norm_scheme, orient$orient_name, sorting$sort_name
       )
       ensure_output_dir(version_dir)
-      
+
       title_base <- build_title_base(gene_group, count_type, gene_type,
                                      label_type, processing_level, norm_scheme)
       output_path <- file.path(version_dir, paste0(title_base, "_with_CV.png"))

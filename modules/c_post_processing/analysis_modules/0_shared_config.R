@@ -77,11 +77,11 @@ GENE_GROUPS_DIR <- Sys.getenv("GENE_GROUPS_DIR", unset = "")
 if (GENE_GROUPS_DIR == "") {
   base_dir_fallback <- Sys.getenv("BASE_DIR", unset = "")
   if (nzchar(base_dir_fallback)) {
-    GENE_GROUPS_DIR <- file.path(base_dir_fallback, "inputs", "gene_groups_csv")
+    GENE_GROUPS_DIR <- file.path(base_dir_fallback, "inputs", "3_post_proc_inputs", "gene_groups_csv")
   } else {
     # Last-resort: walk up three levels from ANALYSIS_MODULES_DIR to reach project root
     ANALYSIS_MODULES_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", unset = normalizePath(".", mustWork = FALSE))
-    GENE_GROUPS_DIR <- file.path(dirname(dirname(dirname(ANALYSIS_MODULES_DIR))), "inputs", "gene_groups_csv")
+    GENE_GROUPS_DIR <- file.path(dirname(dirname(dirname(ANALYSIS_MODULES_DIR))), "inputs", "3_post_proc_inputs", "gene_groups_csv")
   }
 }
 
@@ -90,10 +90,10 @@ SRR_CSV_DIR <- Sys.getenv("SRR_CSV_DIR", unset = "")
 if (SRR_CSV_DIR == "") {
   base_dir_fallback <- Sys.getenv("BASE_DIR", unset = "")
   if (nzchar(base_dir_fallback)) {
-    SRR_CSV_DIR <- file.path(base_dir_fallback, "inputs", "SRR_csv")
+    SRR_CSV_DIR <- file.path(base_dir_fallback, "inputs", "3_post_proc_inputs", "SRR_csv")
   } else {
     ANALYSIS_MODULES_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", unset = normalizePath(".", mustWork = FALSE))
-    SRR_CSV_DIR <- file.path(dirname(dirname(dirname(ANALYSIS_MODULES_DIR))), "inputs", "SRR_csv")
+    SRR_CSV_DIR <- file.path(dirname(dirname(dirname(ANALYSIS_MODULES_DIR))), "inputs", "3_post_proc_inputs", "SRR_csv")
   }
 }
 
@@ -461,6 +461,7 @@ load_sample_labels_from_csv <- function(srr_csv_dir = SRR_CSV_DIR) {
     }, error = function(e) NULL)
   }
 
+  # O(C × R) where C = CSV files, R = rows per file; results cached in .rds
   csv_files <- list.files(srr_csv_dir, pattern = "\\.csv$", full.names = TRUE)
   for (csv_file in csv_files) {
     tryCatch({
@@ -666,8 +667,27 @@ should_skip_existing <- function(output_path, overwrite) {
 
 # Initialize GPU detection — skip the (slow) nvidia-smi / nvcc probes when
 # the user has explicitly disabled GPU support, saving ~0.5-1s per script load.
+# Cross-session .rds cache eliminates redundant system() calls across the ~15+
+# Rscript invocations per post-processing run (nvidia-smi + nvcc = ~0.5s each).
+# Cache key: ENABLE_GPU setting; auto-expires after 1 hour (GPU state rarely changes mid-run).
 if (ENABLE_GPU) {
-  .gpu_info <- detect_gpu()
+  .gpu_cache_path <- file.path(tempdir(), ".gpu_detect_cache.rds")
+  .gpu_cache_valid <- FALSE
+  if (file.exists(.gpu_cache_path)) {
+    tryCatch({
+      .gpu_cached <- readRDS(.gpu_cache_path)
+      # Cache valid if < 1 hour old (3600 seconds)
+      if (difftime(Sys.time(), .gpu_cached$timestamp, units = "secs") < 3600) {
+        .gpu_info <- .gpu_cached$info
+        .gpu_cache_valid <- TRUE
+      }
+    }, error = function(e) NULL)
+  }
+  if (!.gpu_cache_valid) {
+    .gpu_info <- detect_gpu()
+    tryCatch(saveRDS(list(info = .gpu_info, timestamp = Sys.time()), .gpu_cache_path),
+             error = function(e) NULL)
+  }
   GPU_AVAILABLE <- .gpu_info$available
   GPU_BACKEND <- .gpu_info$backend
   if (GPU_AVAILABLE || interactive()) {
