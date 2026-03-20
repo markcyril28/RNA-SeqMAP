@@ -161,6 +161,16 @@ if (GENERATE_GENE_LEVEL) {
             error = function(e) { cat("  Gene-level import error:", e$message, "\n"); NULL })
 
           if (!is.null(txi_gene)) {
+            # Filter entries with zero effective length (prevents NaN/Inf in DESeq2 normalization)
+            if (!is.null(txi_gene$length)) {
+              zero_mask <- rowSums(txi_gene$length == 0) > 0
+              if (any(zero_mask)) {
+                cat("  Filtering", sum(zero_mask), "gene-level entries with zero effective length\n")
+                txi_gene$counts    <- txi_gene$counts[!zero_mask, , drop = FALSE]
+                txi_gene$abundance <- txi_gene$abundance[!zero_mask, , drop = FALSE]
+                txi_gene$length    <- txi_gene$length[!zero_mask, , drop = FALSE]
+              }
+            }
             if (nrow(txi_gene$counts) == 0 || ncol(txi_gene$counts) == 0) {
               cat("WARNING: Gene-level import produced empty matrix — skipping\n")
             } else {
@@ -169,7 +179,10 @@ if (GENERATE_GENE_LEVEL) {
               # Save full tximport object for DESeq2 (preserves transcript-length offsets)
               txi_rds_dir <- file.path(output_dir, MASTER_REFERENCE, "gene_level")
               ensure_output_dir(txi_rds_dir)
-              saveRDS(txi_gene, file.path(txi_rds_dir, "tximport_gene_level.rds"))
+              tryCatch(
+                saveRDS(txi_gene, file.path(txi_rds_dir, "tximport_gene_level.rds")),
+                error = function(e) cat("  Warning: Failed to save tximport RDS:", e$message, "\n")
+              )
               cat("Saved tximport RDS for DESeq2: tximport_gene_level.rds\n")
             }
           }
@@ -210,6 +223,16 @@ if (GENERATE_ISOFORM_LEVEL) {
       error = function(e) { cat("  Isoform-level import error:", e$message, "\n"); NULL })
 
     if (!is.null(txi_iso)) {
+      # Filter entries with zero effective length (prevents NaN/Inf in DESeq2 normalization)
+      if (!is.null(txi_iso$length)) {
+        zero_mask <- rowSums(txi_iso$length == 0) > 0
+        if (any(zero_mask)) {
+          cat("  Filtering", sum(zero_mask), "isoform-level entries with zero effective length\n")
+          txi_iso$counts    <- txi_iso$counts[!zero_mask, , drop = FALSE]
+          txi_iso$abundance <- txi_iso$abundance[!zero_mask, , drop = FALSE]
+          txi_iso$length    <- txi_iso$length[!zero_mask, , drop = FALSE]
+        }
+      }
       if (nrow(txi_iso$counts) == 0 || ncol(txi_iso$counts) == 0) {
         cat("WARNING: Isoform-level import produced empty matrix — skipping\n")
       } else {
@@ -218,7 +241,10 @@ if (GENERATE_ISOFORM_LEVEL) {
         # Save full tximport object for DESeq2 isoform-level analysis
         txi_iso_rds_dir <- file.path(output_dir, MASTER_REFERENCE, "isoform_level")
         ensure_output_dir(txi_iso_rds_dir)
-        saveRDS(txi_iso, file.path(txi_iso_rds_dir, "tximport_isoform_level.rds"))
+        tryCatch(
+          saveRDS(txi_iso, file.path(txi_iso_rds_dir, "tximport_isoform_level.rds")),
+          error = function(e) cat("  Warning: Failed to save isoform tximport RDS:", e$message, "\n")
+        )
         cat("Saved tximport RDS for isoform-level DESeq2: tximport_isoform_level.rds\n")
       }
     }
