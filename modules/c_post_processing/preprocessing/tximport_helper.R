@@ -37,6 +37,7 @@ if (is.na(sample_col)) {
        paste(colnames(coldata), collapse = ", "))
 }
 samples <- coldata[[sample_col]]
+rownames(coldata) <- samples
 
 # Find quantification files
 if (tolower(method) == "salmon") {
@@ -82,6 +83,18 @@ if (tolower(method) == "salmon") {
   }
 } else if (tolower(method) == "rsem") {
   txi <- tximport(files, type = "rsem", txIn = FALSE, txOut = FALSE)
+}
+
+# Filter entries with zero effective length (RSEM produces these for unaligned genes;
+# division by zero length causes NaN/Inf in DESeq2 normalization)
+if (!is.null(txi$length)) {
+  zero_mask <- rowSums(txi$length == 0) > 0
+  if (any(zero_mask)) {
+    cat("Filtering", sum(zero_mask), "entries with zero effective length\n")
+    txi$counts    <- txi$counts[!zero_mask, , drop = FALSE]
+    txi$abundance <- txi$abundance[!zero_mask, , drop = FALSE]
+    txi$length    <- txi$length[!zero_mask, , drop = FALSE]
+  }
 }
 
 # Accept "condition" or "Condition" as the design column
