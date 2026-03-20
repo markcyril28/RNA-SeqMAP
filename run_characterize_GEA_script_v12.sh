@@ -280,6 +280,7 @@ run_all() {
 # ==============================================================================
 
 [[ ${#CONFIG_FILES[@]} -eq 0 ]] && { echo "[ERROR] No configuration files listed in CONFIG_FILES." >&2; exit 1; }
+# NOTE: log_error is not yet available here — logging module is sourced below.
 
 # Source logging early so log_step/log_error/log_info are available before configs.
 # The modules_loader double-source guard ensures this is safe when configs re-source it.
