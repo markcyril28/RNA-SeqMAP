@@ -350,7 +350,7 @@ run_with_space_time_log() {
 	done
 	
 	local cmd_string="$*"
-	local start_ts="$(timestamp)"
+	local start_ts; printf -v start_ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || start_ts=$(date '+%Y-%m-%d %H:%M:%S')
 	
 	# Measure input size before running command (du + awk combined)
 	local input_size_mb="0"
@@ -454,7 +454,7 @@ log_file_size() {
 	# Use find -printf x | wc -c (faster than -print | wc -l, avoids newline overhead)
 	[[ -d "$file_path" ]] && file_count=$(find "$file_path" -type f -printf x 2>/dev/null | wc -c)
 	
-	local ts="$(timestamp)"
+	local ts; printf -v ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || ts=$(date '+%Y-%m-%d %H:%M:%S')
 	echo "${ts},${type},\"${file_path}\",${size_kb},${size_mb},${size_gb},${file_count},\"${description}\"" >> "$SPACE_FILE"
 	log_info "Space logged: $file_path = ${size_mb}MB"
 }
@@ -551,7 +551,7 @@ catalog_all_software() {
 		local tool="${tool_cmd%%:*}"
 		if [[ -f "$_ver_tmpdir/$tool" ]]; then
 			local _ver_line
-			_ver_line=$(cat "$_ver_tmpdir/$tool")
+			_ver_line=$(<"$_ver_tmpdir/$tool")
 			local _ver="${_ver_line#*,}"
 			echo "$_ver_line" >> "$SOFTWARE_FILE"
 			log_info "Software version: $tool = ${_ver:-unknown}"
@@ -699,7 +699,8 @@ run_with_gpu_log() {
 				local used
 				used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
 				if [[ -n "$used" ]]; then
-					printf '[%s] [GPU-MONITOR] VRAM used: %s MB\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$used" >> "$GPU_LOG_FILE"
+					local _gpu_ts; printf -v _gpu_ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _gpu_ts=$(date '+%Y-%m-%d %H:%M:%S')
+					printf '[%s] [GPU-MONITOR] VRAM used: %s MB\n' "$_gpu_ts" "$used" >> "$GPU_LOG_FILE"
 					if (( used > peak_used )); then
 						peak_used=$used
 						echo "$peak_used" > "$peak_file"
@@ -721,7 +722,7 @@ run_with_gpu_log() {
 	fi
 	if [[ -n "$peak_file" && -f "$peak_file" ]]; then
 		local peak_vram
-		peak_vram=$(cat "$peak_file" 2>/dev/null)
+		peak_vram=$(<"$peak_file") 2>/dev/null
 		[[ -n "$peak_vram" && "$peak_vram" -gt 0 ]] 2>/dev/null && \
 			log_gpu "Peak VRAM usage: ${peak_vram} MB"
 		rm -f "$peak_file"
