@@ -216,6 +216,11 @@ for (level_name in names(processing_levels)) {
     # Read tx2gene mapping (columns: GENEID, TXNAME → reorder to TXNAME, GENEID for tximport)
     tx2gene <- read.table(tx2gene_file, header = FALSE, sep = "\t", stringsAsFactors = FALSE,
                          strip.white = TRUE)
+    if (nrow(tx2gene) == 0) {
+      cat("ERROR: tx2gene file is empty (0 rows):", tx2gene_file, "\n")
+      cat("Skipping gene-level processing...\n\n")
+      next
+    }
     if (ncol(tx2gene) < 2) {
       cat("ERROR: tx2gene file must have at least 2 tab-separated columns, found", ncol(tx2gene), "\n")
       cat("  File:", tx2gene_file, "\n")
