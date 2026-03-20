@@ -346,10 +346,11 @@ export -f _bam_is_valid
 _init_parallel_worker() {
 	local SRR="$1"
 
-	# Reactivate conda in subshell if needed
-	if [[ -n "${CONDA_PREFIX:-}" && -n "${CONDA_EXE:-}" ]]; then
+	# Reactivate conda in subshell if needed (skip if already active)
+	if [[ -n "${CONDA_PREFIX:-}" && -n "${CONDA_EXE:-}" && "${_PARALLEL_CONDA_READY:-}" != "true" ]]; then
 		source "$(dirname "$CONDA_EXE")/../etc/profile.d/conda.sh" 2>/dev/null || true
 		conda activate "${CONDA_DEFAULT_ENV:-base}" 2>/dev/null || true
+		export _PARALLEL_CONDA_READY="true"
 	fi
 
 	# Inline find_trimmed_fastq (avoids function export issues)
