@@ -6,7 +6,7 @@
 # Generates a unified Markdown report with embedded figure references,
 # correlation matrices, gene lists, and analysis summaries.
 #
-# Output: 3_POST_PROC/cross_method_concordance_report.md
+# Output: REPORT_BASE/cross_method_concordance_report.md (or POST_PROC_BASE fallback)
 
 source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
 
@@ -31,8 +31,9 @@ ranking_results <- if (file.exists(file.path(OUTPUT_DIR, "ranking_results.rds"))
 methods <- names(data$tpm_matrices)
 short_names <- sapply(methods, get_short_name)
 
-# Report output path
-report_path <- file.path(POST_PROC_BASE, "cross_method_concordance_report.md")
+# Report output path (separate from POST_PROC_BASE inputs)
+report_base <- Sys.getenv("REPORT_BASE", POST_PROC_BASE)
+report_path <- file.path(report_base, "cross_method_concordance_report.md")
 
 # -----------------------------------------------
 # Build report
@@ -122,9 +123,9 @@ add("")
 
 # ---- Data-driven interpretation of concordance heatmap ----
 sp_upper_vals <- concordance$median_spearman[upper.tri(concordance$median_spearman)]
-sp_overall <- median(sp_upper_vals)
-sp_min <- min(sp_upper_vals)
-sp_max <- max(sp_upper_vals)
+sp_overall <- median(sp_upper_vals, na.rm = TRUE)
+sp_min <- min(sp_upper_vals, na.rm = TRUE)
+sp_max <- max(sp_upper_vals, na.rm = TRUE)
 
 # Find best/worst pairs
 sp_full <- concordance$median_spearman
@@ -144,8 +145,11 @@ sp_worst_name <- if (nrow(sp_worst_idx) > 0) {
 add("#### Interpretation")
 add("")
 
-# Overall assessment
-if (sp_overall >= 0.95) {
+# Overall assessment (guard against NA from all-NA pairwise correlations)
+if (!is.finite(sp_overall)) {
+  add("**Overall concordance could not be assessed** — all pairwise correlations are NA. ",
+      "Check that at least two methods have overlapping expressed genes.")
+} else if (sp_overall >= 0.95) {
   add("**Overall concordance is excellent.** The median pairwise Spearman correlation is ",
       sprintf("%.3f", sp_overall), " (range: ", sprintf("%.3f", sp_min), "\u2013",
       sprintf("%.3f", sp_max), "), indicating that all methods produce highly consistent ",
@@ -169,14 +173,20 @@ if (sp_overall >= 0.95) {
 add("")
 
 # Best/worst pairs
-add("- **Most concordant:** ", sp_best_name, " (\u03C1 = ",
-    sprintf("%.3f", max(sp_full, na.rm = TRUE)), ")")
-add("- **Least concordant:** ", sp_worst_name, " (\u03C1 = ",
-    sprintf("%.3f", min(sp_full, na.rm = TRUE)), ")")
+if (is.finite(sp_overall)) {
+  add("- **Most concordant:** ", sp_best_name, " (\u03C1 = ",
+      sprintf("%.3f", max(sp_full, na.rm = TRUE)), ")")
+  add("- **Least concordant:** ", sp_worst_name, " (\u03C1 = ",
+      sprintf("%.3f", min(sp_full, na.rm = TRUE)), ")")
+}
 add("")
 
 # Clustering pattern analysis
-sp_dist <- as.dist(1 - concordance$median_spearman)
+# Replace any remaining NAs in the distance matrix with 1.0 (max dissimilarity)
+# to prevent hclust from crashing when pairwise correlations are unavailable.
+sp_dist_mat <- 1 - concordance$median_spearman
+sp_dist_mat[is.na(sp_dist_mat)] <- 1.0
+sp_dist <- as.dist(sp_dist_mat)
 sp_hclust <- hclust(sp_dist, method = "complete")
 sp_clusters <- cutree(sp_hclust, h = median(sp_dist))
 n_clusters <- length(unique(sp_clusters))
@@ -199,11 +209,11 @@ if (n_clusters > 1) {
 }
 add("")
 
-# Count how many pairs exceed key thresholds
-n_pairs_total <- length(sp_upper_vals)
-n_above_95 <- sum(sp_upper_vals >= 0.95)
-n_above_90 <- sum(sp_upper_vals >= 0.90)
-n_below_90 <- sum(sp_upper_vals < 0.90)
+# Count how many pairs exceed key thresholds (NA values excluded from counts)
+n_pairs_total <- sum(!is.na(sp_upper_vals))
+n_above_95 <- sum(sp_upper_vals >= 0.95, na.rm = TRUE)
+n_above_90 <- sum(sp_upper_vals >= 0.90, na.rm = TRUE)
+n_below_90 <- sum(sp_upper_vals < 0.90, na.rm = TRUE)
 
 add("**Threshold summary (Spearman):**")
 add("")
@@ -353,17 +363,22 @@ add("")
 
 # Compute overall concordance assessment
 all_medians <- concordance$median_spearman[upper.tri(concordance$median_spearman)]
-overall_median <- median(all_medians)
+overall_median <- median(all_medians, na.rm = TRUE)
 
 add("### Overall Concordance")
 add("")
-add("- **Median pairwise Spearman correlation:** ", sprintf("%.3f", overall_median))
-if (overall_median > 0.9) {
-  add("- **Assessment:** High overall concordance across methods.")
-} else if (overall_median > 0.8) {
-  add("- **Assessment:** Moderate concordance. Some method-specific biases observed.")
+if (!is.finite(overall_median)) {
+  add("- **Median pairwise Spearman correlation:** N/A (all correlations unavailable)")
+  add("- **Assessment:** Could not assess concordance.")
 } else {
-  add("- **Assessment:** Low concordance. Significant method-dependent differences in quantification.")
+  add("- **Median pairwise Spearman correlation:** ", sprintf("%.3f", overall_median))
+  if (overall_median > 0.9) {
+    add("- **Assessment:** High overall concordance across methods.")
+  } else if (overall_median > 0.8) {
+    add("- **Assessment:** Moderate concordance. Some method-specific biases observed.")
+  } else {
+    add("- **Assessment:** Low concordance. Significant method-dependent differences in quantification.")
+  }
 }
 add("")
 
@@ -371,20 +386,25 @@ add("")
 sp_upper <- concordance$median_spearman
 diag(sp_upper) <- NA
 sp_upper[lower.tri(sp_upper)] <- NA
-best_pair <- which(sp_upper == max(sp_upper, na.rm = TRUE), arr.ind = TRUE)
-worst_pair <- which(sp_upper == min(sp_upper, na.rm = TRUE), arr.ind = TRUE)
-
-add("- **Most concordant pair:** ", rownames(sp_upper)[best_pair[1, 1]], " & ",
-    colnames(sp_upper)[best_pair[1, 2]],
-    " (rho = ", sprintf("%.3f", max(sp_upper, na.rm = TRUE)), ")")
-add("- **Least concordant pair:** ", rownames(sp_upper)[worst_pair[1, 1]], " & ",
-    colnames(sp_upper)[worst_pair[1, 2]],
-    " (rho = ", sprintf("%.3f", min(sp_upper, na.rm = TRUE)), ")")
+sp_upper_max <- max(sp_upper, na.rm = TRUE)
+sp_upper_min <- min(sp_upper, na.rm = TRUE)
+if (is.finite(sp_upper_max) && is.finite(sp_upper_min)) {
+  best_pair <- which(sp_upper == sp_upper_max, arr.ind = TRUE)
+  worst_pair <- which(sp_upper == sp_upper_min, arr.ind = TRUE)
+  add("- **Most concordant pair:** ", rownames(sp_upper)[best_pair[1, 1]], " & ",
+      colnames(sp_upper)[best_pair[1, 2]],
+      " (rho = ", sprintf("%.3f", sp_upper_max), ")")
+  add("- **Least concordant pair:** ", rownames(sp_upper)[worst_pair[1, 1]], " & ",
+      colnames(sp_upper)[worst_pair[1, 2]],
+      " (rho = ", sprintf("%.3f", sp_upper_min), ")")
+} else {
+  add("- Best/worst concordant pairs could not be determined (insufficient valid correlations)")
+}
 add("")
 
 add("### Recommendations")
 add("")
-if (overall_median > 0.9) {
+if (is.finite(overall_median) && overall_median > 0.9) {
   add("- All methods produce largely consistent results; any single method can be used with confidence.")
 } else {
   add("- Consider using consensus results from multiple methods for higher confidence.")
