@@ -151,9 +151,9 @@ fi
 [[ -n "${__CONCORDANCE_OVERRIDE_RUN_ALL_GENE_GROUP_COMBINATIONS:-}" ]] && RUN_ALL_GENE_GROUP_COMBINATIONS="${__CONCORDANCE_OVERRIDE_RUN_ALL_GENE_GROUP_COMBINATIONS}"
 
 sanitize_tag() {
-    local raw="$1"
-    local clean
-    clean=$(echo "$raw" | tr ',|/[:space:]' '_' | tr -cd '[:alnum:]_.-')
+    # Pure bash: replace separators with _, strip non-alnum (avoids 3 subshell spawns)
+    local clean="${1//[,|\/[:space:]]/_}"
+    clean="${clean//[^[:alnum:]_.-]/}"
     [[ -n "$clean" ]] && printf "%s" "$clean" || printf "combo"
 }
 
@@ -169,12 +169,19 @@ if [[ "${RUN_ALL_MASTER_REFERENCES^^}" == "TRUE" ]]; then
         log_step "MULTI-REFERENCE CONCORDANCE MODE"
         log_info "Found ${#MASTER_REFERENCES[@]} references in MASTER_REFERENCES"
 
+        # Run references in parallel — each writes to isolated output dir
+        # Reduces wall-clock from O(R × time) to O(time) for R references
+        local -a _ref_pids=()
         for _ref in "${MASTER_REFERENCES[@]}"; do
-            log_step "Running concordance for reference: ${_ref}"
+            log_step "Launching concordance for reference: ${_ref}"
             __CONCORDANCE_OVERRIDE_REPORT_BASE="${_parent_report_base}/${_ref}" \
             __CONCORDANCE_OVERRIDE_MASTER_REFERENCE="${_ref}" \
             __CONCORDANCE_OVERRIDE_RUN_ALL_MASTER_REFERENCES="FALSE" \
-            bash "$0" "${REINVOKE_ARGS[@]}" || _overall_rc=1
+            bash "$0" "${REINVOKE_ARGS[@]}" &
+            _ref_pids+=($!)
+        done
+        for _pid in "${_ref_pids[@]}"; do
+            wait "$_pid" || _overall_rc=1
         done
 
         if [[ $_overall_rc -ne 0 ]]; then
@@ -298,21 +305,20 @@ if [[ "${ENFORCE_REFERENCE_METHOD_COMPATIBILITY^^}" == "TRUE" ]]; then
     fi
 
     if [[ $_has_rule -eq 1 ]]; then
+        # O(M) single-pass with pattern match instead of O(M × A) nested loop
+        local _allowed_pat
+        printf -v _allowed_pat '|%s' "${_allowed_methods[@]}"
+        _allowed_pat="@(${_allowed_pat:1})"  # extglob pattern: @(M1_...|M3_...)
+        shopt -s extglob
         for _m in ${METHODS}; do
-            _is_allowed=0
-            for _a in "${_allowed_methods[@]}"; do
-                if [[ "$_m" == "$_a" ]]; then
-                    _is_allowed=1
-                    break
-                fi
-            done
-
-            if [[ $_is_allowed -eq 1 ]]; then
+            # shellcheck disable=SC2053
+            if [[ "$_m" == $_allowed_pat ]]; then
                 _methods_filtered="${_methods_filtered:+${_methods_filtered} }${_m}"
             else
                 _methods_dropped="${_methods_dropped:+${_methods_dropped} }${_m}"
             fi
         done
+        shopt -u extglob
 
         if [[ -z "$_methods_filtered" ]]; then
             log_error "No compatible methods left for MASTER_REFERENCE='${MASTER_REFERENCE}' after filtering"
@@ -351,14 +357,17 @@ _transcript_ref_dirs=(
     "$_align_base/M4_Salmon_Saf/Salmon_Quant"
     "$_align_base/M5_RSEM_Bowtie2/RSEM_Quant_WD"
 )
+# Bash glob replaces find|head subprocess — O(1) vs O(N) directory scan
 for _probe_dir in "${_transcript_ref_dirs[@]}"; do
     if [[ -d "$_probe_dir" && ! -d "$_probe_dir/$_transcript_ref" ]]; then
-        _found_ref=$(find "$_probe_dir" -maxdepth 1 -type d -name "${_base_pattern}*transcript*" -printf '%f\n' 2>/dev/null | head -1)
-        if [[ -n "$_found_ref" ]]; then
+        for _candidate in "$_probe_dir"/${_base_pattern}*transcript*/; do
+            [[ -d "$_candidate" ]] || continue
+            _found_ref="${_candidate%/}"
+            _found_ref="${_found_ref##*/}"
             log_info "Auto-derived transcript ref '${_transcript_ref}' not found in $(basename "$(dirname "$_probe_dir")"); using '${_found_ref}'"
             _transcript_ref="$_found_ref"
-            break
-        fi
+            break 2
+        done
     fi
 done
 unset _base_pattern _found_ref _align_base _transcript_ref_dirs _probe_dir
@@ -384,19 +393,19 @@ fi
 GENE_GROUPS="${GENE_GROUPS:-SmelDMPs_v5_with_18s_and_HAP2,Selected_SmelGRF-GIF_with_two_GIF}"
 
 # Gene groups directory (reference-specific — strip _genome/_transcripts suffix to match dir name)
-_GG_REF_TAG="${MASTER_REFERENCE%%_genome}"
-_GG_REF_TAG="${_GG_REF_TAG%%_transcripts}"
-_GG_REF_DIR="${BASE_DIR}/inputs/gene_groups_csv/experimental/${_GG_REF_TAG}"
+_GG_REF_TAG="${MASTER_REFERENCE%%_genome*}"
+_GG_REF_TAG="${_GG_REF_TAG%%_transcripts*}"
+_GG_REF_DIR="${BASE_DIR}/inputs/3_post_proc_inputs/gene_groups_csv/experimental/${_GG_REF_TAG}"
 if [[ ! -d "$_GG_REF_DIR" ]]; then
     log_warn "Reference-specific gene groups dir not found: $_GG_REF_DIR"
-    _GG_REF_DIR="${BASE_DIR}/inputs/gene_groups_csv"
+    _GG_REF_DIR="${BASE_DIR}/inputs/3_post_proc_inputs/gene_groups_csv"
     log_warn "Falling back to generic gene groups dir: $_GG_REF_DIR"
 fi
 GENE_GROUPS_DIR="${GENE_GROUPS_DIR:-$_GG_REF_DIR}"
 unset _GG_REF_TAG _GG_REF_DIR
 
 # SRR CSV directory for sample labels
-SRR_CSV_DIR="${SRR_CSV_DIR:-${BASE_DIR}/inputs/SRR_csv}"
+SRR_CSV_DIR="${SRR_CSV_DIR:-${BASE_DIR}/inputs/3_post_proc_inputs/SRR_csv}"
 
 # System resources (auto-detect with sane fallbacks)
 THREADS="${THREADS:-$(nproc 2>/dev/null || echo 12)}"
