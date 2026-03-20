@@ -73,8 +73,9 @@ gpu_cor <- function(x, method = "pearson") {
       # Use gpuR for GPU correlation (cov() computes column-column covariance)
       x_gpu <- gpuR::vclMatrix(as.matrix(x), type = "float")
       result <- as.matrix(gpuR::cov(x_gpu))
-      # Convert covariance to correlation
+      # Convert covariance to correlation (clamp to avoid division by zero for constant columns)
       std_dev <- sqrt(diag(result))
+      std_dev[std_dev == 0] <- 1e-12
       result <- result / outer(std_dev, std_dev)
       rownames(result) <- colnames(x)
       colnames(result) <- colnames(x)
