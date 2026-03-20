@@ -80,6 +80,9 @@ cat("Found", length(files), "quant.sf files\n")
 # gene_trans_map fallback writes: gene_id TAB transcript_id  (col1=GENE, col2=TX)
 raw_tx2gene <- read.delim(tx2gene_file, header = FALSE, stringsAsFactors = FALSE,
                           colClasses = "character")
+if (nrow(raw_tx2gene) == 0) {
+  stop("tx2gene file is empty (0 rows): ", tx2gene_file)
+}
 if (ncol(raw_tx2gene) < 2) {
   stop("Invalid tx2gene file '", tx2gene_file, "': expected >= 2 columns, got ", ncol(raw_tx2gene))
 }
@@ -107,6 +110,18 @@ if (nrow(txi$counts) == 0 || ncol(txi$counts) == 0) {
   stop("tximport returned empty counts matrix (",
        nrow(txi$counts), " genes x ", ncol(txi$counts), " samples)")
 }
+
+# Filter entries with zero effective length (prevents NaN/Inf in DESeq2 normalization)
+if (!is.null(txi$length)) {
+  zero_mask <- rowSums(txi$length == 0) > 0
+  if (any(zero_mask)) {
+    cat("Filtering", sum(zero_mask), "entries with zero effective length\n")
+    txi$counts    <- txi$counts[!zero_mask, , drop = FALSE]
+    txi$abundance <- txi$abundance[!zero_mask, , drop = FALSE]
+    txi$length    <- txi$length[!zero_mask, , drop = FALSE]
+  }
+}
+
 cat("Imported:", ncol(txi$counts), "samples,", nrow(txi$counts), "genes\n\n")
 
 # ---------------------------------------------------------------------------
