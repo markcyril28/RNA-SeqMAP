@@ -8,13 +8,7 @@
 
 MASTER_REFERENCE="GPE001970_genome"
 
-METHODS="
-    M1_HISAT2_RefGuided 
-    M2_HISAT2_DeNovo 
-    M3_STAR_Align 
-    M4_Salmon_Saf 
-    M5_RSEM_Bowtie2
-"
+METHODS="M1_HISAT2_RefGuided M2_HISAT2_DeNovo M3_STAR_Align M4_Salmon_Saf M5_RSEM_Bowtie2"
 
 GENE_GROUPS="SmelDMPs_v5_with_18s_and_HAP2,Selected_SmelGRF-GIF_with_two_GIF"
 
