@@ -47,7 +47,11 @@ EXPORT_RAW_VALUES <- TRUE
 calculate_cv <- function(data_matrix, is_log_scale = FALSE, margin = 1) {
   # Vectorized CV: avoid apply() loop over rows/columns
   if (margin == 1) {
-    # Row-wise (per gene)
+    # Row-wise (per gene) — need at least 2 columns for meaningful SD
+    if (ncol(data_matrix) < 2) {
+      warning("Cannot compute row-wise CV with < 2 samples")
+      return(rep(NA_real_, nrow(data_matrix)))
+    }
     if (is_log_scale) {
       rm <- rowMeans(data_matrix, na.rm = TRUE)
       n_c <- ncol(data_matrix)
@@ -63,7 +67,12 @@ calculate_cv <- function(data_matrix, is_log_scale = FALSE, margin = 1) {
     cv[is.infinite(cv)] <- NA
     return(cv)
   } else {
-    # Column-wise (per sample) — use sweep() to avoid large temp vector from rep()
+    # Column-wise (per sample) — need at least 2 genes for meaningful SD
+    if (nrow(data_matrix) < 2) {
+      warning("Cannot compute column-wise CV with < 2 genes")
+      return(rep(NA_real_, ncol(data_matrix)))
+    }
+    # Use sweep() to avoid large temp vector from rep()
     cm <- colMeans(data_matrix, na.rm = TRUE)
     centered <- sweep(data_matrix, 2, cm, "-")
     col_sds <- sqrt(colSums(centered^2, na.rm = TRUE) / (nrow(data_matrix) - 1))
