@@ -260,6 +260,12 @@ hisat2_de_novo_pipeline() {
 		fi
 	else
 		# Sequential fallback
+		# Pre-compute sort params once (invariant across samples in sequential mode)
+		local _seq_sort_threads=$(( THREADS < 4 ? THREADS : 4 ))
+		(( _seq_sort_threads < 1 )) && _seq_sort_threads=1
+		local _seq_sort_mem _seq_sort_wi_flag=""
+		_seq_sort_mem=$(_samtools_sort_mem "$_seq_sort_threads" 1)
+		_samtools_has_write_index && _seq_sort_wi_flag="--write-index"
 		local _seq_failures=0
 		for SRR in "${rnaseq_list[@]}"; do
 			# Check StringTie output first — if final results exist, skip entirely
@@ -287,22 +293,16 @@ hisat2_de_novo_pipeline() {
 				log_step "Aligning $SRR using HISAT2 De Novo"
 
 				# Pipe hisat2 directly into samtools sort — eliminates 10-50GB SAM intermediate per sample
-				# Cap sort threads at 4: I/O-bound beyond that, and sort memory is per-thread
-				# Cap sort threads: min(THREADS, 4); at least 1
-				local sort_threads=$(( THREADS < 4 ? THREADS : 4 ))
-				(( sort_threads < 1 )) && sort_threads=1
-				local sort_mem _sort_wi_flag=""
-				sort_mem=$(_samtools_sort_mem "$sort_threads" 1)
-				_samtools_has_write_index && _sort_wi_flag="--write-index"
+				# sort_threads, sort_mem, _sort_wi_flag pre-computed before loop
 				local _align_log="$HISAT2_DIR/${SRR}_${fasta_tag}_alignment_summary.txt"
 				if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
 					hisat2 -p "${THREADS}" --dta $hisat2_strand_opts -x "$index_prefix" \
 						-1 "$trimmed1" -2 "$trimmed2" 2>"$_align_log" \
-						| samtools sort -@ "$sort_threads" -m "$sort_mem" $_sort_wi_flag -o "$bam"
+						| samtools sort -@ "$_seq_sort_threads" -m "$_seq_sort_mem" $_seq_sort_wi_flag -o "$bam"
 				else
 					hisat2 -p "${THREADS}" --dta $hisat2_strand_opts -x "$index_prefix" \
 						-U "$trimmed1" 2>"$_align_log" \
-						| samtools sort -@ "$sort_threads" -m "$sort_mem" $_sort_wi_flag -o "$bam"
+						| samtools sort -@ "$_seq_sort_threads" -m "$_seq_sort_mem" $_seq_sort_wi_flag -o "$bam"
 				fi
 				local _ps=("${PIPESTATUS[@]}")
 				# Display alignment summary
@@ -311,7 +311,7 @@ hisat2_de_novo_pipeline() {
 				[[ ${_ps[1]} -ne 0 ]] && { log_error "[SAMTOOLS] sort failed for $SRR"; rm -f "$bam"; ((_seq_failures++)) || true; continue; }
 
 				# Only run separate index if --write-index was not used
-				if [[ -z "$_sort_wi_flag" ]]; then
+				if [[ -z "$_seq_sort_wi_flag" ]]; then
 					local _idx_t=$THREADS; (( _idx_t > 4 )) && _idx_t=4
 					run_with_space_time_log samtools index -@ "$_idx_t" "$bam" \
 						|| { log_error "[SAMTOOLS] index failed for $SRR"; rm -f "$bam"; ((_seq_failures++)) || true; continue; }
@@ -404,7 +404,7 @@ _m2_infer_strand_from_bam() {
 	# Uses POSIX-compatible int(flag/N)%2 instead of gawk-specific and()
 	# Single samtools|awk pipeline computes counts AND strand decision
 	# (1 pipe instead of 1 pipe + 3 extra awk invocations for float math)
-	eval "$(samtools view -F 0x904 "$bam" 2>/dev/null | awk '
+	eval "$(samtools view -F 0x904 "$bam" 2>/dev/null | head -n 200000 | awk '
 		BEGIN { paired=0; fwd=0; rev=0 }
 		{
 			flag = $2
