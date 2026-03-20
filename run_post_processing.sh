@@ -66,8 +66,8 @@ PIPELINE_CONFIGS=(
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$SCRIPT_DIR"
 ANALYSIS_MODULES_DIR="$BASE_DIR/modules/c_post_processing/analysis_modules"
-GENE_GROUPS_DIR="$BASE_DIR/inputs/gene_groups_csv"
-SRR_CSV_DIR="$BASE_DIR/inputs/SRR_csv"
+GENE_GROUPS_DIR="$BASE_DIR/inputs/3_post_proc_inputs/gene_groups_csv"
+SRR_CSV_DIR="$BASE_DIR/inputs/3_post_proc_inputs/SRR_csv"
 UTILITIES_DIR="$BASE_DIR/modules/c_post_processing/utilities"
 
 source "$BASE_DIR/modules/logging/logging_utils.sh"
