@@ -49,7 +49,8 @@ hisat2_de_novo_pipeline() {
 
 	# BUILD HISAT2 INDEX
 	mkdir -p "$HISAT2_DE_NOVO_INDEX_DIR"
-	if ls "${index_prefix}".*.ht2 >/dev/null 2>&1 && [[ "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
+	# Check for existing index via specific file (avoids ls glob subprocess + edge cases)
+	if [[ -f "${index_prefix}.1.ht2" ]] && [[ "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 		log_info "[HISAT2 INDEX] De novo index exists - skipping build"
 	else
 		log_step "Building HISAT2 de novo index from $fasta"
@@ -404,7 +405,9 @@ _m2_infer_strand_from_bam() {
 	# Uses POSIX-compatible int(flag/N)%2 instead of gawk-specific and()
 	# Single samtools|awk pipeline computes counts AND strand decision
 	# (1 pipe instead of 1 pipe + 3 extra awk invocations for float math)
-	eval "$(samtools view -F 0x904 "$bam" 2>/dev/null | head -n 200000 | awk '
+	# O(min(N, 200000)) — awk exits early after 200K reads, eliminating the head subprocess
+	eval "$(samtools view -F 0x904 "$bam" 2>/dev/null | awk '
+		NR > 200000 { exit }
 		BEGIN { paired=0; fwd=0; rev=0 }
 		{
 			flag = $2

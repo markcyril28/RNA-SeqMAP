@@ -242,6 +242,7 @@ _m1_collect_bam_metrics() {
 	local _st_threads=${threads_per_job:-${THREADS:-4}}
 	(( _st_threads > 4 )) && _st_threads=4
 	local stats
+	# O(N) — samtools stats performs a linear scan of all N alignments in the BAM
 	stats=$(samtools stats -@ "$_st_threads" "$bam" 2>/dev/null | grep '^SN\t') || return 0
 
 	# Single awk pass extracts all 4 metrics (here-string avoids echo|pipe subshell)
@@ -263,11 +264,12 @@ _m1_collect_bam_metrics() {
 	} > "$metrics_file"
 
 	# Flag excessive base trimming (>10% of mapped bases)
+	# O(1) bash integer math: 1000*clipped/total vs threshold 100 (=10.0%)
+	# Eliminates awk subprocess for float comparison
 	if [[ -n "$total_bases" && -n "$bases_clipped" && "$total_bases" -gt 0 ]]; then
-		local clip_pct
-		clip_pct=$(awk "BEGIN{printf \"%.1f\", 100*$bases_clipped/$total_bases}")
-		local _cp_int=${clip_pct%.*}
-		if (( _cp_int > 10 )); then
+		local clip_pct_x10=$(( (1000 * bases_clipped) / total_bases ))
+		local clip_pct="$(( clip_pct_x10 / 10 )).$(( clip_pct_x10 % 10 ))"
+		if (( clip_pct_x10 > 100 )); then
 			if [[ -n "${abs_error_warn_file:-}" ]]; then
 				_parallel_log "$method" "$srr" WARN "Bases trimmed ${clip_pct}% of mapped bases — may indicate quality issues or adapter contamination"
 			else
@@ -345,7 +347,8 @@ hisat2_ref_guided_pipeline() {
 
 	# BUILD HISAT2 REFERENCE-GUIDED INDEX
 	mkdir -p "$HISAT2_REF_GUIDED_INDEX_DIR"
-	if ls "${index_prefix}".*.ht2 >/dev/null 2>&1 && [[ "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
+	# Check for existing index via specific file (avoids ls glob subprocess + edge cases)
+	if [[ -f "${index_prefix}.1.ht2" ]] && [[ "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
 		log_info "[INDEX] Ref-Guided index exists - skipping build"
 	else
 		log_step "Building HISAT2 Ref-Guided index: $fasta_base"
@@ -514,6 +517,8 @@ hisat2_ref_guided_pipeline() {
 		_samtools_has_write_index || true
 		_get_available_ram_mb > /dev/null
 
+		# O(S/parallel_jobs × (N×log N + T×G)) — S samples dispatched across parallel_jobs slots;
+		# each worker runs HISAT2 O(N log N) + samtools sort O(N log N) + StringTie O(T×G)
 		printf '%s\n' "${rnaseq_list[@]}" | parallel \
 			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
 			--env abs_trim_dir_root --env abs_error_warn_file --env keep_bam_global \

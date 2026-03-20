@@ -429,7 +429,7 @@ _rsem_parallel_worker() {
 
 	if [[ ! -f "$out_dir/${SRR}.genes.results" ]]; then
 		_plog "ERROR" "RSEM completed but output missing: $out_dir/${SRR}.genes.results"
-		ls -la "$out_dir" 2>&1 | while IFS= read -r line; do _plog "ERROR" "  $line"; done
+		_plog "ERROR" "  Contents: $(ls -la "$out_dir" 2>&1)"
 		return 1
 	fi
 
@@ -476,6 +476,8 @@ _rsem_quantify_parallel() {
 	_prepare_parallel_env
 	export rsem_idx quant_root threads_per_job OVERWRITE_MODE BOWTIE2_MODE RSEM_STRANDEDNESS RSEM_SEED
 
+	# O(S/parallel_jobs × (N log N + T)) — S samples batched across parallel_jobs slots;
+	# each worker runs Bowtie2 O(N log N) + RSEM EM O(T × iterations)
 	printf "%s\n" "${valid_samples[@]}" | parallel \
 		--env PATH \
 		--env CONDA_PREFIX \
@@ -656,6 +658,7 @@ _create_manual_rsem_matrix() {
 
 	# Build all 3 matrices concurrently — each paste reads temp_gene_ids once in parallel
 	# (background jobs share OS page cache so temp_gene_ids is only loaded from disk once)
+	# O(G × S) per matrix — paste joins G gene-id rows across S per-sample column files; 3 matrices run concurrently
 	{ printf 'gene_id%s\n' "$header"; paste "$temp_gene_ids" "${count_files[@]}"; } > "$matrix_dir/genes.counts.matrix" &
 	local _pid_counts=$!
 	{ printf 'gene_id%s\n' "$header"; paste "$temp_gene_ids" "${tpm_files[@]}"; } > "$matrix_dir/genes.TPM.not_cross_norm" &
@@ -856,7 +859,8 @@ _rsem_process_single_sample() {
 	find_trimmed_fastq "$SRR"
 	if [[ -z "$trimmed1" ]]; then
 		log_warn "Missing trimmed reads for $SRR in $TRIM_DIR_ROOT/$SRR"
-		ls -la "$TRIM_DIR_ROOT/$SRR" 2>&1 | while IFS= read -r line; do log_warn "  $line"; done
+		# Single log call with captured ls output (avoids per-line subshell in while-read)
+		log_warn "  Contents: $(ls -la "$TRIM_DIR_ROOT/$SRR" 2>&1 || echo 'Directory does not exist')"
 		return 1
 	fi
 
@@ -894,14 +898,15 @@ _rsem_process_single_sample() {
 	if [[ $rsem_exit_code -ne 0 ]]; then
 		log_error "[RSEM QUANT] RSEM failed for $SRR (exit code: $rsem_exit_code)"
 		log_error "[RSEM QUANT] Check log: $rsem_log"
-		[[ -f "$rsem_log" ]] && tail -20 "$rsem_log" | while IFS= read -r line; do log_error "  $line"; done
+		# Single log call with tail output (avoids per-line subshell)
+		[[ -f "$rsem_log" ]] && log_error "$(tail -20 "$rsem_log" 2>/dev/null)"
 		return $rsem_exit_code
 	fi
 
 	# Verify output exists even when RSEM exits 0 (edge case: disk full, interrupted write)
 	if [[ ! -f "$out_dir/${SRR}.genes.results" ]]; then
 		log_error "[RSEM QUANT] RSEM completed but output missing: $out_dir/${SRR}.genes.results"
-		ls -la "$out_dir" 2>&1 | while IFS= read -r line; do log_error "  $line"; done
+		log_error "  Contents: $(ls -la "$out_dir" 2>&1)"
 		return 1
 	fi
 

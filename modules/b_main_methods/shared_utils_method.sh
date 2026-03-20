@@ -137,41 +137,53 @@ create_sample_metadata() {
 # TXIMPORT SCRIPT GENERATION
 # ==============================================================================
 
-# Get the helper scripts directory (tximport helpers live in c_post_processing/preprocessing)
+# Get the helper scripts directory (method-specific tximport helpers in subfolders)
 HELPERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../c_post_processing/preprocessing" && pwd)"
 
-# Run tximport using external R helper script
+# Run tximport using method-specific R helper script
 # Usage: run_tximport <method> <quant_dir> <metadata_file> [output_dir]
 run_tximport() {
 	local method="$1"
 	local quant_dir="$2"
 	local metadata_file="$3"
 	local output_dir="${4:-$(dirname "$metadata_file")}"
-	local helper_script="$HELPERS_DIR/tximport_helper.R"
-	
+	local helper_script
+	case "${method,,}" in
+		rsem)   helper_script="$HELPERS_DIR/RSEM/tximport_rsem_to_matrices.R" ;;
+		salmon) helper_script="$HELPERS_DIR/Salmon/tximport_salmon_to_matrices.R" ;;
+		star)   helper_script="$HELPERS_DIR/STAR/tximport_star_to_matrices.R" ;;
+		*)      log_error "[TXIMPORT] Unknown method: $method"; return 1 ;;
+	esac
+
 	if [[ ! -f "$helper_script" ]]; then
-		log_error "tximport_helper.R not found: $helper_script"
+		log_error "[TXIMPORT] Helper not found: $helper_script"
 		return 1
 	fi
-	
+
 	log_info "[TXIMPORT] Running $method import..."
 	Rscript "$helper_script" "$method" "$quant_dir" "$metadata_file" "$output_dir"
 }
 
-# Generate tximport R script (legacy compatibility - copies helper)
+# Generate tximport R script (copies method-specific helper to output location)
 generate_tximport_script() {
 	local method="$1"
 	local quant_dir="$2"
 	local output_script="$3"
 	local metadata_file="$4"
-	local helper_script="$HELPERS_DIR/tximport_helper.R"
-	
+	local helper_script
+	case "${method,,}" in
+		rsem)   helper_script="$HELPERS_DIR/RSEM/tximport_rsem_to_matrices.R" ;;
+		salmon) helper_script="$HELPERS_DIR/Salmon/tximport_salmon_to_matrices.R" ;;
+		star)   helper_script="$HELPERS_DIR/STAR/tximport_star_to_matrices.R" ;;
+		*)      log_error "[TXIMPORT] Unknown method: $method"; return 1 ;;
+	esac
+
 	if [[ -f "$helper_script" ]]; then
 		cp "$helper_script" "$output_script"
 		chmod +x "$output_script"
 		log_info "[TXIMPORT] Copied helper to: $output_script"
 	else
-		log_error "tximport_helper.R not found: $helper_script"
+		log_error "[TXIMPORT] Helper not found: $helper_script"
 		return 1
 	fi
 }
@@ -192,8 +204,10 @@ create_gene_trans_map() {
 	
 	log_info "Creating gene-transcript mapping from FASTA..."
 
-	# Single awk pass: auto-detects Trinity format per-record (eliminates grep scan of entire FASTA)
-	awk '/^>/ {
+	# O(n) single awk pass: maps FASTA headers to gene-transcript pairs AND counts
+	# unique genes/total transcripts in one scan (was two passes over fasta + output).
+	local unique_genes total_transcripts
+	read -r unique_genes total_transcripts < <(awk '/^>/ {
 		sub(/^>/, "")
 		trans=$1
 		if (trans ~ /^TRINITY_/) {
@@ -208,11 +222,9 @@ create_gene_trans_map() {
 		} else {
 			gene=trans
 		}
-		print gene "\t" trans
-	}' "$fasta" > "$output_file"
-	
-	local unique_genes total_transcripts
-	read -r unique_genes total_transcripts < <(awk -F'\t' '{ genes[$1]++; total++ } END { print length(genes), total }' "$output_file")
+		print gene "\t" trans > out
+		genes[gene]++; total++
+	} END { print length(genes), total }' out="$output_file" "$fasta")
 	log_info "Created gene-transcript map: $unique_genes genes, $total_transcripts transcripts"
 }
 

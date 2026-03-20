@@ -183,7 +183,7 @@ _star_check_alignment_rates() {
 	# Cohort-level outlier detection: flag samples >2 SD below mean unique mapping rate
 	local n=${#unique_rates[@]}
 	if [[ $n -ge 3 ]]; then
-		# Single AWK pass: compute stats AND find outliers (1 process instead of 2)
+		# O(S) — single AWK pass over S sample rates computes mean, SD, and outlier indices simultaneously
 		local _stats_and_outliers
 		_stats_and_outliers=$(printf '%s\n' "${unique_rates[@]}" | awk '{
 			vals[NR-1]=$1; s+=$1; ss+=$1*$1
@@ -449,6 +449,8 @@ star_alignment_pipeline() {
 			}' "$fasta" 2>/dev/null)"
 		log_info "[STAR INDEX] Genome size: ${genome_bp:-unknown} bp, $num_seqs sequences -> genomeSAindexNbases=$genome_sa_index, genomeChrBinNbits=$genome_chr_bin"
 
+		# O(G_bp × log(G_bp)) — STAR suffix-array construction scales super-linearly with genome size;
+		# suffix array sort dominates at ~15 min for a 1 Gbp genome; run once per reference
 		run_with_space_time_log --input "$fasta" --output "$star_index_dir" \
 			STAR --runMode genomeGenerate \
 				--genomeDir "$star_index_dir" \
@@ -599,6 +601,8 @@ star_alignment_pipeline() {
 		}
 		export -f _m3_star_parallel_worker _bam_is_valid
 
+		# O(S/parallel_jobs × (N log N + G_bp)) — S samples dispatched across parallel_jobs slots;
+		# each worker runs STAR 2-pass O(N log N) alignment + in-process BAM sort O(N log N)
 		printf '%s\n' "${rnaseq_list[@]}" | parallel \
 			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
 			--env abs_trim_dir_root --env abs_error_warn_file --env keep_bam_global \
@@ -663,13 +667,16 @@ star_alignment_pipeline() {
 				rm -f "$bam_output"
 			fi
 
-			# Clean up stale files from previous failed STAR runs
+			# Clean up stale files from previous failed STAR runs — single find pass
+			# replaces 2 separate rm invocations (O(1) find vs O(N) rm calls)
 			log_info "[STAR] Cleaning up stale files for $SRR..."
-			rm -f "${star_genome_dir}/${SRR}_Log.out" "${star_genome_dir}/${SRR}_Log.progress.out" \
-				"${star_genome_dir}/${SRR}_Log.final.out" "${star_genome_dir}/${SRR}_SJ.out.tab" 2>/dev/null || true
-			rm -rf "${star_genome_dir}/${SRR}__STARgenome" "${star_genome_dir}/${SRR}__STARpass1" \
-				"${star_genome_dir}/${SRR}_STARtmp" "${star_genome_dir}/${SRR}_"*.tmp \
-				"${star_genome_dir}/_STARtmp_${SRR}" 2>/dev/null || true
+			find "$star_genome_dir" -maxdepth 1 \( \
+				-name "${SRR}_Log.out" -o -name "${SRR}_Log.progress.out" \
+				-o -name "${SRR}_Log.final.out" -o -name "${SRR}_SJ.out.tab" \
+				-o -name "${SRR}__STARgenome" -o -name "${SRR}__STARpass1" \
+				-o -name "${SRR}_STARtmp" -o -name "${SRR}_*.tmp" \
+				-o -name "_STARtmp_${SRR}" \
+			\) -exec rm -rf {} + 2>/dev/null || true
 
 			find_trimmed_fastq "$SRR"
 			[[ -z "$trimmed1" ]] && { log_warn "Trimmed FASTQ for $SRR not found; skipping."; continue; }
@@ -724,20 +731,23 @@ star_alignment_pipeline() {
 					--genomeLoad "$effective_genome_load" \
 					--runThreadN "$THREADS"
 
-			# Check if sorted BAM was created
+			# Check if sorted BAM was created — cache log tail to avoid duplicate reads
+			local _star_log_tail=""
 			if [[ ! -f "$bam_output" ]]; then
 				log_error "[STAR] FATAL: Sorted BAM file not created for $SRR"
 				log_error "[STAR] Check STAR log: ${out_prefix}Log.out"
+				_star_log_tail=$(tail -30 "${out_prefix}Log.out" 2>/dev/null)
 				log_error "[STAR] Last 30 lines of STAR log:"
-				tail -30 "${out_prefix}Log.out" 2>/dev/null | while IFS= read -r line; do log_error "  $line"; done
+				log_error "$_star_log_tail"
 				return 1
 			fi
 
 			local final_bam_size
 			final_bam_size=$(_bam_is_valid "$bam_output" 1000) || {
 				log_error "[STAR] FATAL: Sorted BAM is empty/corrupt for $SRR (${final_bam_size} bytes)"
+				[[ -z "$_star_log_tail" ]] && _star_log_tail=$(tail -30 "${out_prefix}Log.out" 2>/dev/null)
 				log_error "[STAR] Last 30 lines of STAR log:"
-				tail -30 "${out_prefix}Log.out" 2>/dev/null | while IFS= read -r line; do log_error "  $line"; done
+				log_error "$_star_log_tail"
 				return 1
 			}
 
@@ -962,9 +972,10 @@ star_alignment_pipeline() {
 				if ($i == "gene_id")       { gsub(/[";]/, "", $(i+1)); gid=$(i+1) }
 			}
 			if (tid != "" && gid != "") print tid "\t" gid
-		}' "$STAR_GTF_FILE" | sort -u > "$tx2gene_file"
+		}' "$STAR_GTF_FILE" | awk '!seen[$0]++' > "$tx2gene_file"
+		# O(n) awk dedup vs O(n log n) sort -u; awk END{print NR} vs wc -l subprocess
 		local tx2gene_count
-		tx2gene_count=$(wc -l < "$tx2gene_file")
+		tx2gene_count=$(awk 'END{print NR}' "$tx2gene_file")
 		if [[ "$tx2gene_count" -eq 0 ]]; then
 			log_error "[TXIMPORT] tx2gene mapping is empty - check GTF has 'transcript' features with transcript_id/gene_id attributes"
 			return 1

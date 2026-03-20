@@ -256,69 +256,67 @@ _create_manual_salmon_matrix() {
 	# Fallback: discover samples from quant.sf files if SRR list is empty
 	# Single awk extracts parent directory name (avoids N basename+dirname subshells)
 	if [[ ${#srr_list[@]} -eq 0 ]]; then
-		mapfile -t srr_list < <(find "$quant_root" -name "quant.sf" 2>/dev/null | awk -F'/' '{print $(NF-1)}' | sort -u)
+		# O(n) awk dedup vs O(n log n) sort -u
+		mapfile -t srr_list < <(find "$quant_root" -name "quant.sf" 2>/dev/null | awk -F'/' '!seen[$(NF-1)]++ {print $(NF-1)}')
 	fi
 
-	local temp_gene_ids="$matrix_dir/temp_gene_ids.txt"
-	local temp_counts="$matrix_dir/temp_counts.txt"
-
-	# Two-pass approach: first find a valid sample to determine gene count,
-	# then build columns for all samples (zero-fill for missing ones).
-	local first_sample=""
-	local _paste_args=()
-	local _header_srrs=()   # Track samples that actually contribute data columns
-	local num_genes=0
-	local _skipped_before_first=()
-
+	# Build list of valid quant.sf paths and track which samples are present/missing.
+	# O(S) scan where S = number of samples.
+	local valid_files=()
+	local _header_srrs=()
+	local _col_types=()   # "v" for valid quant.sf, "z" for zero-fill
 	for SRR in "${srr_list[@]}"; do
 		if [[ -f "$quant_root/$SRR/quant.sf" ]]; then
-			if [[ -z "$first_sample" ]]; then
-				first_sample="$SRR"
-				# Extract gene IDs and counts in a single awk pass
-				awk 'NR>1 {print $1 > ids; print int($5 + 0.5) > counts}' \
-					ids="$temp_gene_ids" counts="$matrix_dir/${SRR}_counts.tmp" \
-					"$quant_root/$SRR/quant.sf"
-				num_genes=$(awk 'END{print NR}' "$temp_gene_ids")
-				# Retroactively zero-fill samples that appeared before first valid sample
-				for _prev in "${_skipped_before_first[@]}"; do
-					awk -v n="$num_genes" 'BEGIN{for(i=0;i<n;i++)print 0}' > "$matrix_dir/${_prev}_counts.tmp"
-					_paste_args+=("$matrix_dir/${_prev}_counts.tmp")
-					_header_srrs+=("$_prev")
-				done
-				unset _skipped_before_first
-			else
-				awk 'NR>1 {print int($5 + 0.5)}' "$quant_root/$SRR/quant.sf" > "$matrix_dir/${SRR}_counts.tmp"
-			fi
-			_paste_args+=("$matrix_dir/${SRR}_counts.tmp")
+			valid_files+=("$quant_root/$SRR/quant.sf")
 			_header_srrs+=("$SRR")
-		elif [[ -n "$first_sample" ]]; then
-			# Generate zero-fill without spawning yes+head (pure awk, single process)
-			awk -v n="$num_genes" 'BEGIN{for(i=0;i<n;i++)print 0}' > "$matrix_dir/${SRR}_counts.tmp"
-			_paste_args+=("$matrix_dir/${SRR}_counts.tmp")
-			_header_srrs+=("$SRR")
+			_col_types+=("v")
 		else
-			# Track missing samples before first valid — will be zero-filled retroactively
-			_skipped_before_first+=("$SRR")
+			_header_srrs+=("$SRR")
+			_col_types+=("z")
 		fi
 	done
 
-	if [[ -z "$first_sample" ]]; then
+	if [[ ${#valid_files[@]} -eq 0 ]]; then
 		log_warn "[SALMON MATRIX] No valid quant.sf files found — cannot create count matrix"
-	elif [[ ${#_header_srrs[@]} -lt ${#srr_list[@]} ]]; then
-		log_warn "[SALMON MATRIX] ${#_header_srrs[@]}/${#srr_list[@]} samples have quant.sf — missing samples zero-filled"
+		return 0
+	fi
+	if [[ ${#_header_srrs[@]} -gt ${#valid_files[@]} ]]; then
+		log_warn "[SALMON MATRIX] ${#valid_files[@]}/${#_header_srrs[@]} samples have quant.sf — missing samples zero-filled"
 	fi
 
-	if [[ -n "$first_sample" ]]; then
-		paste "$temp_gene_ids" "${_paste_args[@]}" > "$temp_counts"
+	# O(G × S_valid) single awk pass: processes all valid quant.sf files in one invocation.
+	# Stores gene IDs from file 1, rounds NumReads (col 5) per file, then outputs the
+	# complete matrix — eliminates S separate awk spawns, S temp files, and the paste call.
+	# Column order string encodes "v" (valid file) or "z" (zero-fill) for each sample.
+	# NOTE: Column 1 of quant.sf is the transcript Name, so this fallback matrix
+	# is transcript-level despite the "genes" filename.  The authoritative gene-level
+	# matrices are produced by tximport_salmon_to_matrices.R (uses tximport aggregation).
+	local col_order
+	col_order="$(printf '%s' "${_col_types[@]}")"
 
-		# NOTE: Column 1 of quant.sf is the transcript Name, so this fallback matrix
-		# is transcript-level despite the "genes" filename.  The authoritative gene-level
-		# matrices are produced by tximport_salmon_to_matrices.R (uses tximport aggregation).
-		# When abundance_estimates_to_matrix.pl is available it applies --gene_trans_map
-		# to produce true gene-level output; this manual path does not.
-		# Use _header_srrs (not srr_list) so header columns match data columns exactly
-		{ printf 'transcript_id%s\n' "$(printf '\t%s' "${_header_srrs[@]}")"; cat "$temp_counts"; } > "$matrix_dir/genes.counts.matrix"
+	awk -v col_order="$col_order" '
+	FNR == 1 { fidx++; next }
+	fidx == 1 { ids[FNR-1] = $1; data[FNR-1, fidx] = int($5 + 0.5); n++; next }
+	{ data[FNR-1, fidx] = int($5 + 0.5) }
+	END {
+		ncols = length(col_order)
+		for (i = 1; i <= n; i++) {
+			printf "%s", ids[i]
+			vi = 0   # index into valid files
+			for (c = 1; c <= ncols; c++) {
+				ch = substr(col_order, c, 1)
+				if (ch == "v") {
+					vi++
+					printf "\t%d", data[i, vi] + 0
+				} else {
+					printf "\t0"
+				}
+			}
+			print ""
+		}
+	}' "${valid_files[@]}" > "$matrix_dir/temp_matrix.txt"
 
-		rm -f "$temp_gene_ids" "$temp_counts" "$matrix_dir"/*_counts.tmp
-	fi
+	# Use _header_srrs so header columns match data columns exactly
+	{ printf 'transcript_id%s\n' "$(printf '\t%s' "${_header_srrs[@]}")"; cat "$matrix_dir/temp_matrix.txt"; } > "$matrix_dir/genes.counts.matrix"
+	rm -f "$matrix_dir/temp_matrix.txt"
 }
