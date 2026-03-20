@@ -23,7 +23,7 @@ DEFAULT_GTF_PATH="inputs/gtf/reference/Eggplant_V4.1_function_IPR_final_stringti
 DEFAULT_GENOME_FASTA="inputs/fasta/reference_genome/Eggplant_V4.1.fa"
 DEFAULT_OUTPUT_DIR="inputs/alt_splicing_Eggplant_V4.1"
 DEFAULT_GENE_INFO_CSV="inputs/mapping/Eggplant_V4.1_transcripts.function.gene_info.csv"
-DEFAULT_GENE_GROUP_CSV="inputs/gene_groups_csv/experimental/Eggplant_V4.1/AltSplice_Test_Genes.csv"
+DEFAULT_GENE_GROUP_CSV="inputs/3_post_proc_inputs/gene_groups_csv/experimental/Eggplant_V4.1/AltSplice_Test_Genes.csv"
 DEFAULT_N_TEST_GENES=8
 
 usage() {
