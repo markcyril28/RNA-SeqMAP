@@ -6,10 +6,14 @@
 # Run concordance once per reference in MASTER_REFERENCES.
 # This compares method concordance across different references by producing
 # per-reference reports and figures.
+# Includes both genome and transcript reference variants for the two primary
+# master references.
 
 MASTER_REFERENCES=(
     "GPE001970_genome"
+    "GPE001970_transcripts"
     "Eggplant_V4.1_genome"
+    "Eggplant_V4.1_transcripts.function"
 )
 
 RUN_ALL_MASTER_REFERENCES="TRUE"
