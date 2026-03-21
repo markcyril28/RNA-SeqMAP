@@ -13,7 +13,9 @@
 export METHODS_MASTER_SOURCED="true"
 
 # Source dependencies
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
+SCRIPT_DIR="${MODULES_DIR:+${MODULES_DIR}/b_main_methods}"
+SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 
 # Source all method scripts
 source "$SCRIPT_DIR/m1_hisat2_ref_guided.sh"
