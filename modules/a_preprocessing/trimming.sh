@@ -12,7 +12,9 @@
 export TRIMMING_SOURCED="true"
 
 # Source dependencies
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
+SCRIPT_DIR="${MODULES_DIR:+${MODULES_DIR}/a_preprocessing}"
+SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 _TRIMMING_SCRIPT_DIR="$SCRIPT_DIR"
 source "$SCRIPT_DIR/shared_utils_preproc.sh"
 
@@ -273,7 +275,7 @@ download_and_trim_srrs_parallel() {
 		
 		# Activate conda environment in subshell
 		if [[ -n "$CONDA_PREFIX" ]]; then
-			source "$(dirname "$CONDA_EXE")/../etc/profile.d/conda.sh" 2>/dev/null || true
+			source "${_CONDA_PROFILE_SCRIPT:-$(dirname "$CONDA_EXE")/../etc/profile.d/conda.sh}" 2>/dev/null || true
 			conda activate "$CONDA_DEFAULT_ENV" 2>/dev/null || true
 		fi
 		
@@ -400,7 +402,7 @@ trim_srrs_trimmomatic_parallel() {
 		
 		# Activate conda environment in subshell
 		if [[ -n "$CONDA_PREFIX" ]]; then
-			source "$(dirname "$CONDA_EXE")/../etc/profile.d/conda.sh" 2>/dev/null || true
+			source "${_CONDA_PROFILE_SCRIPT:-$(dirname "$CONDA_EXE")/../etc/profile.d/conda.sh}" 2>/dev/null || true
 			conda activate "$CONDA_DEFAULT_ENV" 2>/dev/null || true
 		fi
 		
