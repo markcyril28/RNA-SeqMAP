@@ -16,7 +16,9 @@
 [[ "${MODULES_LOADER_SOURCED:-}" == "true" ]] && return 0
 export MODULES_LOADER_SOURCED="true"
 
+# Export MODULES_DIR so child modules can derive SCRIPT_DIR without cd+dirname+pwd subshells
 MODULES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export MODULES_DIR
 
 # ==============================================================================
 # LOAD MODULES IN DEPENDENCY ORDER
