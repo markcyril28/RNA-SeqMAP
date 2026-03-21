@@ -71,8 +71,8 @@ PREPROCESSING_TOOLS=(
     "fastqc=0.12.1"
     "multiqc=1.33"
     "parallel=20260122"
-    "wget=1.25.0"      # ENA FTP fallback downloader (download_srrs_wget)
-    "curl=8.18.0"      # ENA portal API queries (download_srrs_wget)
+    "wget=1.25.0"      # ENA FTP fallback downloader
+    "curl=8.18.0"      # ENA portal API queries
     "dos2unix"         # Line-ending normalization (version not pinned — not yet installed)
 )
 
