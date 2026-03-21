@@ -12,7 +12,7 @@
 # Output:      count_matrices_from_STAR/{MASTER_REFERENCE}/{level}/{gene_group}/
 #
 # Output naming convention (matches build_input_path() in 0_shared_config.R):
-#   {gene_group}_{count_type}_{gene_type}_from_{master_ref}_{processing_level}.tsv
+#   {gene_group}_{count_type}_{gene_type}_from_{master_ref}_{processing_level}.csv
 # ===============================================
 
 suppressPackageStartupMessages({
@@ -155,13 +155,15 @@ for (level_name in names(processing_levels)) {
   if (sum(file.exists(files)) == 0) {
     cat("  No quant.sf in flat layout; scanning tissue subdirectories...\n")
     tissue_dirs <- list.dirs(QUANT_DIR, recursive = FALSE, full.names = TRUE)
-    for (sid in SAMPLE_IDS) {
-      for (td in tissue_dirs) {
-        candidate <- file.path(td, sid, "quant.sf")
-        if (file.exists(candidate)) {
-          files[sid] <- candidate
-          break
-        }
+    if (length(tissue_dirs) > 0) {
+      # Vectorized file.exists: build all candidate paths at once via outer(),
+      # then batch-check existence. O(T × S) file.exists calls in one vector
+      # vs O(T × S) individual calls in nested loop. Matches .resolve_quant_files().
+      all_cands <- outer(tissue_dirs, SAMPLE_IDS, function(td, sid) file.path(td, sid, "quant.sf"))
+      all_exist <- matrix(file.exists(all_cands), nrow = length(tissue_dirs))
+      for (j in seq_along(SAMPLE_IDS)) {
+        hit <- which(all_exist[, j])[1]
+        if (!is.na(hit)) files[SAMPLE_IDS[j]] <- all_cands[hit, j]
       }
     }
   }
@@ -356,13 +358,24 @@ for (level_name in names(processing_levels)) {
   gene_group_files <- list.files(GENE_GROUPS_DIR, pattern = "\\.(csv|txt|tsv)$",
                                   recursive = TRUE, full.names = TRUE)
 
+  # Deduplicate by basename — recursive search may find the same gene group in multiple
+  # subdirectories (e.g. gene_sets/ and experimental/Eggplant_V4.1/); keep the first match.
+  # Pre-compute basenames once — reused for deduplication and filtering. O(N) instead of O(2N).
+  gg_base_names <- tools::file_path_sans_ext(basename(gene_group_files))
+  if (length(gene_group_files) > 1) {
+    dup_idx <- duplicated(gg_base_names)
+    if (any(dup_idx)) {
+      cat("  Note: removing", sum(dup_idx), "duplicate gene group file(s) by basename\n")
+      gene_group_files <- gene_group_files[!dup_idx]
+      gg_base_names <- gg_base_names[!dup_idx]
+    }
+  }
+
   # Filter to only configured gene groups
   gene_groups_str <- Sys.getenv("GENE_GROUPS_STR", unset = "")
   if (nzchar(gene_groups_str)) {
     enabled_groups <- trimws(strsplit(gene_groups_str, " ")[[1]])
-    gene_group_files <- gene_group_files[
-      tools::file_path_sans_ext(basename(gene_group_files)) %in% enabled_groups
-    ]
+    gene_group_files <- gene_group_files[gg_base_names %in% enabled_groups]
     cat("Gene groups to process:", paste(enabled_groups, collapse = ", "), "\n")
   }
 

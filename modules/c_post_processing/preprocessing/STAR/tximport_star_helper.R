@@ -6,8 +6,8 @@
 #
 # Outputs (all in <output_dir>):
 #   gene_level/
-#     {master_ref}_NumReads_Gene_ID_from_{master_ref}_gene_level.tsv
-#     {master_ref}_tpm_Gene_ID_from_{master_ref}_gene_level.tsv
+#     {master_ref}_NumReads_Gene_ID_from_{master_ref}_gene_level.csv
+#     {master_ref}_tpm_Gene_ID_from_{master_ref}_gene_level.csv
 #   tximport_star_salmon.rds   (txi object - for downstream R scripts)
 #   deseq2_dataset_star.rds    (DESeqDataSet - ready for DESeq())
 # ==============================================================================
@@ -139,32 +139,32 @@ cat("Saved RDS objects to:", output_dir, "\n")
 
 # ---------------------------------------------------------------------------
 # Save TSV matrices (standalone naming convention):
-#   {master_ref}_{count_type}_{gene_type}_from_{master_ref}_{level}.tsv
+#   {master_ref}_{count_type}_{gene_type}_from_{master_ref}_{level}.csv
 # GeneID is stored as a proper first column (not row names with col.names=NA)
 #
 # NOTE: This standalone helper saves to {output_dir}/gene_level/ with
 # master_ref as the file prefix.  The main pipeline's build_input_path()
-# expects {matrices_dir}/{master_ref}/{level}/{folder_name}/{folder_name}_...tsv
+# expects {matrices_dir}/{master_ref}/{level}/{folder_name}/{folder_name}_...csv
 # (where folder_name = gene_group_in_dataset).  To use these matrices with
 # downstream analysis modules, either:
 #   (a) run 3_Matrix_Creation_STAR.R via the main pipeline instead, or
 #   (b) manually move/rename files to match the expected directory structure.
 # ---------------------------------------------------------------------------
-save_matrix_tsv <- function(mat, count_type, gene_type, out_dir, mr, level) {
-  fname <- paste0(mr, "_", count_type, "_", gene_type, "_from_", mr, "_", level, ".tsv")
+save_matrix_csv <- function(mat, count_type, gene_type, out_dir, mr, level) {
+  fname <- paste0(mr, "_", count_type, "_", gene_type, "_from_", mr, "_", level, ".csv")
   fpath <- file.path(out_dir, fname)
   df <- as.data.frame(mat, check.names = FALSE)
   df <- cbind(GeneID = rownames(mat), df)
   rownames(df) <- NULL
-  write.table(df, fpath, sep = "\t", quote = FALSE, row.names = FALSE)
+  write.table(df, fpath, sep = ",", quote = FALSE, row.names = FALSE)
   cat("Saved:", fname, "\n")
 }
 
 gene_level_dir <- file.path(output_dir, "gene_level")
 dir.create(gene_level_dir, showWarnings = FALSE, recursive = TRUE)
 
-save_matrix_tsv(txi$counts,    "NumReads", "Gene_ID", gene_level_dir, master_ref, "gene_level")
-save_matrix_tsv(txi$abundance, "tpm",      "Gene_ID", gene_level_dir, master_ref, "gene_level")
+save_matrix_csv(txi$counts,    "NumReads", "Gene_ID", gene_level_dir, master_ref, "gene_level")
+save_matrix_csv(txi$abundance, "tpm",      "Gene_ID", gene_level_dir, master_ref, "gene_level")
 
 cat("\nTximport completed successfully!\n")
-cat("TSV matrices saved to:", gene_level_dir, "\n")
+cat("CSV matrices saved to:", gene_level_dir, "\n")

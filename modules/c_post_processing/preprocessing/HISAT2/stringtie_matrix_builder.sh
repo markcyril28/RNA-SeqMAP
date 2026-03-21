@@ -344,12 +344,12 @@ merge_group_counts() {
             continue
         fi
 
-        # NOTE: Filename uses "geneName" (camelCase) while the TSV header column is "GeneName" (PascalCase).
+        # NOTE: Filename uses "geneName" (camelCase) while the CSV header column is "GeneName" (PascalCase).
         # build_input_path() in 0_shared_config.R maps gene_type=="Shortened_Name" -> "geneName" to match this convention.
-        local output_geneName_SRR_tsv="$OUT_DIR/$group_name/${group_name}_${count_type}_counts_geneName_SRR${MASTER_SUFFIX}.tsv"
-        local output_geneName_Organ_tsv="$OUT_DIR/$group_name/${group_name}_${count_type}_counts_geneName_Organ${MASTER_SUFFIX}.tsv"
+        local output_geneName_SRR_csv="$OUT_DIR/$group_name/${group_name}_${count_type}_counts_geneName_SRR${MASTER_SUFFIX}.csv"
+        local output_geneName_Organ_csv="$OUT_DIR/$group_name/${group_name}_${count_type}_counts_geneName_Organ${MASTER_SUFFIX}.csv"
 
-        log_info "Creating SRR + Organ matrices: $(basename "$output_geneName_SRR_tsv")"
+        log_info "Creating SRR + Organ matrices: $(basename "$output_geneName_SRR_csv")"
 
         printf "%s\n" "${sample_files[@]}" > "$tmpdir/sample_files_list.txt"
 
@@ -362,18 +362,18 @@ merge_group_counts() {
         # SRR header + body (use matched_srrs to align with matrix body columns)
         {
             printf "GeneName"
-            for srr in "${matched_srrs[@]}"; do printf "\t%s" "$srr"; done
+            for srr in "${matched_srrs[@]}"; do printf ",%s" "$srr"; done
             printf "\n"
             cat "$matrix_body"
-        } > "$output_geneName_SRR_tsv"
+        } > "$output_geneName_SRR_csv"
 
         # Organ header + body
         {
             printf "GeneName"
-            for srr in "${matched_srrs[@]}"; do printf "\t%s" "${SRR_TO_ORGAN[$srr]:-Unknown}"; done
+            for srr in "${matched_srrs[@]}"; do printf ",%s" "${SRR_TO_ORGAN[$srr]:-Unknown}"; done
             printf "\n"
             cat "$matrix_body"
-        } > "$output_geneName_Organ_tsv"
+        } > "$output_geneName_Organ_csv"
 
         rm -f "$matrix_body"
         # sample_files are in $tmpdir; cleaned by rm -rf "$tmpdir" at function exit

@@ -368,7 +368,7 @@ for (level_name in names(processing_levels)) {
     MASTER_REFERENCE
   }
   # Save full-genome matrix in a named subdirectory so the path matches
-  # build_input_path() which always expects: {level}/{folder_name}/{folder_name}_...tsv
+  # build_input_path() which always expects: {level}/{folder_name}/{folder_name}_...csv
   full_ref_dir <- file.path(level_output_dir, full_ref_folder)
   dir.create(full_ref_dir, recursive = TRUE, showWarnings = FALSE)
 
@@ -395,12 +395,14 @@ for (level_name in names(processing_levels)) {
   # Deduplicate by basename (sans extension) — recursive search may find the same gene group
   # in multiple subdirectories (e.g. gene_sets/ and experimental/Eggplant_V4.1/) or formats
   # (e.g. SmelDMPs.csv and SmelDMPs.txt); keep the first match.
+  # Pre-compute basenames once — reused for deduplication and filtering. O(N) instead of O(2N).
+  gg_base_names <- tools::file_path_sans_ext(basename(gene_group_files))
   if (length(gene_group_files) > 1) {
-    gg_base_names <- tools::file_path_sans_ext(basename(gene_group_files))
     dup_idx <- duplicated(gg_base_names)
     if (any(dup_idx)) {
       cat("  Note: removing", sum(dup_idx), "duplicate gene group file(s) by basename\n")
       gene_group_files <- gene_group_files[!dup_idx]
+      gg_base_names <- gg_base_names[!dup_idx]
     }
   }
 
@@ -408,7 +410,7 @@ for (level_name in names(processing_levels)) {
   gene_groups_str <- Sys.getenv("GENE_GROUPS_STR", unset = "")
   if (nzchar(gene_groups_str)) {
     enabled_groups <- trimws(strsplit(gene_groups_str, " ")[[1]])
-    gene_group_files <- gene_group_files[tools::file_path_sans_ext(basename(gene_group_files)) %in% enabled_groups]
+    gene_group_files <- gene_group_files[gg_base_names %in% enabled_groups]
     cat("Filtering to configured gene groups:", paste(enabled_groups, collapse = ", "), "\n")
   }
 
