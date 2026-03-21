@@ -99,7 +99,7 @@ run_all() {
 	start_time=$(date +%s)
 
 	local fasta_base fasta_tag
-	fasta_base="$(basename "$fasta")"
+	fasta_base="${fasta##*/}"
 	fasta_tag="${fasta_base%.*}"
 	set_fasta_output_dirs "$fasta_tag"
 

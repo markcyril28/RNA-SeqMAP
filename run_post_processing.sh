@@ -167,7 +167,7 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
     # Load config (sets METHODS, ANALYSES, GENE_GROUPS, SRR_DATASETS, etc.)
     # TOML keys are parsed as uppercase bash variables by load_toml
     load_toml "$CONFIG_FILE"
-    log_step "Config: $(basename "$CONFIG_FILE")"
+    log_step "Config: ${CONFIG_FILE##*/}"
 
     # Snapshot error/warning line count so we can report per-config delta
     _err_baseline=0
@@ -380,7 +380,7 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
     done
 
     # Config summary
-    log_step "Config Complete: $(basename "$CONFIG_FILE")"
+    log_step "Config Complete: ${CONFIG_FILE##*/}"
     log_info "Datasets: ${SRR_DATASETS[*]} | Methods: ${#METHODS[@]} per dataset"
     _err_total=0
     [[ -f "$ERROR_WARN_FILE" && -s "$ERROR_WARN_FILE" ]] && _err_total=$(wc -l < "$ERROR_WARN_FILE")
