@@ -13,7 +13,9 @@
 export METHOD_SHARED_SOURCED="true"
 
 # Source dependencies
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
+SCRIPT_DIR="${MODULES_DIR:+${MODULES_DIR}/b_main_methods}"
+SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 source "$SCRIPT_DIR/global_config_method.sh"
 source "$SCRIPT_DIR/../logging/logging_utils.sh"
 source "$SCRIPT_DIR/../a_preprocessing/shared_utils_preproc.sh"
@@ -26,10 +28,19 @@ source "$SCRIPT_DIR/../a_preprocessing/shared_utils_preproc.sh"
 
 # Cache binary availability at module load — O(1) per subsequent check across all methods.
 # Avoids repeated command -v spawns per-sample in alignment loops.
-_SHARED_HAS_PARALLEL=false; command -v parallel >/dev/null 2>&1 && _SHARED_HAS_PARALLEL=true
-_SHARED_HAS_SAMTOOLS=false; command -v samtools >/dev/null 2>&1 && _SHARED_HAS_SAMTOOLS=true
-_SHARED_HAS_RSCRIPT=false; command -v Rscript >/dev/null 2>&1 && _SHARED_HAS_RSCRIPT=true
-export _SHARED_HAS_PARALLEL _SHARED_HAS_SAMTOOLS _SHARED_HAS_RSCRIPT
+# Guard: skip if already cached (e.g., by a prior source of shared_utils_preproc.sh)
+if [[ -z "${_SHARED_HAS_PARALLEL+x}" ]]; then
+	_SHARED_HAS_PARALLEL=false; command -v parallel >/dev/null 2>&1 && _SHARED_HAS_PARALLEL=true
+	export _SHARED_HAS_PARALLEL
+fi
+if [[ -z "${_SHARED_HAS_SAMTOOLS+x}" ]]; then
+	_SHARED_HAS_SAMTOOLS=false; command -v samtools >/dev/null 2>&1 && _SHARED_HAS_SAMTOOLS=true
+	export _SHARED_HAS_SAMTOOLS
+fi
+if [[ -z "${_SHARED_HAS_RSCRIPT+x}" ]]; then
+	_SHARED_HAS_RSCRIPT=false; command -v Rscript >/dev/null 2>&1 && _SHARED_HAS_RSCRIPT=true
+	export _SHARED_HAS_RSCRIPT
+fi
 
 # Only detect if not already set by shared_utils_preproc.sh (avoids redundant command -v spawn)
 if [[ -z "${_SHARED_GZIP_C:-}" ]]; then
@@ -43,6 +54,13 @@ if [[ -z "${_SHARED_GZIP_C:-}" ]]; then
 		_SHARED_GZIP_C="gzip"
 	fi
 	export _SHARED_HAS_PIGZ _SHARED_GZIP_DC _SHARED_GZIP_C
+fi
+
+# Cache conda profile path at module load — avoids dirname subshell per parallel worker.
+# Workers use $_CONDA_PROFILE_SCRIPT instead of source "$(dirname "$CONDA_EXE")/../etc/...".
+if [[ -z "${_CONDA_PROFILE_SCRIPT+x}" && -n "${CONDA_EXE:-}" ]]; then
+	_CONDA_PROFILE_SCRIPT="${CONDA_EXE%/*}/../etc/profile.d/conda.sh"
+	export _CONDA_PROFILE_SCRIPT
 fi
 
 # ==============================================================================
@@ -61,7 +79,7 @@ validate_count_matrix() {
 	# Handle empty files gracefully
 	[[ ! -s "$matrix" ]] && { log_error "Matrix file is empty: $matrix"; return 1; }
 
-	log_step "Validating $matrix_type matrix: $(basename "$matrix")"
+	log_step "Validating $matrix_type matrix: ${matrix##*/}"
 
 	local delim=$'\t'
 	[[ "$matrix" == *.csv ]] && delim=","
@@ -151,7 +169,9 @@ create_sample_metadata() {
 # ==============================================================================
 
 # Get the helper scripts directory (method-specific tximport helpers in subfolders)
-HELPERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../c_post_processing/preprocessing" && pwd)"
+# Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
+HELPERS_DIR="${MODULES_DIR:+${MODULES_DIR}/c_post_processing/preprocessing}"
+HELPERS_DIR="${HELPERS_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../c_post_processing/preprocessing" && pwd)}"
 
 # Run tximport using method-specific R helper script
 # Usage: run_tximport <method> <quant_dir> <metadata_file> [output_dir]
@@ -159,7 +179,9 @@ run_tximport() {
 	local method="$1"
 	local quant_dir="$2"
 	local metadata_file="$3"
-	local output_dir="${4:-$(dirname "$metadata_file")}"
+	# NOTE: ${var%/*} differs from dirname when var has no '/'; safe here because
+	# metadata_file is always an absolute path constructed by the pipeline.
+	local output_dir="${4:-${metadata_file%/*}}"
 	local helper_script
 	case "${method,,}" in
 		rsem)   helper_script="$HELPERS_DIR/RSEM/tximport_rsem_to_matrices.R" ;;
@@ -372,8 +394,9 @@ _init_parallel_worker() {
 	local SRR="$1"
 
 	# Reactivate conda in subshell if needed (skip if already active)
+	# Uses cached _CONDA_PROFILE_SCRIPT to avoid dirname subshell per worker
 	if [[ -n "${CONDA_PREFIX:-}" && -n "${CONDA_EXE:-}" && "${_PARALLEL_CONDA_READY:-}" != "true" ]]; then
-		source "$(dirname "$CONDA_EXE")/../etc/profile.d/conda.sh" 2>/dev/null || true
+		source "${_CONDA_PROFILE_SCRIPT:-$(dirname "$CONDA_EXE")/../etc/profile.d/conda.sh}" 2>/dev/null || true
 		conda activate "${CONDA_DEFAULT_ENV:-base}" 2>/dev/null || true
 		export _PARALLEL_CONDA_READY="true"
 	fi
