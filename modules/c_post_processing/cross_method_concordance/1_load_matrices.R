@@ -11,7 +11,7 @@
 #   M2 (HISAT2+StringTie de novo):    per-sample gene_abundances.tsv -> TPM column (STRG.N -> Reference mapping)
 #   M3 (STAR+Salmon):                 per-sample quant.sf -> TPM column (transcript -> gene aggregation)
 #   M4 (Salmon pseudo-align):         pre-built gene_count_matrix.csv or genes.counts.matrix + tximport for TPM
-#   M5 (Bowtie2+RSEM):                per-sample .genes.results -> TPM column (fallback: tximport _tpm_Gene_ID_*.tsv)
+#   M5 (Bowtie2+RSEM):                per-sample .genes.results -> TPM column (fallback: tximport _tpm_Gene_ID_*.csv)
 #
 # Output: HARMONIZED_RDS containing a list with:
 #   $tpm_matrices  - named list of gene x sample TPM matrices (one per method)
@@ -260,14 +260,14 @@ load_m3_tpm <- function() {
     # Fallback: try pre-built TPM matrix from tximport (matches M4 fallback pattern)
     tpm_search_base <- file.path(POST_PROC_BASE, method,
                                  "count_matrices_from_STAR", ref_dir)
-    tpm_files <- list.files(tpm_search_base, pattern = "_tpm_Gene_ID_.*\\.tsv$",
+    tpm_files <- list.files(tpm_search_base, pattern = "_tpm_Gene_ID_.*\\.csv$",
                             recursive = TRUE, full.names = TRUE)
     if (length(tpm_files) > 0) {
       tpm_file <- tpm_files[1]
       cat("[M3] Using pre-built TPM matrix:", tpm_file, "\n")
       df <- if (.use_dt) data.table::fread(tpm_file, data.table = FALSE) else {
-        read.table(tpm_file, header = TRUE, sep = "\t", stringsAsFactors = FALSE,
-                   check.names = FALSE)
+        read.csv(tpm_file, header = TRUE, stringsAsFactors = FALSE,
+                 check.names = FALSE)
       }
       rownames(df) <- df[[1]]; df <- df[, -1, drop = FALSE]
       return(as.matrix(df))
@@ -345,17 +345,17 @@ load_m4_tpm <- function() {
 
   if (length(tpm_list) == 0) {
     # Fallback: try pre-built TPM matrix from tximport
-    # tximport_salmon_to_matrices.R saves as {prefix}_tpm_Gene_ID_from_{ref}_gene_level.tsv
+    # tximport_salmon_to_matrices.R saves as {prefix}_tpm_Gene_ID_from_{ref}_gene_level.csv
     tpm_search_base <- file.path(POST_PROC_BASE, method,
                                  "count_matrices_from_Salmon_Quant", ref_dir)
-    tpm_files <- list.files(tpm_search_base, pattern = "_tpm_Gene_ID_.*\\.tsv$",
+    tpm_files <- list.files(tpm_search_base, pattern = "_tpm_Gene_ID_.*\\.csv$",
                             recursive = TRUE, full.names = TRUE)
     if (length(tpm_files) > 0) {
       tpm_file <- tpm_files[1]
       cat("[M4] Using pre-built TPM matrix:", tpm_file, "\n")
       df <- if (.use_dt) data.table::fread(tpm_file, data.table = FALSE) else {
-        read.table(tpm_file, header = TRUE, sep = "\t", stringsAsFactors = FALSE,
-                   check.names = FALSE)
+        read.csv(tpm_file, header = TRUE, stringsAsFactors = FALSE,
+                 check.names = FALSE)
       }
       rownames(df) <- df[[1]]; df <- df[, -1, drop = FALSE]
       return(as.matrix(df))
@@ -373,7 +373,7 @@ load_m4_tpm <- function() {
 # M5: Bowtie2 + RSEM
 # -----------------------------------------------
 # Primary: per-sample .genes.results from RSEM alignment output
-# Fallback: pre-built TPM matrix from tximport (_tpm_Gene_ID_*.tsv)
+# Fallback: pre-built TPM matrix from tximport (_tpm_Gene_ID_*.csv)
 
 load_m5_tpm <- function() {
   method <- "M5_RSEM_Bowtie2"
@@ -413,18 +413,18 @@ load_m5_tpm <- function() {
   }
 
   # Fallback: try pre-built TPM matrix from tximport
-  # tximport_rsem_to_matrices.R saves as {prefix}_tpm_Gene_ID_from_{ref}_gene_level.tsv
+  # tximport_rsem_to_matrices.R saves as {prefix}_tpm_Gene_ID_from_{ref}_gene_level.csv
   # under count_matrices_from_RSEM_Quant/{ref}/gene_level/
   tpm_search_base <- file.path(POST_PROC_BASE, method,
                                "count_matrices_from_RSEM_Quant", ref_dir)
-  tpm_files <- list.files(tpm_search_base, pattern = "_tpm_Gene_ID_.*\\.tsv$",
+  tpm_files <- list.files(tpm_search_base, pattern = "_tpm_Gene_ID_.*\\.csv$",
                           recursive = TRUE, full.names = TRUE)
   if (length(tpm_files) > 0) {
     tpm_file <- tpm_files[1]
     cat("[M5] Using pre-built TPM matrix:", tpm_file, "\n")
     df <- if (.use_dt) data.table::fread(tpm_file, data.table = FALSE) else {
-      read.table(tpm_file, header = TRUE, sep = "\t", stringsAsFactors = FALSE,
-                 check.names = FALSE)
+      read.csv(tpm_file, header = TRUE, stringsAsFactors = FALSE,
+               check.names = FALSE)
     }
     rownames(df) <- df[[1]]; df <- df[, -1, drop = FALSE]
     return(as.matrix(df))
@@ -523,9 +523,17 @@ for (method in names(tpm_matrices)) {
   }
 }
 
-# Find common genes across all methods
+# Find common genes across all methods — O(sum(|G_i|)) single-pass table count
+# replaces Reduce(intersect,...) which allocates M-1 temporary vectors
 gene_sets <- lapply(tpm_matrices, rownames)
-common_genes <- Reduce(intersect, gene_sets)
+n_methods <- length(gene_sets)
+if (n_methods == 1L) {
+  common_genes <- gene_sets[[1L]]
+} else {
+  .gene_counts <- table(unlist(gene_sets, use.names = FALSE))
+  common_genes <- names(.gene_counts[.gene_counts == n_methods])
+  rm(.gene_counts)
+}
 cat("  Common genes across all methods:", length(common_genes), "\n")
 
 if (length(common_genes) == 0) {
@@ -555,8 +563,16 @@ for (i in seq_len(n_mat - 1)) {
 
 cat("\n--- Harmonizing sample IDs ---\n")
 
+# Find common samples across all methods — O(sum(|S_i|)) single-pass table count
+# (matches gene intersection approach above; avoids M-1 intermediate vectors from Reduce)
 sample_sets <- lapply(tpm_matrices, colnames)
-common_samples <- Reduce(intersect, sample_sets)
+if (length(sample_sets) == 1L) {
+  common_samples <- sample_sets[[1L]]
+} else {
+  .sample_counts <- table(unlist(sample_sets, use.names = FALSE))
+  common_samples <- names(.sample_counts[.sample_counts == length(sample_sets)])
+  rm(.sample_counts)
+}
 cat("  Common samples across all methods:", length(common_samples), "\n")
 
 if (length(common_samples) < CONCORDANCE_MIN_SAMPLES) {

@@ -241,7 +241,7 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
   .dev_open <- FALSE
   tryCatch({
     png(file.path(FIGURES_DIR, paste0("ranking_heatmap_", gene_group, ".png")),
-        width = 1600, height = fig_height, res = FIGURE_DPI)
+        width = 1600 / 300 * FIGURE_DPI, height = fig_height / 300 * FIGURE_DPI, res = FIGURE_DPI)
     .dev_open <- TRUE
     draw(ht, padding = unit(c(30, 30, 25, 40), "mm"))
     dev.off()
@@ -269,12 +269,16 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
   zscore_grp_scaled <- (zscore_grp - grp_row_mins) / ifelse(grp_row_range == 0, 1, grp_row_range) * 10
   zscore_grp_scaled[grp_row_range == 0, ] <- 5.0
 
+  # Pre-compute sort order once — reused for zscore matrix, rank_range, flagged, and CSV export
+  # O(G log G) sort done once instead of 4× redundant sorts
+  .rank_order <- order(median_rank)
+
   # Use display names and same row order as ranking heatmap (by median rank)
   display_zscore_mat <- zscore_grp_scaled
   rownames(display_zscore_mat) <- display_names
-  display_zscore_mat <- display_zscore_mat[order(median_rank), , drop = FALSE]
-  ordered_rank_range <- rank_range[order(median_rank)]
-  ordered_flagged <- flagged[order(median_rank)]
+  display_zscore_mat <- display_zscore_mat[.rank_order, , drop = FALSE]
+  ordered_rank_range <- rank_range[.rank_order]
+  ordered_flagged <- flagged[.rank_order]
 
   col_fun_z <- colorRamp2(c(0, 5, 10), c("#2166AC", "#F7F7F7", "#B2182B"))
 
@@ -314,7 +318,7 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
   .dev_open <- FALSE
   tryCatch({
     png(file.path(FIGURES_DIR, paste0("zscore_heatmap_", gene_group, ".png")),
-        width = 1600, height = fig_height, res = FIGURE_DPI)
+        width = 1600 / 300 * FIGURE_DPI, height = fig_height / 300 * FIGURE_DPI, res = FIGURE_DPI)
     .dev_open <- TRUE
     draw(ht_z, padding = unit(c(30, 30, 25, 40), "mm"))
     dev.off()
@@ -325,12 +329,12 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
     cat("  Error generating zscore heatmap:", e$message, "\n")
   })
 
-  # Save Z-score table
+  # Save Z-score table (reuse pre-computed .rank_order)
   zscore_grp_df <- data.frame(
-    Gene_ID = matched_genes[order(median_rank)],
-    Shortened_Name = display_names[order(median_rank)],
-    zscore_grp_scaled[order(median_rank), , drop = FALSE],
-    Mean_TPM = round(rowMeans(mean_tpm_matrix)[order(median_rank)], 2),
+    Gene_ID = matched_genes[.rank_order],
+    Shortened_Name = display_names[.rank_order],
+    zscore_grp_scaled[.rank_order, , drop = FALSE],
+    Mean_TPM = round(rowMeans(mean_tpm_matrix)[.rank_order], 2),
     check.names = FALSE,
     stringsAsFactors = FALSE
   )

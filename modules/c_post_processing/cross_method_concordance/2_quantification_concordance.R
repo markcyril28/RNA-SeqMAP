@@ -40,7 +40,8 @@ common_samples <- data$common_samples
 methods <- names(tpm_matrices)
 n_methods <- length(methods)
 
-cat("Methods:", paste(sapply(methods, get_short_name), collapse = ", "), "\n")
+# vapply is type-safe and avoids sapply's simplify overhead — O(M) either way
+cat("Methods:", paste(vapply(methods, get_short_name, character(1)), collapse = ", "), "\n")
 cat("Genes:", length(common_genes), "| Samples:", length(common_samples), "\n\n")
 
 if (n_methods < 2) {
@@ -56,7 +57,7 @@ if (n_methods < 2) {
 cat("--- Computing pairwise correlations per sample ---\n")
 
 method_pairs <- combn(methods, 2, simplify = FALSE)
-pair_names <- sapply(method_pairs, function(p) paste(get_short_name(p[1]), "vs", get_short_name(p[2])))
+pair_names <- vapply(method_pairs, function(p) paste(get_short_name(p[1]), "vs", get_short_name(p[2])), character(1))
 
 spearman_per_sample <- matrix(NA, nrow = length(common_samples), ncol = length(method_pairs),
                                dimnames = list(common_samples, pair_names))
@@ -100,20 +101,12 @@ for (i in seq_along(method_pairs)) {
     # Column-wise rank transform (each sample ranked independently)
     # O(genes × samples × log(genes)) per matrix. matrixStats::colRanks uses C-level
     # implementation (~3x faster than apply + rank); fallback to base R apply().
-    if (.HAS_MATRIXSTATS) {
-      # colRanks returns samples × genes; transpose to genes × samples
-      r1 <- t(matrixStats::colRanks(m1_valid, ties.method = "average", preserveShape = FALSE))
-      r2 <- t(matrixStats::colRanks(m2_valid, ties.method = "average", preserveShape = FALSE))
-      # Restore NA positions. colRanks has no na.last="keep", so NAs receive
-      # ranks, inflating non-NA rank values vs the base R path. However, centering
-      # (sweep by colMeans) cancels the offset, so the Pearson-on-ranks correlation
-      # is equivalent to the base R path. See NOTE below on the zeroing approximation.
-      r1[is.na(m1_valid)] <- NA
-      r2[is.na(m2_valid)] <- NA
-    } else {
-      r1 <- apply(m1_valid, 2, rank, na.last = "keep")
-      r2 <- apply(m2_valid, 2, rank, na.last = "keep")
-    }
+    # Use base R rank() for consistent NA handling across all environments.
+    # matrixStats::colRanks assigns ranks to NA positions (no na.last="keep"),
+    # producing different rank values for non-NA entries vs base R, which changes
+    # correlation results. Base R apply+rank is slower but correct.
+    r1 <- apply(m1_valid, 2, rank, na.last = "keep")
+    r2 <- apply(m2_valid, 2, rank, na.last = "keep")
 
     # Pearson correlation on ranks = Spearman (vectorized per column)
     # Center each column, compute dot-product correlation
@@ -152,7 +145,7 @@ cat("  Saved per-sample Spearman correlation table\n")
 
 cat("--- Computing median Spearman correlation matrix ---\n")
 
-short_names <- sapply(methods, get_short_name)
+short_names <- vapply(methods, get_short_name, character(1))
 
 build_median_cor_matrix <- function(per_sample_mat) {
   cor_mat <- matrix(1, nrow = n_methods, ncol = n_methods,
@@ -225,7 +218,7 @@ ht <- Heatmap(median_spearman,
 .dev_open <- FALSE
 tryCatch({
   png(file.path(FIGURES_DIR, "method_concordance_heatmap_spearman.png"),
-      width = 1600, height = 1300, res = FIGURE_DPI)
+      width = 1600 / 300 * FIGURE_DPI, height = 1300 / 300 * FIGURE_DPI, res = FIGURE_DPI)
   .dev_open <- TRUE
   draw(ht, padding = unit(c(30, 30, 25, 40), "mm"))
   dev.off()

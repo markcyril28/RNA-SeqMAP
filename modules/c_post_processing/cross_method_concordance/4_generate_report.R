@@ -31,7 +31,7 @@ ranking_results <- if (file.exists(ranking_rds_path)) {
 }
 
 methods <- names(data$tpm_matrices)
-short_names <- sapply(methods, get_short_name)
+short_names <- vapply(methods, get_short_name, character(1))
 
 # Report output path (separate from POST_PROC_BASE inputs)
 report_base <- Sys.getenv("REPORT_BASE", POST_PROC_BASE)
@@ -258,7 +258,7 @@ for (gene_group in names(ranking_results)) {
   add("")
 
   # Ranking table
-  method_cols <- sapply(methods, get_short_name)
+  method_cols <- vapply(methods, get_short_name, character(1))
   display_cols <- intersect(method_cols, colnames(rdf))
 
   add("| Gene | Short Name | Median Rank | Range | SD | Flagged | ",
@@ -427,8 +427,8 @@ add("")
 if (length(ranking_results) > 0) {
   add("### Ranking Stability Summary")
   add("")
-  total_flagged <- sum(sapply(ranking_results, function(r) sum(r$Flagged)))
-  total_genes <- sum(sapply(ranking_results, nrow))
+  total_flagged <- sum(vapply(ranking_results, function(r) sum(r$Flagged), integer(1)))
+  total_genes <- sum(vapply(ranking_results, nrow, integer(1)))
   add("- Across all gene groups: ", total_flagged, "/", total_genes,
       " genes show unstable rankings across methods.")
   if (total_flagged > 0) {
