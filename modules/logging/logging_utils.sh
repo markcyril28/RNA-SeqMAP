@@ -57,7 +57,8 @@ log_choice="${log_choice:-1}"  # 1 = tee to console, 2 = file only
 # ==============================================================================
 
 # timestamp: use bash built-in printf %(%T)T (no subprocess) with date fallback for bash < 4.2
-timestamp() { local _t; printf -v _t '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null && echo "$_t" || date '+%Y-%m-%d %H:%M:%S'; }
+# Output directly via printf (saves 1 echo subprocess per call vs prior && echo pattern)
+timestamp() { printf '%(%Y-%m-%d %H:%M:%S)T\n' -1 2>/dev/null || date '+%Y-%m-%d %H:%M:%S'; }
 # Unified log function: O(1) timestamp via bash printf (no subprocess), single source of truth.
 # log_warn/log_error previously duplicated timestamp logic; now they call _log_impl.
 _log_impl() {
@@ -653,7 +654,9 @@ log_gpu() {
 	# Log GPU-related message to GPU log file
 	# Usage: log_gpu "message"
 	local message="$*"
-	printf '[%s] %s\n' "$(timestamp)" "$message" >> "$GPU_LOG_FILE"
+	# Inline timestamp — avoids $(timestamp) subshell fork. O(1).
+	local _ts; printf -v _ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _ts=$(date '+%Y-%m-%d %H:%M:%S')
+	printf '[%s] %s\n' "$_ts" "$message" >> "$GPU_LOG_FILE"
 	log_info "[GPU] $message"
 }
 
@@ -667,8 +670,10 @@ log_gpu_info() {
 		return 1
 	fi
 	
+	# Inline timestamp — avoids $(timestamp) subshell fork
+	local _ts; printf -v _ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _ts=$(date '+%Y-%m-%d %H:%M:%S')
 	{
-		printf '\n=== %s: %s ===\n' "$description" "$(timestamp)"
+		printf '\n=== %s: %s ===\n' "$description" "$_ts"
 		nvidia-smi
 		printf '\n'
 	} >> "$GPU_LOG_FILE"
@@ -687,9 +692,11 @@ log_gpu_memory() {
 	fi
 	
 	local gpu_mem=$(nvidia-smi --query-gpu=memory.used,memory.total,memory.free --format=csv,noheader,nounits 2>/dev/null)
-	
+
+	# Inline timestamp — avoids $(timestamp) subshell fork
+	local _ts; printf -v _ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _ts=$(date '+%Y-%m-%d %H:%M:%S')
 	{
-		printf '[%s] %s: %s\n' "$(timestamp)" "$description" "$gpu_mem"
+		printf '[%s] %s: %s\n' "$_ts" "$description" "$gpu_mem"
 	} >> "$GPU_LOG_FILE"
 	
 	log_info "GPU memory logged: $gpu_mem"
@@ -706,9 +713,11 @@ log_gpu_utilization() {
 	fi
 	
 	local gpu_util=$(nvidia-smi --query-gpu=utilization.gpu,utilization.memory,temperature.gpu --format=csv,noheader 2>/dev/null)
-	
+
+	# Inline timestamp — avoids $(timestamp) subshell fork
+	local _ts; printf -v _ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _ts=$(date '+%Y-%m-%d %H:%M:%S')
 	{
-		printf '[%s] %s: %s\n' "$(timestamp)" "$description" "$gpu_util"
+		printf '[%s] %s: %s\n' "$_ts" "$description" "$gpu_util"
 	} >> "$GPU_LOG_FILE"
 	
 	log_info "GPU utilization logged: $gpu_util"
