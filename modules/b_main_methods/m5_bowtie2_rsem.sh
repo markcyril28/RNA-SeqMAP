@@ -888,8 +888,8 @@ _rsem_process_single_sample() {
 			--seed "$RSEM_SEED" \
 			--num-threads "$threads_to_use" \
 			${_no_bam_flag:+"$_no_bam_flag"} \
-			"$trimmed1" "$trimmed2" "$rsem_idx" "$out_dir/$SRR" 2>&1 | tee "$rsem_log"
-		rsem_exit_code=${PIPESTATUS[0]}
+			"$trimmed1" "$trimmed2" "$rsem_idx" "$out_dir/$SRR" > "$rsem_log" 2>&1
+		rsem_exit_code=$?
 	else
 		log_step "Running Bowtie2 + RSEM (single-end) for $SRR (threads: $threads_to_use, strandedness: ${RSEM_STRANDEDNESS:-none})"
 		rsem-calculate-expression \
@@ -899,8 +899,8 @@ _rsem_process_single_sample() {
 			--seed "$RSEM_SEED" \
 			--num-threads "$threads_to_use" \
 			${_no_bam_flag:+"$_no_bam_flag"} \
-			"$trimmed1" "$rsem_idx" "$out_dir/$SRR" 2>&1 | tee "$rsem_log"
-		rsem_exit_code=${PIPESTATUS[0]}
+			"$trimmed1" "$rsem_idx" "$out_dir/$SRR" > "$rsem_log" 2>&1
+		rsem_exit_code=$?
 	fi
 
 	if [[ $rsem_exit_code -ne 0 ]]; then

@@ -180,12 +180,14 @@ salmon_saf_pipeline() {
 		# Sequential fallback
 		for SRR in "${rnaseq_list[@]}"; do
 			local out_dir="$quant_root/$SRR"
-			mkdir -p "$out_dir"
 
+			# Check skip condition before mkdir/find_trimmed_fastq to avoid unnecessary I/O on resume runs
 			[[ -f "$out_dir/quant.sf" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]] && { log_info "[SALMON QUANT] Quantification for $SRR already exists. Skipping."; continue; }
 
 			find_trimmed_fastq "$SRR"
 			[[ -z "$trimmed1" ]] && { log_warn "Missing trimmed reads for $SRR. Skipping."; continue; }
+
+			mkdir -p "$out_dir"
 
 			log_step "Quantifying expression for $SRR with Salmon"
 

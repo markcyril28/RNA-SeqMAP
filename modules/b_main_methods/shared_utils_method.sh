@@ -28,7 +28,8 @@ source "$SCRIPT_DIR/../a_preprocessing/shared_utils_preproc.sh"
 # Avoids repeated command -v spawns per-sample in alignment loops.
 _SHARED_HAS_PARALLEL=false; command -v parallel >/dev/null 2>&1 && _SHARED_HAS_PARALLEL=true
 _SHARED_HAS_SAMTOOLS=false; command -v samtools >/dev/null 2>&1 && _SHARED_HAS_SAMTOOLS=true
-export _SHARED_HAS_PARALLEL _SHARED_HAS_SAMTOOLS
+_SHARED_HAS_RSCRIPT=false; command -v Rscript >/dev/null 2>&1 && _SHARED_HAS_RSCRIPT=true
+export _SHARED_HAS_PARALLEL _SHARED_HAS_SAMTOOLS _SHARED_HAS_RSCRIPT
 
 # Only detect if not already set by shared_utils_preproc.sh (avoids redundant command -v spawn)
 if [[ -z "${_SHARED_GZIP_C:-}" ]]; then
@@ -126,8 +127,9 @@ create_sample_metadata() {
 	load_sample_metadata "$metadata_source" sample_metadata 2>/dev/null && has_external=true
 	
 	# Build output in memory, write once (avoids N+1 file opens for N samples)
+	# Use printf instead of echo -e (portable, avoids -e interpretation issues)
 	{
-		echo -e "sample${delim}condition${delim}batch"
+		printf 'sample%scondition%sbatch\n' "$delim" "$delim"
 		for SRR in "${sample_list[@]}"; do
 			if [[ "$has_external" == "true" ]]; then
 				local condition="${sample_metadata[${SRR}_condition]:-unknown}"
@@ -136,7 +138,7 @@ create_sample_metadata() {
 				local condition="treatment"
 				local batch="1"
 			fi
-			echo -e "$SRR${delim}$condition${delim}$batch"
+			printf '%s%s%s%s%s\n' "$SRR" "$delim" "$condition" "$delim" "$batch"
 		done
 	} > "$metadata_file"
 	

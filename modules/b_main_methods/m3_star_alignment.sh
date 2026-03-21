@@ -1023,7 +1023,7 @@ star_alignment_pipeline() {
 	generate_tximport_star_script "$quant_root" "$sample_metadata" "$tx2gene_file" "$matrix_dir" "$tximport_script" || return 1
 
 	# Run tximport if R is available
-	if command -v Rscript >/dev/null 2>&1; then
+	if [[ "${_SHARED_HAS_RSCRIPT:-false}" == "true" ]]; then
 		log_step "Running tximport to import Salmon quantifications"
 		# Note: stdout already goes through tee via exec redirect; do NOT pipe to tee -a "$LOG_FILE" (causes double-logging)
 		if Rscript "$tximport_script" "$quant_root" "$sample_metadata" "$tx2gene_file" "$matrix_dir" "$master_ref" 2>&1; then

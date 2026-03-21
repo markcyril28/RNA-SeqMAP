@@ -241,6 +241,12 @@ _m1_collect_bam_metrics() {
 		return 0
 	fi
 
+	# Skip if metrics already collected and BAM hasn't changed (resume optimization)
+	# O(1) mtime comparison avoids O(N) samtools stats scan on unchanged BAMs
+	if [[ -f "$metrics_file" && "$metrics_file" -nt "$bam" ]]; then
+		return 0
+	fi
+
 	# samtools stats with multi-threading (cap at 4 — I/O bound beyond that)
 	local _st_threads=${threads_per_job:-${THREADS:-4}}
 	(( _st_threads > 4 )) && _st_threads=4
@@ -380,7 +386,7 @@ hisat2_ref_guided_pipeline() {
 			read -r _ss_chr _ss_pos _ < "$splice_sites"
 			if [[ -n "$_ss_chr" ]]; then
 				# Use samtools faidx index for O(1) lookup when available (avoids scanning entire FASTA)
-				if [[ -f "${fasta}.fai" ]] || (command -v samtools >/dev/null 2>&1 && samtools faidx "$fasta" 2>/dev/null); then
+				if [[ -f "${fasta}.fai" ]] || ($_SHARED_HAS_SAMTOOLS && samtools faidx "$fasta" 2>/dev/null); then
 					_ss_seq_len=$(awk -v t="$_ss_chr" '$1==t{print $2;exit}' "${fasta}.fai" 2>/dev/null)
 				fi
 				# Fallback: scan FASTA directly (for small FASTAs or if samtools unavailable)
@@ -692,7 +698,11 @@ hisat2_ref_guided_pipeline() {
 		fi
 		log_info "[PREPDE] Auto-detected read length: ${read_length} bp (from first available trimmed FASTQ)"
 
-		if command -v prepDE.py >/dev/null 2>&1; then
+		# Cache prepDE.py availability (avoid per-call PATH scan)
+		if [[ -z "${_HAS_PREPDE:-}" ]]; then
+			_HAS_PREPDE=false; command -v prepDE.py >/dev/null 2>&1 && _HAS_PREPDE=true
+		fi
+		if [[ "$_HAS_PREPDE" == "true" ]]; then
 			run_with_space_time_log prepDE.py -i "$prepde_sample_list" \
 				-g "$gene_count_matrix" -t "$transcript_count_matrix" -l "$read_length"
 			if [[ ! -f "$gene_count_matrix" ]]; then
