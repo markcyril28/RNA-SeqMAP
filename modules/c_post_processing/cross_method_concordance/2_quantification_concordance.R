@@ -19,6 +19,9 @@ suppressPackageStartupMessages({
   library(grid)
 })
 
+# matrixStats::colRanks is a C-level column-wise rank — ~3x faster than apply(x, 2, rank)
+.HAS_MATRIXSTATS <- requireNamespace("matrixStats", quietly = TRUE)
+
 cat("\n=== STEP 2: Quantification Concordance ===\n\n")
 
 # Load harmonized data
@@ -54,7 +57,12 @@ spearman_per_sample <- matrix(NA, nrow = length(common_samples), ncol = length(m
                                dimnames = list(common_samples, pair_names))
 
 # Pre-compute log2(TPM+1) once per method (avoids redundant log2 per pair × sample)
+# O(methods × genes × samples) total — done once, reused across all pairs
 log2_matrices <- lapply(tpm_matrices, function(mat) log2(mat + 1))
+
+# Pre-compute per-method nonzero masks and counts — O(methods × genes × samples).
+# Reused across O(methods²) pairs, avoiding redundant colSums per pair.
+nonzero_masks <- lapply(log2_matrices, function(mat) mat > 0)
 
 for (i in seq_along(method_pairs)) {
   m1 <- method_pairs[[i]][1]
@@ -62,15 +70,16 @@ for (i in seq_along(method_pairs)) {
   mat1 <- log2_matrices[[m1]]
   mat2 <- log2_matrices[[m2]]
 
-  # Vectorized: identify genes with nonzero expression in at least one method
-  nonzero_mask <- (mat1 > 0) | (mat2 > 0)  # genes × samples logical matrix
+  # Combine pre-computed per-method masks (O(genes × samples) bitwise OR)
+  nonzero_mask <- nonzero_masks[[m1]] | nonzero_masks[[m2]]
   nonzero_per_sample <- colSums(nonzero_mask)
 
-  # Vectorized skip detection — guard against missing names
+  # Vectorized skip detection — O(S) logical mask replaces O(S log S) setdiff
   nonzero_counts <- nonzero_per_sample[common_samples]
   nonzero_counts[is.na(nonzero_counts)] <- 0L
-  skipped_samples <- common_samples[nonzero_counts < CORRELATION_MIN_GENES]
-  valid_samples <- setdiff(common_samples, skipped_samples)
+  valid_mask_s <- nonzero_counts >= CORRELATION_MIN_GENES
+  valid_samples <- common_samples[valid_mask_s]
+  skipped_samples <- common_samples[!valid_mask_s]
 
   # Vectorized Spearman: rank transform per column, then compute Pearson on ranks.
   # Spearman(x,y) = Pearson(rank(x), rank(y)). This avoids N individual cor() calls.
@@ -84,13 +93,30 @@ for (i in seq_along(method_pairs)) {
     m2_valid[!nz_valid] <- NA
 
     # Column-wise rank transform (each sample ranked independently)
-    r1 <- apply(m1_valid, 2, rank, na.last = "keep")
-    r2 <- apply(m2_valid, 2, rank, na.last = "keep")
+    # O(genes × samples × log(genes)) per matrix. matrixStats::colRanks uses C-level
+    # implementation (~3x faster than apply + rank); fallback to base R apply().
+    if (.HAS_MATRIXSTATS) {
+      # colRanks returns samples × genes; transpose to genes × samples
+      r1 <- t(matrixStats::colRanks(m1_valid, ties.method = "average", preserveShape = FALSE))
+      r2 <- t(matrixStats::colRanks(m2_valid, ties.method = "average", preserveShape = FALSE))
+      # Restore NA positions. colRanks has no na.last="keep", so NAs receive
+      # ranks, inflating non-NA rank values vs the base R path. However, centering
+      # (sweep by colMeans) cancels the offset, so the Pearson-on-ranks correlation
+      # is equivalent to the base R path. See NOTE below on the zeroing approximation.
+      r1[is.na(m1_valid)] <- NA
+      r2[is.na(m2_valid)] <- NA
+    } else {
+      r1 <- apply(m1_valid, 2, rank, na.last = "keep")
+      r2 <- apply(m2_valid, 2, rank, na.last = "keep")
+    }
 
     # Pearson correlation on ranks = Spearman (vectorized per column)
     # Center each column, compute dot-product correlation
     r1_centered <- sweep(r1, 2, colMeans(r1, na.rm = TRUE))
     r2_centered <- sweep(r2, 2, colMeans(r2, na.rm = TRUE))
+    # NOTE: Zeroing NAs biases correlation vs pairwise-complete Spearman when
+    # many genes are unexpressed in one method. Acceptable for cross-method
+    # concordance ranking (relative, not absolute) but not for formal inference.
     r1_centered[is.na(r1_centered)] <- 0
     r2_centered[is.na(r2_centered)] <- 0
 
@@ -126,9 +152,11 @@ short_names <- sapply(methods, get_short_name)
 build_median_cor_matrix <- function(per_sample_mat) {
   cor_mat <- matrix(1, nrow = n_methods, ncol = n_methods,
                      dimnames = list(short_names, short_names))
+  # O(P) with O(1) index lookup via precomputed named vector (was O(P × M) with which())
+  method_indices <- setNames(seq_along(methods), methods)
   for (i in seq_along(method_pairs)) {
-    m1_idx <- which(methods == method_pairs[[i]][1])
-    m2_idx <- which(methods == method_pairs[[i]][2])
+    m1_idx <- method_indices[method_pairs[[i]][1]]
+    m2_idx <- method_indices[method_pairs[[i]][2]]
     med_cor <- median(per_sample_mat[, i], na.rm = TRUE)
     cor_mat[m1_idx, m2_idx] <- med_cor
     cor_mat[m2_idx, m1_idx] <- med_cor

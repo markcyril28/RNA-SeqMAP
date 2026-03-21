@@ -89,7 +89,7 @@ source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_confi
 # Helper: fast file read (data.table::fread when available, else read.table)
 .fast_read_tsv <- function(path, ...) {
   if (.use_dt) {
-    as.data.frame(data.table::fread(path, ...))
+    data.table::fread(path, data.table = FALSE, ...)
   } else {
     read.table(path, header = TRUE, sep = "\t", stringsAsFactors = FALSE,
                check.names = FALSE, comment.char = "", quote = "")
@@ -266,7 +266,7 @@ load_m3_tpm <- function() {
     if (length(tpm_files) > 0) {
       tpm_file <- tpm_files[1]
       cat("[M3] Using pre-built TPM matrix:", tpm_file, "\n")
-      df <- if (.use_dt) as.data.frame(data.table::fread(tpm_file)) else {
+      df <- if (.use_dt) data.table::fread(tpm_file, data.table = FALSE) else {
         read.table(tpm_file, header = TRUE, sep = "\t", stringsAsFactors = FALSE,
                    check.names = FALSE)
       }
@@ -356,7 +356,7 @@ load_m4_tpm <- function() {
     if (length(tpm_files) > 0) {
       tpm_file <- tpm_files[1]
       cat("[M4] Using pre-built TPM matrix:", tpm_file, "\n")
-      df <- if (.use_dt) as.data.frame(data.table::fread(tpm_file)) else {
+      df <- if (.use_dt) data.table::fread(tpm_file, data.table = FALSE) else {
         read.table(tpm_file, header = TRUE, sep = "\t", stringsAsFactors = FALSE,
                    check.names = FALSE)
       }
@@ -425,7 +425,7 @@ load_m5_tpm <- function() {
   if (length(tpm_files) > 0) {
     tpm_file <- tpm_files[1]
     cat("[M5] Using pre-built TPM matrix:", tpm_file, "\n")
-    df <- if (.use_dt) as.data.frame(data.table::fread(tpm_file)) else {
+    df <- if (.use_dt) data.table::fread(tpm_file, data.table = FALSE) else {
       read.table(tpm_file, header = TRUE, sep = "\t", stringsAsFactors = FALSE,
                  check.names = FALSE)
     }
@@ -483,7 +483,7 @@ for (method in CONCORDANCE_METHODS) {
 }
 stats_list <- stats_list[seq_len(stats_idx)]
 method_stats <- if (.use_dt) {
-  as.data.frame(data.table::rbindlist(stats_list, use.names = TRUE, fill = TRUE))
+  data.table::setDF(data.table::rbindlist(stats_list, use.names = TRUE, fill = TRUE))
 } else {
   do.call(rbind, stats_list)
 }

@@ -60,9 +60,10 @@ ALIGNMENT_BASE <- Sys.getenv("ALIGNMENT_BASE", "2_ALIGNMENT_RESULTs")
 POST_PROC_BASE <- Sys.getenv("POST_PROC_BASE", "3_POST_PROC")
 BASE_DIR <- Sys.getenv("BASE_DIR", ".")
 
-# Ensure MASTER_REFERENCE is set (may already be defined by 0_shared_config.R)
+# Ensure MASTER_REFERENCE is set (may already be defined by 0_shared_config.R).
+# Default matches 0_shared_config.R ("Eggplant_V4.1") to avoid silent mismatch.
 if (!exists("MASTER_REFERENCE") || !nzchar(MASTER_REFERENCE)) {
-  MASTER_REFERENCE <- Sys.getenv("MASTER_REFERENCE", "GPE001970_genome")
+  MASTER_REFERENCE <- Sys.getenv("MASTER_REFERENCE", "Eggplant_V4.1")
 }
 
 # Ensure GENE_GROUPS_DIR is set (may already be defined by 0_shared_config.R)

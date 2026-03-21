@@ -49,16 +49,30 @@ cat("--- Loading gene groups ---\n")
 cat("  Gene groups dir:", GENE_GROUPS_DIR, "\n")
 
 all_ranking_results <- list()
-all_flagged_list <- list()  # Collect flagged DFs in list; rbind once at end
+# Pre-allocate flagged list to avoid O(n) reallocation per append
+all_flagged_list <- vector("list", length(CONCORDANCE_GENE_GROUPS))
+.flagged_idx <- 0L
+
+# Cache directory listing once — O(D) scan reused across all gene groups
+# Avoids O(G × D) repeated list.files() calls for G gene groups
+.gene_group_csv_cache <- list.files(GENE_GROUPS_DIR, pattern = "\\.csv$",
+                                     recursive = TRUE, full.names = TRUE)
 
 for (gene_group in CONCORDANCE_GENE_GROUPS) {
   cat("\n=== Gene group:", gene_group, "===\n")
 
-  # Find CSV file
+  # Find CSV file (search top-level first, then cached subdirectory listing)
   csv_file <- file.path(GENE_GROUPS_DIR, paste0(gene_group, ".csv"))
   if (!file.exists(csv_file)) {
-    cat("  [WARN] Gene group CSV not found:", csv_file, "\n")
-    next
+    # O(G) basename match on cached listing instead of O(D) filesystem rescan per group
+    # (basename comparison avoids regex pitfalls if gene_group contains +, ., etc.)
+    candidates <- .gene_group_csv_cache[basename(.gene_group_csv_cache) == paste0(gene_group, ".csv")]
+    if (length(candidates) > 0) {
+      csv_file <- candidates[1]
+    } else {
+      cat("  [WARN] Gene group CSV not found in", GENE_GROUPS_DIR, "or subdirectories:", gene_group, "\n")
+      next
+    }
   }
 
   gene_df <- read.csv(csv_file, stringsAsFactors = FALSE, header = TRUE)
@@ -160,11 +174,12 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
 
   all_ranking_results[[gene_group]] <- ranking_df
 
-  # Collect flagged genes across groups (append to list; single rbind at end)
+  # Collect flagged genes into pre-allocated list; O(1) indexed insert
   if (sum(flagged) > 0) {
     flagged_rows <- ranking_df[ranking_df$Flagged, ]
     flagged_rows$Gene_Group <- gene_group
-    all_flagged_list[[length(all_flagged_list) + 1]] <- flagged_rows
+    .flagged_idx <- .flagged_idx + 1L
+    all_flagged_list[[.flagged_idx]] <- flagged_rows
   }
 
   # -----------------------------------------------
@@ -386,7 +401,9 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
 # Save combined flagged genes
 # -----------------------------------------------
 
-all_flagged_genes <- if (length(all_flagged_list) > 0) do.call(rbind, all_flagged_list) else data.frame()
+# Trim unused pre-allocated slots before rbind
+all_flagged_list <- all_flagged_list[seq_len(.flagged_idx)]
+all_flagged_genes <- if (.flagged_idx > 0L) do.call(rbind, all_flagged_list) else data.frame()
 if (nrow(all_flagged_genes) > 0) {
   write.csv(all_flagged_genes,
             file.path(TABLES_DIR, "ranking_instability_flagged.csv"),
