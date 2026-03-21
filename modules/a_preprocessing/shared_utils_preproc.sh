@@ -13,7 +13,9 @@
 export PREPROC_SHARED_SOURCED="true"
 
 # Source dependencies
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
+SCRIPT_DIR="${MODULES_DIR:+${MODULES_DIR}/a_preprocessing}"
+SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 source "$SCRIPT_DIR/global_config_preproc.sh"
 source "$SCRIPT_DIR/../logging/logging_utils.sh"
 
@@ -34,6 +36,12 @@ if [[ -z "${_SHARED_GZIP_C:-}" ]]; then
 		_SHARED_GZIP_C="gzip"
 	fi
 	export _SHARED_HAS_PIGZ _SHARED_GZIP_DC _SHARED_GZIP_C
+fi
+
+# Cache conda profile path at module load — avoids dirname subshell per parallel worker.
+if [[ -z "${_CONDA_PROFILE_SCRIPT+x}" && -n "${CONDA_EXE:-}" ]]; then
+	_CONDA_PROFILE_SCRIPT="${CONDA_EXE%/*}/../etc/profile.d/conda.sh"
+	export _CONDA_PROFILE_SCRIPT
 fi
 
 # ==============================================================================
