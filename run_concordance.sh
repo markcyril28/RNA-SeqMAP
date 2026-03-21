@@ -91,11 +91,11 @@ CLEAR_OUTPUT_FOLDER="TRUE"
 #   - class basenames from config/4_concordance_combination (with or without .sh)
 # Load order matters: later entries override earlier ones.
 CONCORDANCE_CONFIGS=(
-    "defaults.toml"
+    #"defaults.toml"
     # "class_genomes_vs_genomes.toml"
     # "class_methods_vs_methods.toml"
     # "class_genes_vs_genes.toml"
-    # "class_full_factorial_example.toml"
+    "class_full_factorial_example.toml"
 )
 
 REINVOKE_ARGS=()
