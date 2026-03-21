@@ -492,7 +492,12 @@ star_alignment_pipeline() {
 
 	log_step "STAR splice-aware alignment for $fasta_tag samples"
 
+	# STAR optimal: 16 threads per job (scales well up to ~16)
 	local parallel_jobs="${PARALLEL_JOBS:-${JOBS:-2}}"
+	if [[ "${_JOBS_MODE:-}" == "auto" || "${_JOBS_MODE:-}" == "AUTO" ]]; then
+		parallel_jobs=$(( THREADS / 16 ))
+		(( parallel_jobs < 1 )) && parallel_jobs=1
+	fi
 	# Adaptive: cap parallel jobs at sample count to maximize per-job thread allocation
 	local _n_samples=${#rnaseq_list[@]}
 	(( parallel_jobs > _n_samples )) && parallel_jobs=$_n_samples

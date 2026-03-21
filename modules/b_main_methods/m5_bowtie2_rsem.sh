@@ -21,7 +21,12 @@ source "$SCRIPT_DIR/shared_utils_method.sh"
 # ==============================================================================
 
 # Number of samples to process in parallel (requires USE_GNU_PARALLEL=TRUE)
+# RSEM/Bowtie2 optimal: 8 threads per job (memory-constrained, ~2.5GB/thread)
 MAX_PARALLEL_SAMPLES="${MAX_PARALLEL_SAMPLES:-2}"
+if [[ "${_JOBS_MODE:-}" == "auto" || "${_JOBS_MODE:-}" == "AUTO" ]]; then
+	MAX_PARALLEL_SAMPLES=$(( THREADS / 8 ))
+	(( MAX_PARALLEL_SAMPLES < 1 )) && MAX_PARALLEL_SAMPLES=1
+fi
 
 # Threads allocated per RSEM job (auto-calculated from THREADS / MAX_PARALLEL_SAMPLES)
 # Memory-aware: RSEM uses ~2-3GB per thread; cap to prevent OOM on constrained systems.

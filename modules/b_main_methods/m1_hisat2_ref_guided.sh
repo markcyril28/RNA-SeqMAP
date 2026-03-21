@@ -420,7 +420,12 @@ hisat2_ref_guided_pipeline() {
 	fi
 
 	# ALIGNMENT AND STRINGTIE ASSEMBLY (pure quantification: single pass with -e)
+	# HISAT2+StringTie optimal: 16 threads per job (scales well up to ~16)
 	local parallel_jobs="${PARALLEL_JOBS:-${JOBS:-2}}"
+	if [[ "${_JOBS_MODE:-}" == "auto" || "${_JOBS_MODE:-}" == "AUTO" ]]; then
+		parallel_jobs=$(( THREADS / 16 ))
+		(( parallel_jobs < 1 )) && parallel_jobs=1
+	fi
 	# Adaptive: don't spawn more parallel jobs than samples — wastes thread allocation
 	# O(1) min check avoids reserving e.g. 32 threads/job when only 3 samples exist on 64-thread node
 	local _n_samples=${#rnaseq_list[@]}

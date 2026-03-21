@@ -18,8 +18,17 @@ export METHOD_CONFIG_SOURCED="true"
 
 # Total CPU threads available to the pipeline (auto-detect if not set)
 THREADS="${THREADS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 12)}"
-# Base parallel job count; PARALLEL_JOBS inherits this if not set separately
+# Base parallel job count; set to "auto" to calculate from THREADS / OPTIMAL_THREADS_PER_JOB
 JOBS="${JOBS:-2}"
+# Default optimal threads per job for Stage 2 (alignment programs scale well up to ~16)
+OPTIMAL_THREADS_PER_JOB="${OPTIMAL_THREADS_PER_JOB:-16}"
+# Track original setting so method scripts can re-resolve with program-specific optimal
+_JOBS_MODE="${JOBS}"
+# Resolve JOBS="auto" → numeric value
+if [[ "${JOBS}" == "auto" || "${JOBS}" == "AUTO" ]]; then
+	JOBS=$(( THREADS / OPTIMAL_THREADS_PER_JOB ))
+	(( JOBS < 1 )) && JOBS=1
+fi
 
 # Concurrent sample jobs for GNU Parallel; each job gets THREADS/PARALLEL_JOBS threads
 PARALLEL_JOBS="${PARALLEL_JOBS:-${JOBS:-2}}"
@@ -63,41 +72,31 @@ export OVERWRITE_MODE
 unset _ow
 
 # ==============================================================================
+# PATH HELPER — O(1) absolute path resolution, no subprocess spawns
+# ==============================================================================
+# Converts relative paths to absolute using $PWD. Consolidates the repeated
+# if [[ "$path" != /* ]] pattern (was 3 copies; now single source of truth).
+_make_absolute_path() {
+	local p="$1"
+	[[ "$p" != /* ]] && p="$(pwd)/$p"
+	printf '%s' "$p"
+}
+
+# ==============================================================================
 # POST PROCESSING ROOT
 # ==============================================================================
-# Convert to absolute path if relative (prevents STAR/tool output file errors)
-_POST_PROC_DEFAULT="${POST_PROCESSING_ROOT:-3_POST_PROC}"
-if [[ "$_POST_PROC_DEFAULT" != /* ]]; then
-	POST_PROCESSING_ROOT="$(pwd)/$_POST_PROC_DEFAULT"
-else
-	POST_PROCESSING_ROOT="$_POST_PROC_DEFAULT"
-fi
-unset _POST_PROC_DEFAULT
+POST_PROCESSING_ROOT="$(_make_absolute_path "${POST_PROCESSING_ROOT:-3_POST_PROC}")"
 
 # ==============================================================================
 # ALIGNMENT RESULTS ROOT
 # ==============================================================================
-# Alignment outputs live separately from post-processing
-_ALIGN_DEFAULT="${ALIGNMENT_RESULTS_ROOT:-2_ALIGNMENT_RESULTs}"
-if [[ "$_ALIGN_DEFAULT" != /* ]]; then
-	ALIGNMENT_RESULTS_ROOT="$(pwd)/$_ALIGN_DEFAULT"
-else
-	ALIGNMENT_RESULTS_ROOT="$_ALIGN_DEFAULT"
-fi
-unset _ALIGN_DEFAULT
+ALIGNMENT_RESULTS_ROOT="$(_make_absolute_path "${ALIGNMENT_RESULTS_ROOT:-2_ALIGNMENT_RESULTs}")"
 
 # ==============================================================================
 # SAMPLE METADATA CONFIGURATION
 # ==============================================================================
 # Path to the sample conditions file (tab-separated: SRR_ID condition batch)
-# Convert to absolute path if relative (same pattern as POST_PROCESSING_ROOT)
-_SAMPLE_COND_DEFAULT="${SAMPLE_CONDITIONS_FILE:-inputs/sample_conditions.txt}"
-if [[ "$_SAMPLE_COND_DEFAULT" != /* ]]; then
-	SAMPLE_CONDITIONS_FILE="$(pwd)/$_SAMPLE_COND_DEFAULT"
-else
-	SAMPLE_CONDITIONS_FILE="$_SAMPLE_COND_DEFAULT"
-fi
-unset _SAMPLE_COND_DEFAULT
+SAMPLE_CONDITIONS_FILE="$(_make_absolute_path "${SAMPLE_CONDITIONS_FILE:-inputs/sample_conditions.txt}")"
 
 # ==============================================================================
 # METHOD 1: HISAT2 REFERENCE GUIDED DIRECTORIES
@@ -220,7 +219,8 @@ show_method_configuration() {
 	log_info "Bowtie2 Mode: $BOWTIE2_MODE"
 	log_info "STAR Read Length: $STAR_READ_LENGTH"
 	log_info "STAR Genome Load: $STAR_GENOME_LOAD"
-	if type -t log_gpu_status &>/dev/null; then
+	# declare -f is a shell builtin (no subprocess) vs type -t which may fork
+	if declare -f log_gpu_status &>/dev/null; then
 		log_gpu_status
 	fi
 	log_info "============================="
