@@ -6,7 +6,7 @@ This script builds a gene expression matrix from multiple sample files.
 - It takes a reference gene name list and a file listing sample file paths.
 - For each gene in the reference, it finds the corresponding count in each sample file.
 - If a gene is missing in a sample, '0' is inserted.
-- Output is a tab-separated matrix: rows are genes, columns are samples.
+- Output is a comma-separated matrix: rows are genes, columns are samples.
 
 Usage:
 python matrix_builder.py gene_names.txt sample_files_list.txt
@@ -138,7 +138,7 @@ def main(gene_names_file, sample_files_list):
     for gene in gene_names:
         write(gene)
         for resolved in sample_gene_values:
-            write('\t')
+            write(',')
             write(resolved.get(gene, '0'))
         write('\n')
 

@@ -133,18 +133,19 @@ def write_alt_gene_list(path: Path, alt_genes) -> None:
 
 
 def filter_gtf_by_genes(gtf_in: Path, gtf_out: Path, alt_genes: set) -> int:
+    """Filter GTF to lines belonging to alt-spliced genes. O(L) single pass."""
+    import re
+    # Pre-compiled regex extracts gene_id without full attribute parsing — ~2x faster
+    # than parse_gtf_attributes() on large GTFs (avoids split+strip on every attribute)
+    _gene_id_re = re.compile(r'gene_id\s+"([^"]+)"')
     kept = 0
     with gtf_in.open("r", encoding="utf-8") as fin, gtf_out.open("w", encoding="utf-8") as fout:
         for line in fin:
             if line.startswith("#"):
                 fout.write(line)
                 continue
-            fields = line.rstrip("\n").split("\t")
-            if len(fields) < 9:
-                continue
-            attrs = parse_gtf_attributes(fields[8])
-            gene_id = attrs.get("gene_id")
-            if gene_id in alt_genes:
+            m = _gene_id_re.search(line)
+            if m and m.group(1) in alt_genes:
                 fout.write(line)
                 kept += 1
     return kept
