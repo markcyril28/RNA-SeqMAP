@@ -12,7 +12,9 @@
 export QC_SOURCED="true"
 
 # Source dependencies
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
+SCRIPT_DIR="${MODULES_DIR:+${MODULES_DIR}/a_preprocessing}"
+SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 source "$SCRIPT_DIR/shared_utils_preproc.sh"
 
 # Cache tool availability once at module load (avoids command -v per SRR)
@@ -136,9 +138,9 @@ run_quality_control_parallel() {
 	_qc_worker() {
 		local SRR="$1"
 
-		# Activate conda environment in subshell
+		# Activate conda environment in subshell (uses cached path to avoid dirname subshell)
 		if [[ -n "$CONDA_PREFIX" ]]; then
-			source "$(dirname "$CONDA_EXE")/../etc/profile.d/conda.sh" 2>/dev/null || true
+			source "${_CONDA_PROFILE_SCRIPT:-$(dirname "$CONDA_EXE")/../etc/profile.d/conda.sh}" 2>/dev/null || true
 			conda activate "$CONDA_DEFAULT_ENV" 2>/dev/null || true
 		fi
 
