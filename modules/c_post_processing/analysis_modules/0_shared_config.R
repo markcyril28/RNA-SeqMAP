@@ -81,7 +81,9 @@ if (GENE_GROUPS_DIR == "") {
   } else {
     # Last-resort: walk up three levels from ANALYSIS_MODULES_DIR to reach project root
     ANALYSIS_MODULES_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", unset = normalizePath(".", mustWork = FALSE))
-    GENE_GROUPS_DIR <- file.path(dirname(dirname(dirname(ANALYSIS_MODULES_DIR))), "inputs", "3_post_proc_inputs", "gene_groups_csv")
+    # Cache project root — avoids redundant triple-dirname traversal (reused for SRR_CSV_DIR below)
+    .project_root <- dirname(dirname(dirname(ANALYSIS_MODULES_DIR)))
+    GENE_GROUPS_DIR <- file.path(.project_root, "inputs", "3_post_proc_inputs", "gene_groups_csv")
   }
 }
 
@@ -92,8 +94,11 @@ if (SRR_CSV_DIR == "") {
   if (nzchar(base_dir_fallback)) {
     SRR_CSV_DIR <- file.path(base_dir_fallback, "inputs", "3_post_proc_inputs", "SRR_csv")
   } else {
-    ANALYSIS_MODULES_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", unset = normalizePath(".", mustWork = FALSE))
-    SRR_CSV_DIR <- file.path(dirname(dirname(dirname(ANALYSIS_MODULES_DIR))), "inputs", "3_post_proc_inputs", "SRR_csv")
+    if (!exists(".project_root")) {
+      ANALYSIS_MODULES_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", unset = normalizePath(".", mustWork = FALSE))
+      .project_root <- dirname(dirname(dirname(ANALYSIS_MODULES_DIR)))
+    }
+    SRR_CSV_DIR <- file.path(.project_root, "inputs", "3_post_proc_inputs", "SRR_csv")
   }
 }
 
@@ -462,24 +467,33 @@ load_sample_labels_from_csv <- function(srr_csv_dir = SRR_CSV_DIR) {
   }
 
   # O(C × R) where C = CSV files, R = rows per file; results cached in .rds
+  # Collect labels into a pre-allocated list to avoid O(n²) c() concatenation.
+  # Single c() at end is O(total_labels) instead of O(C × cumulative_labels).
   csv_files <- list.files(srr_csv_dir, pattern = "\\.csv$", full.names = TRUE)
-  for (csv_file in csv_files) {
+  .label_parts <- vector("list", length(csv_files))
+  for (.ci in seq_along(csv_files)) {
     tryCatch({
       df <- if (.HAS_DATATABLE) {
-        data.table::fread(csv_file, header = TRUE, data.table = FALSE)
+        data.table::fread(csv_files[.ci], header = TRUE, data.table = FALSE)
       } else {
-        read.csv(csv_file, stringsAsFactors = FALSE, header = TRUE, comment.char = "#")
+        read.csv(csv_files[.ci], stringsAsFactors = FALSE, header = TRUE, comment.char = "#")
       }
       if ("SRR_ID" %in% colnames(df) && "Organ" %in% colnames(df)) {
         df <- df[!is.na(df$SRR_ID) & nzchar(trimws(df$SRR_ID)), ]
-        new_labels <- setNames(df$Organ, df$SRR_ID)
-        labels <- c(labels, new_labels[!names(new_labels) %in% names(labels)])
+        .label_parts[[.ci]] <- setNames(df$Organ, df$SRR_ID)
       }
     }, error = function(e) {
-      cat("[CONFIG] Warning: Failed to read ", basename(csv_file), " - ", e$message, "\n", sep = "")
+      cat("[CONFIG] Warning: Failed to read ", basename(csv_files[.ci]), " - ", e$message, "\n", sep = "")
       NULL
     })
   }
+  # Merge all label parts at once, first-seen wins (dedup by name)
+  .all_labels <- do.call(c, Filter(Negate(is.null), .label_parts))
+  if (!is.null(.all_labels)) {
+    .all_labels <- .all_labels[!duplicated(names(.all_labels))]
+    labels <- c(labels, .all_labels[!names(.all_labels) %in% names(labels)])
+  }
+  rm(.label_parts, .all_labels)
 
   # Filter to only samples specified in SRR_COMBINED_LIST_STR (from bash config)
   # Format may be "SRR123 SRR456" or "SRR123:Organ1 SRR456:Organ2"

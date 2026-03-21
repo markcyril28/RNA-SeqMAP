@@ -101,7 +101,7 @@ filter_by_gene_group <- function(counts_matrix, gene_list_file) {
     # Use data.table::fread when available (10-50x faster for large CSVs)
     gene_df <- tryCatch(
       if (.HAS_DATATABLE) {
-        as.data.frame(data.table::fread(gene_list_file, header = TRUE))
+        data.table::fread(gene_list_file, header = TRUE, data.table = FALSE)
       } else {
         read.csv(gene_list_file, stringsAsFactors = FALSE, header = TRUE)
       },

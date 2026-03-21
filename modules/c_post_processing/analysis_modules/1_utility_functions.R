@@ -390,21 +390,24 @@ match_gene_ids <- function(gene_list, data_rownames) {
   non_exact <- gene_list[!exact_mask]
   if (length(non_exact) > 0) {
     ne_results <- vector("list", length(non_exact))
+    # Pre-compute all base forms outside loop — vectorized sub() is O(m) total
+    # vs O(m) individual sub() calls inside loop (same complexity but avoids
+    # per-iteration regex compilation overhead)
+    ne_bases <- sub("\\.[0-9]+$", "", non_exact)
+    ne_has_suffix <- ne_bases != non_exact
+    # Pre-compute set membership for base-level IDs in data_rownames (O(m) hash lookup)
+    ne_base_in_data <- ne_bases %in% data_rownames
     for (i in seq_along(non_exact)) {
-      gene <- non_exact[i]
-      hits <- .resolve_rows(gene)
+      hits <- .resolve_rows(non_exact[i])
       if (!is.null(hits)) {
         ne_results[[i]] <- hits
-      } else {
-        # Reverse: strip suffix from gene_list ID to match base-level row IDs
-        gene_base <- sub("\\.[0-9]+$", "", gene)
-        if (gene_base != gene) {
-          hits2 <- .resolve_rows(gene_base)
-          if (!is.null(hits2)) {
-            ne_results[[i]] <- hits2
-          } else if (gene_base %in% data_rownames) {
-            ne_results[[i]] <- gene_base
-          }
+      } else if (ne_has_suffix[i]) {
+        # Reverse: use pre-computed base form to match base-level row IDs
+        hits2 <- .resolve_rows(ne_bases[i])
+        if (!is.null(hits2)) {
+          ne_results[[i]] <- hits2
+        } else if (ne_base_in_data[i]) {
+          ne_results[[i]] <- ne_bases[i]
         }
       }
     }
