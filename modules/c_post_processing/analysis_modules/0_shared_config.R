@@ -506,7 +506,8 @@ load_sample_labels_from_csv <- function(srr_csv_dir = SRR_CSV_DIR) {
   if (nzchar(srr_list_str)) {
     enabled_samples <- trimws(strsplit(srr_list_str, " ")[[1]])
     # Extract just the SRR ID (before colon if present)
-    enabled_samples <- sapply(strsplit(enabled_samples, ":"), `[`, 1)
+    # Single regex pass replaces sapply+strsplit (avoids intermediate list allocation)
+    enabled_samples <- sub(":.*", "", enabled_samples)
     original_count <- length(labels)
     # Reorder labels to match the order in SRR_COMBINED_LIST_STR (CSV order)
     labels <- labels[enabled_samples[enabled_samples %in% names(labels)]]
@@ -641,15 +642,15 @@ build_input_path <- function(gene_group, processing_level, count_type, gene_type
     stringtie_label_type <- if (label_type == "Organ") "Organ" else "SRR"
     # File name uses folder_name (includes dataset suffix)
     file.path(matrices_dir, folder_name,
-              paste0(folder_name, "_", count_type, "_counts_", stringtie_gene_type, 
-                     "_", stringtie_label_type, "_from_", master_ref, ".tsv"))
+              paste0(folder_name, "_", count_type, "_counts_", stringtie_gene_type,
+                     "_", stringtie_label_type, "_from_", master_ref, ".csv"))
   } else {
     # Tximport path (Salmon/RSEM): count_matrices_from_*/{master_ref}/{level}/{folder_name}/
     # Both full-genome (gene_group == master_ref) and gene group subsets use the same structure;
     # folder_name = get_output_folder_name(gene_group, dataset) = "{gene_group}_in_{dataset}"
     file.path(matrices_dir, master_ref, processing_level, folder_name,
               paste0(folder_name, "_", count_type, "_", gene_type,
-                     "_from_", master_ref, "_", processing_level, ".tsv"))
+                     "_from_", master_ref, "_", processing_level, ".csv"))
   }
 }
 

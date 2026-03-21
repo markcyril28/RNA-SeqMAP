@@ -15,7 +15,7 @@
 
 # Save count (and optionally TPM) matrices with the naming convention expected
 # by build_input_path():
-#   {prefix}_{count_type}_{gene_type}_from_{master_ref}_{level}.tsv
+#   {prefix}_{count_type}_{gene_type}_from_{master_ref}_{level}.csv
 save_count_matrices <- function(counts, output_dir, prefix, master_ref, level,
                                 tpm = NULL, count_type_label = NULL) {
   # Auto-detect count label from method type when not explicitly provided.
@@ -32,14 +32,14 @@ save_count_matrices <- function(counts, output_dir, prefix, master_ref, level,
 
   save_matrix <- function(matrix_data, count_type, gene_type) {
     output_file <- file.path(output_dir,
-      paste0(prefix, "_", count_type, "_", gene_type, "_from_", master_ref, "_", level, ".tsv"))
+      paste0(prefix, "_", count_type, "_", gene_type, "_from_", master_ref, "_", level, ".csv"))
     matrix_df <- as.data.frame(matrix_data, check.names = FALSE)
     matrix_df <- cbind(GeneID = rownames(matrix_data), matrix_df)
     rownames(matrix_df) <- NULL
     if (.HAS_DATATABLE) {
-      data.table::fwrite(matrix_df, output_file, sep = "\t", quote = FALSE)
+      data.table::fwrite(matrix_df, output_file, sep = ",", quote = FALSE)
     } else {
-      write.table(matrix_df, output_file, sep = "\t", quote = FALSE, row.names = FALSE)
+      write.table(matrix_df, output_file, sep = ",", quote = FALSE, row.names = FALSE)
     }
     cat("Saved:", basename(output_file), "\n")
   }
@@ -82,6 +82,11 @@ save_count_matrices <- function(counts, output_dir, prefix, master_ref, level,
 # GENE GROUP FILTERING
 # ===============================================
 
+# In-memory cache for parsed gene lists — avoids re-reading the same CSV/TXT
+# file when filter_by_gene_group() is called across multiple levels in
+# run_matrix_saving(). O(1) hash lookup per subsequent call vs O(parse_time).
+.gene_list_cache <- new.env(hash = TRUE, parent = emptyenv())
+
 # Filter a count matrix to rows matching genes listed in a CSV or plain-text file.
 # Supports prefix matching for isoform IDs (e.g., "SMEL4.1_01g005840" matches
 # "SMEL4.1_01g005840.1.01").
@@ -95,34 +100,42 @@ filter_by_gene_group <- function(counts_matrix, gene_list_file) {
     return(NULL)
   }
 
-  file_ext <- tools::file_ext(gene_list_file)
-
-  if (tolower(file_ext) == "csv") {
-    # Use data.table::fread when available (10-50x faster for large CSVs)
-    gene_df <- tryCatch(
-      if (.HAS_DATATABLE) {
-        data.table::fread(gene_list_file, header = TRUE, data.table = FALSE)
-      } else {
-        read.csv(gene_list_file, stringsAsFactors = FALSE, header = TRUE)
-      },
-      error = function(e) NULL)
-    if (is.null(gene_df) || nrow(gene_df) == 0) {
-      cat("Failed to read CSV gene list\n")
-      return(NULL)
-    }
-    if (!"Gene_ID" %in% colnames(gene_df)) {
-      cat("  Warning: 'Gene_ID' column not found in", basename(gene_list_file),
-          "— using first column ('", colnames(gene_df)[1], "') as gene IDs\n")
-    }
-    gene_list <- trimws(
-      if ("Gene_ID" %in% colnames(gene_df)) gene_df$Gene_ID else gene_df[[1]])
+  # Check in-memory cache first — O(1) hash lookup
+  .cache_key <- gene_list_file
+  if (exists(.cache_key, envir = .gene_list_cache, inherits = FALSE)) {
+    gene_list <- get(.cache_key, envir = .gene_list_cache, inherits = FALSE)
   } else {
-    gene_list <- suppressWarnings(readLines(gene_list_file))
-    gene_list <- gene_list[!grepl("^#|^Gene_ID(\\t|$)|^Gene(\\t|$)", gene_list, ignore.case = TRUE) & nzchar(gene_list)]
-    gene_list <- trimws(sub("\t.*", "", gene_list))  # strip tab-delimited extra fields (e.g. gene names)
-  }
+    file_ext <- tools::file_ext(gene_list_file)
 
-  gene_list <- gene_list[nzchar(gene_list)]
+    if (tolower(file_ext) == "csv") {
+      # Use data.table::fread when available (10-50x faster for large CSVs)
+      gene_df <- tryCatch(
+        if (.HAS_DATATABLE) {
+          data.table::fread(gene_list_file, header = TRUE, data.table = FALSE)
+        } else {
+          read.csv(gene_list_file, stringsAsFactors = FALSE, header = TRUE)
+        },
+        error = function(e) NULL)
+      if (is.null(gene_df) || nrow(gene_df) == 0) {
+        cat("Failed to read CSV gene list\n")
+        return(NULL)
+      }
+      if (!"Gene_ID" %in% colnames(gene_df)) {
+        cat("  Warning: 'Gene_ID' column not found in", basename(gene_list_file),
+            "— using first column ('", colnames(gene_df)[1], "') as gene IDs\n")
+      }
+      gene_list <- trimws(
+        if ("Gene_ID" %in% colnames(gene_df)) gene_df$Gene_ID else gene_df[[1]])
+    } else {
+      gene_list <- suppressWarnings(readLines(gene_list_file))
+      gene_list <- gene_list[!grepl("^#|^Gene_ID(\\t|$)|^Gene(\\t|$)", gene_list, ignore.case = TRUE) & nzchar(gene_list)]
+      gene_list <- trimws(sub("\t.*", "", gene_list))  # strip tab-delimited extra fields (e.g. gene names)
+    }
+
+    gene_list <- gene_list[nzchar(gene_list)]
+    # Store in cache for subsequent calls with the same file
+    assign(.cache_key, gene_list, envir = .gene_list_cache)
+  }
 
   # Use shared gene ID matching from 1_utility_functions.R
   matched_genes <- match_gene_ids(gene_list, rownames(counts_matrix))
@@ -192,11 +205,12 @@ run_matrix_saving <- function(results, output_dir, master_ref,
     if (!is.null(.gg_file_map)) {
       # O(G × F) where G = gene groups, F = filter + save cost per group
       for (gene_group in config$gene_groups) {
-        gf <- file.path(gene_groups_dir, paste0(gene_group, ".csv"))
-        if (!file.exists(gf)) gf <- file.path(gene_groups_dir, paste0(gene_group, ".txt"))
-        # Use pre-built lookup instead of per-group list.files()
-        if (!file.exists(gf) && gene_group %in% names(.gg_file_map)) {
+        # Check pre-built map first (O(1) hash lookup) before filesystem probes
+        if (gene_group %in% names(.gg_file_map)) {
           gf <- .gg_file_map[[gene_group]]
+        } else {
+          gf <- file.path(gene_groups_dir, paste0(gene_group, ".csv"))
+          if (!file.exists(gf)) gf <- file.path(gene_groups_dir, paste0(gene_group, ".txt"))
         }
         if (!file.exists(gf)) {
           cat("Gene group file not found:", gene_group, "\n")

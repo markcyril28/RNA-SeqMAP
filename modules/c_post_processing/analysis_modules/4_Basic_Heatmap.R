@@ -190,9 +190,9 @@ generate_heatmap_violet <- function(data_matrix, output_path, title,
     dev.off()
     .dev_open <- FALSE
     
-    # Export raw values as TSV alongside the PNG
+    # Export raw values as CSV alongside the PNG
     if (exists("EXPORT_RAW_VALUES") && EXPORT_RAW_VALUES) {
-      tsv_path <- sub("\\.png$", "_values.tsv", output_path)
+      csv_path <- sub("\\.png$", "_values.csv", output_path)
       # Convert to data frame with row names as first column
       row_id_label <- if (transpose) {
         if (label_type == "Organ") "OrganID" else "SampleID"
@@ -201,8 +201,8 @@ generate_heatmap_violet <- function(data_matrix, output_path, title,
       }
       export_df <- data.frame(V1 = rownames(data_matrix), data_matrix, check.names = FALSE)
       names(export_df)[1] <- row_id_label
-      write.table(export_df, tsv_path, sep = "\t", row.names = FALSE, quote = FALSE)
-      cat("      Exported values:", basename(tsv_path), "\n")
+      write.table(export_df, csv_path, sep = ",", row.names = FALSE, quote = FALSE)
+      cat("      Exported values:", basename(csv_path), "\n")
     }
     
     cat("      Generated:", basename(output_path), "\n")

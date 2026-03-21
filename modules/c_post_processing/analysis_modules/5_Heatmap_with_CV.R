@@ -336,10 +336,10 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
     dev.off()
     .dev_open <- FALSE
     
-    # Export raw values with CV as TSV alongside the PNG
+    # Export raw values with CV as CSV alongside the PNG
     if (exists("EXPORT_RAW_VALUES") && EXPORT_RAW_VALUES) {
       tryCatch({
-        tsv_path <- sub("\\.png$", "_values.tsv", output_path)
+        csv_path <- sub("\\.png$", "_values.csv", output_path)
         # Build the summary row as a separate data frame with matching column types
         # to avoid rbind coercing the entire data frame to character
         if (transpose) {
@@ -385,10 +385,10 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
             export_df <- rbind(export_df, summary_row)
           }
         }
-        write.table(export_df, tsv_path, sep = "\t", row.names = FALSE, quote = FALSE)
-        cat("      Exported values:", basename(tsv_path), "\n")
+        write.table(export_df, csv_path, sep = ",", row.names = FALSE, quote = FALSE)
+        cat("      Exported values:", basename(csv_path), "\n")
       }, error = function(e) {
-        cat("      Warning: TSV export failed:", e$message, "\n")
+        cat("      Warning: CSV export failed:", e$message, "\n")
       })
     }
     

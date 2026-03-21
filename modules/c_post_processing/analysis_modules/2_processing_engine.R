@@ -4,6 +4,11 @@
 # PROCESSING ENGINE FOR ALL ANALYSIS MODULES
 # ===============================================
 # Generic processing loop to avoid repetition across scripts
+#
+# Prerequisite: 0_shared_config.R and 1_utility_functions.R must be sourced first.
+if (!exists("CURRENT_METHOD")) {
+  stop("2_processing_engine.R requires 0_shared_config.R to be sourced first (CURRENT_METHOD not found)")
+}
 
 # ===============================================
 # GENERIC PROCESSING FUNCTION

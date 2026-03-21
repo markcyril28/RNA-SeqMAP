@@ -105,8 +105,10 @@ gpu_prcomp <- function(x, center = TRUE, scale. = FALSE, rank. = NULL) {
       x_mat <- as.matrix(x)
       
       # Center and scale on CPU first (small operation)
+      # Cache colMeans — reused by both centering and scaling fallback. O(n×p) once.
+      # Always compute when centering or scaling (needed for sweep in both branches).
+      col_means <- if (center || scale.) colMeans(x_mat, na.rm = TRUE)
       if (center) {
-        col_means <- colMeans(x_mat, na.rm = TRUE)
         x_mat <- sweep(x_mat, 2, col_means, "-")
       }
       if (scale.) {
@@ -114,8 +116,9 @@ gpu_prcomp <- function(x, center = TRUE, scale. = FALSE, rank. = NULL) {
           matrixStats::colSds(x_mat, na.rm = TRUE)
         } else {
           # Vectorized fallback: O(n×p) vs apply()'s O(n×p + p×alloc) overhead
-          col_means <- colMeans(x_mat, na.rm = TRUE)
-          sqrt(colSums((sweep(x_mat, 2, col_means))^2, na.rm = TRUE) / (nrow(x_mat) - 1))
+          # Note: after centering, col_means of x_mat ≈ 0; recompute only if not centered
+          .scale_means <- if (center) rep(0, ncol(x_mat)) else col_means
+          sqrt(colSums((sweep(x_mat, 2, .scale_means))^2, na.rm = TRUE) / (nrow(x_mat) - 1))
         }
         col_sds[col_sds == 0] <- 1
         x_mat <- sweep(x_mat, 2, col_sds, "/")
@@ -233,7 +236,7 @@ gpu_dist <- function(x, method = "euclidean") {
 .matrix_memory_cache <- new.env(hash = TRUE, parent = emptyenv())
 
 # Big O: O(genes × samples) for parsing; O(1) for in-memory cache hit;
-# O(deserialize) for .rds cache hit (10-50x faster than TSV parsing).
+# O(deserialize) for .rds cache hit (10-50x faster than CSV parsing).
 # data.table::fread is O(n) with memory-mapped I/O vs O(n) with higher constant for read.table.
 read_count_matrix <- function(file_path) {
   # In-memory cache: skip all I/O if this file was already read in this R session.
@@ -258,12 +261,12 @@ read_count_matrix <- function(file_path) {
 
     # data.table::fread() is 10-50x faster than read.table() for large matrices
     data <- if (.HAS_DATATABLE) {
-      data.table::fread(file_path, header = TRUE, sep = "\t",
+      data.table::fread(file_path, header = TRUE, sep = ",",
                         na.strings = c("", "NA", "null"),
                         data.table = FALSE)
     } else {
-      read.table(file_path, header = TRUE, sep = "\t", stringsAsFactors = FALSE,
-                 check.names = FALSE, na.strings = c("", "NA", "null"))
+      read.csv(file_path, header = TRUE, stringsAsFactors = FALSE,
+               check.names = FALSE, na.strings = c("", "NA", "null"))
     }
     # Normalize duplicate column names: fread uses "_1" suffixes but downstream
     # code (apply_labels, replicate averaging) expects ".1" from make.unique()
@@ -307,11 +310,11 @@ save_matrix_data <- function(data_matrix, output_path, metadata = NULL) {
       check.names = FALSE
     )
     if (.HAS_DATATABLE) {
-      data.table::fwrite(matrix_df, file = paste0(base_path, ".tsv"),
-                         sep = "\t", quote = FALSE)
+      data.table::fwrite(matrix_df, file = paste0(base_path, ".csv"),
+                         sep = ",", quote = FALSE)
     } else {
-      write.table(matrix_df, file = paste0(base_path, ".tsv"),
-                  sep = "\t", quote = FALSE, row.names = FALSE)
+      write.table(matrix_df, file = paste0(base_path, ".csv"),
+                  sep = ",", quote = FALSE, row.names = FALSE)
     }
     return(TRUE)
   }, error = function(e) {
