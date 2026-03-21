@@ -12,7 +12,9 @@
 export DOWNLOAD_SOURCED="true"
 
 # Source dependencies
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
+SCRIPT_DIR="${MODULES_DIR:+${MODULES_DIR}/a_preprocessing}"
+SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 source "$SCRIPT_DIR/shared_utils_preproc.sh"
 
 # ==============================================================================
@@ -64,71 +66,6 @@ download_srrs() {
 	log_info "All downloads completed."
 }
 
-# ==============================================================================
-# ALTERNATIVES
-# ==============================================================================
-# Use these when the primary SRA toolkit is slow or unavailable.
-# Each falls back to download_srrs() on failure.
-
-# ENA FTP via wget (faster for large datasets; falls back to SRA prefetch on error)
-# ==============================================================================
-
-download_srrs_wget() {
-	local SRR_LIST=("$@")
-	[[ ${#SRR_LIST[@]} -eq 0 ]] && { log_error "No SRR IDs provided"; return 1; }
-	
-	for SRR in "${SRR_LIST[@]}"; do
-		local raw_dir="$RAW_DIR_ROOT/$SRR"
-		mkdir -p "$raw_dir"
-		
-		_srr_already_downloaded "$SRR" && { log_info "Files for $SRR exist. Skipping."; continue; }
-
-		# Get ENA links
-		local ena_links=$(curl -s "https://www.ebi.ac.uk/ena/portal/api/filereport?accession=${SRR}&result=read_run&fields=fastq_ftp&format=tsv" | tail -n +2)
-		[[ -z "$ena_links" ]] && { log_warn "No ENA links for $SRR"; continue; }
-		
-		log_info "Downloading $SRR from ENA..."
-		# Single IFS split replaces 4 subshell spawns (2× echo|cut)
-		local _link1 _link2
-		IFS=';' read -r _link1 _link2 <<< "$ena_links"
-		wget -q -c -P "$raw_dir" "ftp://$_link1" "ftp://$_link2" || {
-			log_warn "ENA download failed for $SRR, trying SRA..."
-			download_srrs "$SRR"
-		}
-	done
-}
-
-# Kingfisher (multi-source downloader: ENA, SRA, S3, GCS; falls back to prefetch)
-# ==============================================================================
-
-download_srrs_kingfisher() {
-	local SRR_LIST=("$@")
-	[[ ${#SRR_LIST[@]} -eq 0 ]] && { log_error "No SRR IDs provided"; return 1; }
-
-	# Kingfisher requires download methods; allow override via KINGFISHER_METHODS env, default to prefetch then ENA FTP
-	local KF_METHODS="${KINGFISHER_METHODS:-prefetch,ena-ftp}"
-	
-	if ! command -v kingfisher >/dev/null 2>&1; then
-		log_warn "Kingfisher not installed. Falling back to prefetch."
-		download_srrs "${SRR_LIST[@]}"
-		return $?
-	fi
-	
-	for SRR in "${SRR_LIST[@]}"; do
-		local raw_dir="$RAW_DIR_ROOT/$SRR"
-		mkdir -p "$raw_dir"
-		
-		_srr_already_downloaded "$SRR" && { log_info "Files for $SRR exist. Skipping."; continue; }
-
-		log_info "Downloading $SRR with kingfisher..."
-		run_with_space_time_log kingfisher get --run-identifiers "$SRR" --output-directory "$raw_dir" \
-			--download-threads "$THREADS" --extraction-threads "$THREADS" --gzip --check-md5sums \
-			--download-methods "$KF_METHODS" || {
-			log_warn "Kingfisher failed for $SRR, trying prefetch..."
-			download_srrs "$SRR"
-		}
-	done
-}
 
 # ==============================================================================
 # PARALLEL DOWNLOAD (GNU Parallel wrapper for primary SRA download)
@@ -152,9 +89,9 @@ download_srrs_parallel() {
 	_download_worker() {
 		local SRR="$1"
 		
-		# Activate conda environment in subshell
+		# Activate conda environment in subshell (uses cached path to avoid dirname subshell)
 		if [[ -n "$CONDA_PREFIX" ]]; then
-			source "$(dirname "$CONDA_EXE")/../etc/profile.d/conda.sh" 2>/dev/null || true
+			source "${_CONDA_PROFILE_SCRIPT:-$(dirname "$CONDA_EXE")/../etc/profile.d/conda.sh}" 2>/dev/null || true
 			conda activate "$CONDA_DEFAULT_ENV" 2>/dev/null || true
 		fi
 		
