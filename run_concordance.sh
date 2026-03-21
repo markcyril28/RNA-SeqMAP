@@ -208,15 +208,25 @@ if [[ "${RUN_ALL_METHOD_COMBINATIONS^^}" == "TRUE" ]]; then
         log_step "METHOD-COMBINATION CONCORDANCE MODE"
         log_info "Found ${#METHOD_COMBINATIONS[@]} method combinations"
 
+        # Run method combinations in parallel — each writes to isolated output dir
+        # Reduces wall-clock from O(C × time) to O(time) for C combinations
+        # NOTE: All combinations launch concurrently. Console output may interleave;
+        # per-combination logs in each REPORT_BASE subdir are authoritative.
+        # For large arrays, consider throttling with GNU parallel to limit CPU/memory pressure.
+        _combo_pids=()
         for _combo in "${METHOD_COMBINATIONS[@]}"; do
-            _methods="${_combo//,/ }"
-            _methods="${_methods//|/ }"
+            # Single-pass: replace both comma and pipe separators with space
+            _methods="${_combo//[,|]/ }"
             _combo_tag="$(sanitize_tag "$_combo")"
-            log_step "Running concordance for methods: ${_methods}"
+            log_step "Launching concordance for methods: ${_methods}"
             __CONCORDANCE_OVERRIDE_REPORT_BASE="${_parent_report_base}/methods_${_combo_tag}" \
             __CONCORDANCE_OVERRIDE_METHODS="${_methods}" \
             __CONCORDANCE_OVERRIDE_RUN_ALL_METHOD_COMBINATIONS="FALSE" \
-            bash "$0" "${REINVOKE_ARGS[@]}" || _overall_rc=1
+            bash "$0" "${REINVOKE_ARGS[@]}" &
+            _combo_pids+=($!)
+        done
+        for _pid in "${_combo_pids[@]}"; do
+            wait "$_pid" || _overall_rc=1
         done
 
         if [[ $_overall_rc -ne 0 ]]; then
@@ -243,14 +253,22 @@ if [[ "${RUN_ALL_GENE_GROUP_COMBINATIONS^^}" == "TRUE" ]]; then
         log_step "GENE-GROUP-COMBINATION CONCORDANCE MODE"
         log_info "Found ${#GENE_GROUP_COMBINATIONS[@]} gene-group combinations"
 
+        # Run gene-group combinations in parallel — each writes to isolated output dir
+        # Reduces wall-clock from O(C × time) to O(time) for C combinations
+        # NOTE: Same caveats as method combinations above (console interleaving, resource pressure).
+        _gg_combo_pids=()
         for _combo in "${GENE_GROUP_COMBINATIONS[@]}"; do
             _groups="${_combo//|/,}"
             _combo_tag="$(sanitize_tag "$_combo")"
-            log_step "Running concordance for gene groups: ${_groups}"
+            log_step "Launching concordance for gene groups: ${_groups}"
             __CONCORDANCE_OVERRIDE_REPORT_BASE="${_parent_report_base}/genes_${_combo_tag}" \
             __CONCORDANCE_OVERRIDE_GENE_GROUPS="${_groups}" \
             __CONCORDANCE_OVERRIDE_RUN_ALL_GENE_GROUP_COMBINATIONS="FALSE" \
-            bash "$0" "${REINVOKE_ARGS[@]}" || _overall_rc=1
+            bash "$0" "${REINVOKE_ARGS[@]}" &
+            _gg_combo_pids+=($!)
+        done
+        for _pid in "${_gg_combo_pids[@]}"; do
+            wait "$_pid" || _overall_rc=1
         done
 
         if [[ $_overall_rc -ne 0 ]]; then
@@ -271,7 +289,8 @@ fi
 if [[ -z "${MASTER_REFERENCE:-}" && "$(declare -p MASTER_REFERENCES 2>/dev/null)" == "declare -a"* ]]; then
     MASTER_REFERENCE="${MASTER_REFERENCES[0]}"
 fi
-MASTER_REFERENCE="${MASTER_REFERENCE:-GPE001970_genome}"
+# Default must match 0_concordance_config.R and 0_shared_config.R ("Eggplant_V4.1")
+MASTER_REFERENCE="${MASTER_REFERENCE:-Eggplant_V4.1}"
 
 # Methods to compare (space-separated string).
 # If a sourced config set METHODS as an array, flatten it to a string.
