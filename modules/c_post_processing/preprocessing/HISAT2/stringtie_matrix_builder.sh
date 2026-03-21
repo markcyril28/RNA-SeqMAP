@@ -349,7 +349,7 @@ merge_group_counts() {
         local output_geneName_SRR_csv="$OUT_DIR/$group_name/${group_name}_${count_type}_counts_geneName_SRR${MASTER_SUFFIX}.csv"
         local output_geneName_Organ_csv="$OUT_DIR/$group_name/${group_name}_${count_type}_counts_geneName_Organ${MASTER_SUFFIX}.csv"
 
-        log_info "Creating SRR + Organ matrices: $(basename "$output_geneName_SRR_csv")"
+        log_info "Creating SRR + Organ matrices: ${output_geneName_SRR_csv##*/}"
 
         printf "%s\n" "${sample_files[@]}" > "$tmpdir/sample_files_list.txt"
 

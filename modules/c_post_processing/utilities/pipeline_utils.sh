@@ -213,7 +213,7 @@ run_method_preprocessing() {
     if [[ "$skip_preprocess" == "true" ]]; then
         log_info "Skipping preprocessing for $method — Matrix_Creation will handle import"
     elif [[ -n "$preprocess_path" && -f "$preprocess_path" ]]; then
-        log_info "Running preprocessing: $(basename "$preprocess_path")"
+        log_info "Running preprocessing: ${preprocess_path##*/}"
         if [[ "$preprocess_path" == *.R ]]; then
             run_with_error_capture Rscript "$preprocess_path" || { log_error "Failed: preprocessing ($method)"; popd > /dev/null; return 1; }
         else
