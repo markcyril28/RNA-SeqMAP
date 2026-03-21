@@ -469,7 +469,8 @@ log_step "Starting count matrix generation for ${#GENE_GROUPS[@]} gene groups"
 declare -A _CSV_LOOKUP=()
 if [[ -d "$GENE_GROUPS_CSV_DIR" ]]; then
     while IFS= read -r _csv_path; do
-        _csv_base="$(basename "${_csv_path%.csv}")"
+        # Pure bash: strip directory + .csv suffix (avoids basename subshell per CSV file)
+        _csv_base="${_csv_path##*/}"; _csv_base="${_csv_base%.csv}"
         # First match wins (skip duplicates)
         [[ -z "${_CSV_LOOKUP[$_csv_base]+x}" ]] && _CSV_LOOKUP["$_csv_base"]="$_csv_path"
     done < <(find "$GENE_GROUPS_CSV_DIR" -maxdepth 3 -name "*.csv" -type f 2>/dev/null)

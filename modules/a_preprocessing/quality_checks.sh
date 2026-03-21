@@ -32,7 +32,8 @@ rename_fastqc_outputs() {
 	for input in "$@"; do
 		[[ -e "$input" ]] || continue
 
-		local base=$(basename "$input")
+		# Pure bash parameter expansion — avoids basename subshell per file
+		local base="${input##*/}"
 		base="${base%.*}"
 		[[ "$base" == *.fastq ]] && base="${base%.*}"
 		[[ "$base" == *.fq ]] && base="${base%.*}"
