@@ -51,11 +51,13 @@ else
 fi
 
 # Write to log file
+# O(1) — uses printf -v to avoid subshell fork for timestamp on every call
 _write_log() {
 	local level="$1"
 	local message="$2"
 	if [[ "$GPU_LOG_ENABLED" == "true" && -n "$GPU_LOG_FILE" ]]; then
-		echo "[$(_get_timestamp)] [$level] $message" >> "$GPU_LOG_FILE" 2>/dev/null || true
+		local _ts; printf -v _ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _ts=$(_get_timestamp)
+		printf '[%s] [%s] %s\n' "$_ts" "$level" "$message" >> "$GPU_LOG_FILE" 2>/dev/null || true
 	fi
 }
 
