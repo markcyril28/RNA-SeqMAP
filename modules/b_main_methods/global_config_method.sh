@@ -209,19 +209,3 @@ set_fasta_output_dirs() {
 	log_info "[CONFIG] Output directories configured for FASTA: $fasta_tag"
 }
 
-# ==============================================================================
-# DISPLAY CONFIGURATION
-# ==============================================================================
-show_method_configuration() {
-	log_info "=== METHOD CONFIGURATION ==="
-	log_info "Threads: $THREADS"
-	log_info "Keep BAM: $keep_bam_global"
-	log_info "Bowtie2 Mode: $BOWTIE2_MODE"
-	log_info "STAR Read Length: $STAR_READ_LENGTH"
-	log_info "STAR Genome Load: $STAR_GENOME_LOAD"
-	# declare -f is a shell builtin (no subprocess) vs type -t which may fork
-	if declare -f log_gpu_status &>/dev/null; then
-		log_gpu_status
-	fi
-	log_info "============================="
-}
