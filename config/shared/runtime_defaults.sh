@@ -27,7 +27,10 @@ fi
 # SOURCE MODULES
 # ==============================================================================
 
-source "modules/modules_loader.sh"
+# Resolve relative to this file's location (two levels up from config/shared/)
+_RUNTIME_DEFAULTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${_RUNTIME_DEFAULTS_DIR}/../../modules/modules_loader.sh"
+unset _RUNTIME_DEFAULTS_DIR
 
 # ==============================================================================
 # AUTO-JOBS RESOLUTION — O(1)

@@ -278,6 +278,8 @@ load_toml_srr_datasets() {
             if [[ "$section" == dataset.* ]]; then
                 local dataset_name="${section#dataset.}"
                 dataset_name="${dataset_name^^}"
+                # Sanitize: replace chars invalid in bash variable names with _
+                dataset_name="${dataset_name//[^A-Z0-9_]/_}"
                 if [[ "$key" == "samples" ]]; then
                     current_list_var="SRR_LIST_${dataset_name}"
                     if [[ "$value" == "["* ]]; then
