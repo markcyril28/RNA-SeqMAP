@@ -42,9 +42,9 @@ mkdir -p "$GPU_LOG_DIR" 2>/dev/null || true
 # Get timestamp for logging (prefer bash printf to avoid date subprocess)
 # Reuse logging_utils.sh timestamp() if available; define standalone fallback otherwise.
 if ! declare -f timestamp &>/dev/null; then
+	# O(1) — printf directly to stdout (avoids echo subprocess for bash ≥ 4.2; date fallback for older)
 	_get_timestamp() {
-		local _ts
-		printf -v _ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null && echo "$_ts" || date "+%Y-%m-%d %H:%M:%S"
+		printf '%(%Y-%m-%d %H:%M:%S)T\n' -1 2>/dev/null || date "+%Y-%m-%d %H:%M:%S"
 	}
 else
 	_get_timestamp() { timestamp; }
