@@ -19,7 +19,16 @@ export PREPROC_CONFIG_SOURCED="true"
 # Total CPU threads available to the pipeline (auto-detect if not set)
 THREADS="${THREADS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 12)}"
 # Number of parallel jobs (GNU Parallel); THREADS_PER_JOB is auto-calculated
+# Set to "auto" to calculate from THREADS / OPTIMAL_THREADS_PER_JOB
 JOBS="${JOBS:-2}"
+# Optimal threads per job for Stage 1 (TrimGalore = 4 threads optimal)
+OPTIMAL_THREADS_PER_JOB="${OPTIMAL_THREADS_PER_JOB:-4}"
+# Resolve JOBS="auto" → numeric (uses _resolve_auto_jobs from runtime_defaults.sh
+# if already sourced, otherwise inline resolution for standalone use)
+if [[ "${JOBS}" == "auto" || "${JOBS}" == "AUTO" ]]; then
+	JOBS=$(( THREADS / OPTIMAL_THREADS_PER_JOB ))
+	(( JOBS < 1 )) && JOBS=1
+fi
 THREADS_PER_JOB="${THREADS_PER_JOB:-$((THREADS / JOBS))}"
 [[ $THREADS_PER_JOB -lt 1 ]] && THREADS_PER_JOB=1
 
