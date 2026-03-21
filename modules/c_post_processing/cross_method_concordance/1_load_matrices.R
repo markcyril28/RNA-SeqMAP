@@ -180,10 +180,9 @@ load_m2_tpm <- function() {
       return(NULL)
     }
     # Map STRG.N -> reference gene ID via the Reference column
-    # Two-round suffix stripping to reach gene-level IDs for double-suffixed
-    # transcript IDs (e.g., Sme2.5_01g005840.1.01 -> .1 -> gene-level).
-    gene_ids <- sub("\\.[0-9]+$", "", df$Reference)
-    gene_ids <- sub("\\.[0-9]+$", "", gene_ids)
+    # Single-pass suffix stripping for double-suffixed transcript IDs
+    # (e.g., Sme2.5_01g005840.1.01 -> gene-level). O(n) regex vs 2 × O(n).
+    gene_ids <- sub("(\\.[0-9]+){1,2}$", "", df$Reference)
     valid <- nzchar(gene_ids) & !gene_ids %in% c(".", "-")
     n_unmapped <- sum(!valid)
     if (n_unmapped > 0) {
@@ -287,12 +286,12 @@ load_m3_tpm <- function() {
       df$gene_id <- tx2gene$gene_id[match(df$Name, tx2gene$transcript_id)]
       unmapped <- is.na(df$gene_id)
       if (any(unmapped)) {
-        df$gene_id[unmapped] <- sub("\\.[0-9]+$", "", df$Name[unmapped])
-        df$gene_id[unmapped] <- sub("\\.[0-9]+$", "", df$gene_id[unmapped])
+        # Single-pass suffix stripping for unmapped transcripts. O(n) vs 2 × O(n).
+        df$gene_id[unmapped] <- sub("(\\.[0-9]+){1,2}$", "", df$Name[unmapped])
       }
     } else {
-      df$gene_id <- sub("\\.[0-9]+$", "", df$Name)
-      df$gene_id <- sub("\\.[0-9]+$", "", df$gene_id)
+      # Single-pass suffix stripping. O(n) vs 2 × O(n).
+      df$gene_id <- sub("(\\.[0-9]+){1,2}$", "", df$Name)
     }
 
     # rowsum() is a base-R C routine — ~30% faster than tapply for grouped sums. O(n).
@@ -336,10 +335,8 @@ load_m4_tpm <- function() {
     qsf <- file.path(sdir, "quant.sf")
     if (!file.exists(qsf)) return(NULL)
     df <- .fast_read_tsv(qsf)
-    # Two-round suffix stripping to reach gene-level IDs from double-suffixed
-    # transcript IDs (e.g., SMEL4.1_06g023900.1.01 -> .1 -> gene-level).
-    df$gene_id <- sub("\\.[0-9]+$", "", df$Name)
-    df$gene_id <- sub("\\.[0-9]+$", "", df$gene_id)
+    # Single-pass suffix stripping for double-suffixed transcript IDs. O(n) vs 2 × O(n).
+    df$gene_id <- sub("(\\.[0-9]+){1,2}$", "", df$Name)
     # rowsum() is a base-R C routine — ~30% faster than tapply for grouped sums. O(n).
     rs <- rowsum(df$TPM, df$gene_id, reorder = FALSE, na.rm = TRUE)
     setNames(rs[, 1], rownames(rs))
@@ -396,8 +393,8 @@ load_m5_tpm <- function() {
         results_file <- file.path(sdir, paste0(srr, ".genes.results"))
         if (!file.exists(results_file)) return(NULL)
         df <- .fast_read_tsv(results_file)
-        gene_ids <- sub("\\.[0-9]+$", "", df$gene_id)
-        gene_ids <- sub("\\.[0-9]+$", "", gene_ids)
+        # Single-pass suffix stripping. O(n) vs 2 × O(n).
+        gene_ids <- sub("(\\.[0-9]+){1,2}$", "", df$gene_id)
         # rowsum() is a base-R C routine — ~30% faster than tapply for grouped sums. O(n).
         rs <- rowsum(df$TPM, gene_ids, reorder = FALSE, na.rm = TRUE)
         setNames(rs[, 1], rownames(rs))
@@ -511,11 +508,9 @@ for (method in names(tpm_matrices)) {
   # Only strip if IDs look like they have transcript suffixes
   # Handles both GPE001970 (SMEL5_XXgXXXXXX.N) and Eggplant_V4.1 (Sme2.5_XXgXXXXXX.N)
   if (any(grepl("^(SMEL|Sme)[0-9].*\\.[0-9]+$", rn))) {
-    # Two-round suffix stripping to handle double-suffixed IDs
-    # (e.g., SMEL4.1_06g023900.1.01 -> SMEL4.1_06g023900.1 -> SMEL4.1_06g023900)
-    # Matches the two-round logic in match_gene_ids() from 1_utility_functions.R
-    new_rn <- sub("\\.[0-9]+$", "", rn)
-    new_rn <- sub("\\.[0-9]+$", "", new_rn)
+    # Single-pass suffix stripping for double-suffixed IDs
+    # (e.g., SMEL4.1_06g023900.1.01 -> SMEL4.1_06g023900). O(n) vs 2 × O(n).
+    new_rn <- sub("(\\.[0-9]+){1,2}$", "", rn)
     if (any(duplicated(new_rn))) {
       # rowsum() is a base-R C routine optimized for grouped column sums on matrices
       # — faster than data.table for this use case (avoids matrix→DT→matrix round-trip)
@@ -581,13 +576,12 @@ for (method in names(tpm_matrices)) {
       ncol(tpm_matrices[[method]]), "\n")
 }
 
-# Update stats with harmonized counts (only for methods that loaded successfully)
-method_stats$n_genes_harmonized <- sapply(method_stats$method, function(m) {
-  if (!is.null(tpm_matrices[[m]])) nrow(tpm_matrices[[m]]) else NA_integer_
-})
-method_stats$n_samples_harmonized <- sapply(method_stats$method, function(m) {
-  if (!is.null(tpm_matrices[[m]])) ncol(tpm_matrices[[m]]) else NA_integer_
-})
+# Update stats with harmonized counts — vectorized via precomputed maps.
+# O(M) vapply replaces O(M) sapply with per-element function dispatch.
+.nrow_map <- vapply(tpm_matrices, nrow, integer(1))
+.ncol_map <- vapply(tpm_matrices, ncol, integer(1))
+method_stats$n_genes_harmonized <- .nrow_map[method_stats$method]
+method_stats$n_samples_harmonized <- .ncol_map[method_stats$method]
 
 # -----------------------------------------------
 # Filter lowly-expressed genes

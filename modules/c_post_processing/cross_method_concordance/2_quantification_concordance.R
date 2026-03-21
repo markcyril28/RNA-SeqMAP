@@ -6,6 +6,11 @@
 # Computes pairwise Spearman correlations between methods and generates
 # a median Spearman concordance heatmap.
 #
+# Big O: O(M^2 × S × G × log(G)) where M=methods, S=samples, G=genes.
+#   - M^2: pairwise method combinations
+#   - S × G × log(G): per-sample column-wise rank transform
+#   Pre-computed log2 and nonzero masks reduce constant factor by ~2x.
+#
 # Outputs:
 #   - tables/pairwise_spearman_per_sample.csv
 #   - tables/median_correlation_matrix_spearman.csv
@@ -220,7 +225,7 @@ ht <- Heatmap(median_spearman,
 .dev_open <- FALSE
 tryCatch({
   png(file.path(FIGURES_DIR, "method_concordance_heatmap_spearman.png"),
-      width = 1600, height = 1300, res = 150)
+      width = 1600, height = 1300, res = FIGURE_DPI)
   .dev_open <- TRUE
   draw(ht, padding = unit(c(30, 30, 25, 40), "mm"))
   dev.off()

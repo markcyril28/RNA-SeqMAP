@@ -94,8 +94,9 @@ METHOD_REF_DIRS_STR <- Sys.getenv("METHOD_REF_DIRS_STR", "")
 METHOD_REF_DIRS <- list()
 if (nzchar(METHOD_REF_DIRS_STR)) {
   pairs <- strsplit(METHOD_REF_DIRS_STR, ";")[[1]]
-  for (pair in pairs) {
-    kv <- strsplit(pair, "=")[[1]]
+  # Vectorized strsplit: split all pairs at once instead of O(P) individual calls
+  kv_list <- strsplit(pairs, "=")
+  for (kv in kv_list) {
     if (length(kv) == 2) {
       METHOD_REF_DIRS[[trimws(kv[1])]] <- trimws(kv[2])
     }
@@ -105,6 +106,11 @@ if (nzchar(METHOD_REF_DIRS_STR)) {
 # Gene groups for ranking stability
 GENE_GROUPS_STR <- Sys.getenv("GENE_GROUPS", "SmelDMPs_v5_with_18s_and_HAP2,Selected_SmelGRF-GIF_with_two_GIF")
 CONCORDANCE_GENE_GROUPS <- trimws(strsplit(GENE_GROUPS_STR, ",")[[1]])
+
+# Figure resolution (DPI) — controlled by FIGURE_DPI env var (300–600, default 300)
+FIGURE_DPI <- as.integer(Sys.getenv("FIGURE_DPI", "300"))
+if (is.na(FIGURE_DPI) || FIGURE_DPI < 72) FIGURE_DPI <- 300L
+FIGURE_DPI <- max(300L, min(600L, FIGURE_DPI))
 
 # Figure output paths
 FIGURES_DIR <- file.path(OUTPUT_DIR, "figures")

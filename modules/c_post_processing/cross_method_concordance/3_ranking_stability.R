@@ -107,10 +107,12 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
   # For each method, compute mean TPM per gene across all samples,
   # then rank genes (1 = highest expressed).
 
+  # Pre-compute short names once — avoids O(M) sapply per matrix creation. O(M) total.
+  .short_methods <- vapply(methods, get_short_name, character(1))
   rank_matrix <- matrix(NA, nrow = length(matched_genes), ncol = length(methods),
-                         dimnames = list(matched_genes, sapply(methods, get_short_name)))
+                         dimnames = list(matched_genes, .short_methods))
   mean_tpm_matrix <- matrix(NA, nrow = length(matched_genes), ncol = length(methods),
-                             dimnames = list(matched_genes, sapply(methods, get_short_name)))
+                             dimnames = list(matched_genes, .short_methods))
 
   for (j in seq_along(methods)) {
     m <- methods[j]
@@ -239,7 +241,7 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
   .dev_open <- FALSE
   tryCatch({
     png(file.path(FIGURES_DIR, paste0("ranking_heatmap_", gene_group, ".png")),
-        width = 1600, height = fig_height, res = 150)
+        width = 1600, height = fig_height, res = FIGURE_DPI)
     .dev_open <- TRUE
     draw(ht, padding = unit(c(30, 30, 25, 40), "mm"))
     dev.off()
@@ -312,7 +314,7 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
   .dev_open <- FALSE
   tryCatch({
     png(file.path(FIGURES_DIR, paste0("zscore_heatmap_", gene_group, ".png")),
-        width = 1600, height = fig_height, res = 150)
+        width = 1600, height = fig_height, res = FIGURE_DPI)
     .dev_open <- TRUE
     draw(ht_z, padding = unit(c(30, 30, 25, 40), "mm"))
     dev.off()
@@ -354,7 +356,7 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
   .dev_open <- FALSE
   tryCatch({
     png(file.path(FIGURES_DIR, paste0("ranking_bump_chart_", gene_group, ".png")),
-        width = max(1200, 260 * n_methods_plot), height = max(850, 120 + n_genes * 40), res = 150)
+        width = max(1200, 260 * n_methods_plot), height = max(850, 120 + n_genes * 40), res = FIGURE_DPI)
     .dev_open <- TRUE
 
     par(mar = c(10, 10, 6, 20), xpd = TRUE)
