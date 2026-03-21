@@ -25,11 +25,10 @@ MASTER_REFERENCE="${MASTER_REFERENCE:-All_Smel_Genes}"
 # Source logging utilities for consistent pipeline logging
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${BASE_DIR}/modules/logging/logging_utils.sh" 2>/dev/null || {
-    # Fallback: prefer bash built-in printf %T (no fork) over date subshell
-    log_info()  { local _t; printf -v _t '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _t=$(date '+%Y-%m-%d %H:%M:%S'); echo "[$_t] [INFO] $*"; }
-    log_warn()  { local _t; printf -v _t '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _t=$(date '+%Y-%m-%d %H:%M:%S'); echo "[$_t] [WARN] $*" >&2; }
-    log_error() { local _t; printf -v _t '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _t=$(date '+%Y-%m-%d %H:%M:%S'); echo "[$_t] [ERROR] $*" >&2; }
-    log_step()  { local _t; printf -v _t '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _t=$(date '+%Y-%m-%d %H:%M:%S'); echo "[$_t] [STEP] $*"; }
+    log_info()  { echo "[INFO] $*"; }
+    log_warn()  { echo "[WARN] $*" >&2; }
+    log_error() { echo "[ERROR] $*" >&2; }
+    log_step()  { echo "=== $* ==="; }
 }
 
 # Source location (produced by prepDE.py during alignment)

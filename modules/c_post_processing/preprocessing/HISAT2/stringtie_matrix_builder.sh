@@ -22,13 +22,12 @@
 
 set -euo pipefail
 
-# Source logging utilities for consistent pipeline logging (fallback to echo if unavailable)
+# Source logging utilities for consistent pipeline logging (minimal fallback if unavailable)
 source "${BASE_DIR:-$PWD}/modules/logging/logging_utils.sh" 2>/dev/null || {
-    # Fallback logging: prefer bash built-in printf %T (no fork) over date subshell
-    log_info()  { local _t; printf -v _t '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _t=$(date '+%Y-%m-%d %H:%M:%S'); echo "[$_t] [INFO] $*"; }
-    log_warn()  { local _t; printf -v _t '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _t=$(date '+%Y-%m-%d %H:%M:%S'); echo "[$_t] [WARN] $*" >&2; }
-    log_error() { local _t; printf -v _t '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _t=$(date '+%Y-%m-%d %H:%M:%S'); echo "[$_t] [ERROR] $*" >&2; }
-    log_step()  { local _t; printf -v _t '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _t=$(date '+%Y-%m-%d %H:%M:%S'); echo "[$_t] [STEP] $*"; }
+    log_info()  { echo "[INFO] $*"; }
+    log_warn()  { echo "[WARN] $*" >&2; }
+    log_error() { echo "[ERROR] $*" >&2; }
+    log_step()  { echo "=== $* ==="; }
 }
 
 # ===============================================
@@ -280,6 +279,14 @@ merge_group_counts() {
     local _max_jobs="${THREADS:-4}"
     local _running=0
     local _awk_failed=0
+    # wait -n requires bash >= 4.3; detect once and fall back to bare wait.
+    # Fallback limitation: bare `wait` waits for ALL children and always returns 0,
+    # so throttling becomes bursty and _awk_failed undercounts. Acceptable since
+    # bash < 4.3 is rare and awk failures here are non-critical (data still merges).
+    local _has_wait_n=false
+    if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3) )); then
+        _has_wait_n=true
+    fi
     for srr in "${processed_srrs[@]}"; do
         awk -F'\t' -v gc="$GENENAME_COL" -v cov="$COVERAGE_COL" -v fpkm="$FPKM_COL" -v tpm="$TPM_COL" \
             -v outdir="$tmpdir" -v srr="$srr" 'NR > 1 && $gc != "" && $gc != "." && $gc != "-" {
@@ -289,14 +296,22 @@ merge_group_counts() {
         }' "${srr_to_file[$srr]}" &
         _running=$((_running + 1))
         if (( _running >= _max_jobs )); then
-            wait -n 2>/dev/null || _awk_failed=$((_awk_failed + 1))
+            if $_has_wait_n; then
+                wait -n 2>/dev/null || _awk_failed=$((_awk_failed + 1))
+            else
+                wait || _awk_failed=$((_awk_failed + 1))
+            fi
             _running=$((_running - 1))
         fi
     done
-    # Wait for remaining background jobs individually (bare `wait` returns 0
-    # even if children failed, so drain with `wait -n` to catch each exit status)
+    # Drain remaining background jobs (wait -n catches individual exit statuses;
+    # bare wait always returns 0 in bash, so _awk_failed undercounts on bash < 4.3)
     while (( _running > 0 )); do
-        wait -n 2>/dev/null || _awk_failed=$((_awk_failed + 1))
+        if $_has_wait_n; then
+            wait -n 2>/dev/null || _awk_failed=$((_awk_failed + 1))
+        else
+            wait || _awk_failed=$((_awk_failed + 1))
+        fi
         _running=$((_running - 1))
     done
     if (( _awk_failed > 0 )); then
