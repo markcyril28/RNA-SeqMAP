@@ -14,7 +14,9 @@
 export M1_HISAT2_REF_SOURCED="true"
 
 # Source dependencies
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
+SCRIPT_DIR="${MODULES_DIR:+${MODULES_DIR}/b_main_methods}"
+SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 source "$SCRIPT_DIR/shared_utils_method.sh"
 
 # Binary availability cached in shared_utils_method.sh: _SHARED_HAS_SAMTOOLS, _SHARED_HAS_PARALLEL
@@ -444,7 +446,9 @@ hisat2_ref_guided_pipeline() {
 		log_step "[PARALLEL] HISAT2 Ref-Guided Align+StringTie: ${#rnaseq_list[@]} samples, $parallel_jobs jobs x $threads_per_job threads"
 		_prepare_parallel_env
 
-		export fasta_tag index_prefix threads_per_job hisat2_strand_opts stringtie_strand_opt OVERWRITE_MODE
+		# Pre-compute index directory outside worker (avoids dirname subshell per sample)
+		local abs_index_dir="${index_prefix%/*}"
+		export fasta_tag index_prefix abs_index_dir threads_per_job hisat2_strand_opts stringtie_strand_opt OVERWRITE_MODE
 		local abs_hisat2_rg_root="$HISAT2_REF_GUIDED_ROOT"
 		[[ "$abs_hisat2_rg_root" != /* ]] && abs_hisat2_rg_root="$(pwd)/$abs_hisat2_rg_root"
 		local abs_stringtie_rg_root="$STRINGTIE_HISAT2_REF_GUIDED_ROOT"
@@ -504,7 +508,7 @@ hisat2_ref_guided_pipeline() {
 
 				# Infer strandness once (lock-file ensures only first worker runs it)
 				[[ -z "$hisat2_strand_opts" ]] && \
-					_m1_infer_strandness "$bam" "$abs_gtf" "$(dirname "$index_prefix")" "HISAT2_RG" "$SRR"
+					_m1_infer_strandness "$bam" "$abs_gtf" "$abs_index_dir" "HISAT2_RG" "$SRR"
 			fi
 
 			# StringTie quantification (ref-guided, single pass)
@@ -528,10 +532,10 @@ hisat2_ref_guided_pipeline() {
 			# Prevents unrecoverable data loss if StringTie exits 0 but produces empty/missing GTF
 			if [[ "$keep_bam_global" != "y" && -f "$bam" ]]; then
 				if [[ -f "$out_gtf" && -s "$out_gtf" ]]; then
-					_parallel_log HISAT2_RG "$SRR" WARN "Deleting BAM to save disk (set keep_bam_global=y to retain): $(basename "$bam")"
+					_parallel_log HISAT2_RG "$SRR" WARN "Deleting BAM to save disk (set keep_bam_global=y to retain): ${bam##*/}"
 					rm -f "$bam" "${bam}.bai" "${bam}.csi"
 				else
-					_parallel_log HISAT2_RG "$SRR" WARN "Retaining BAM — StringTie GTF missing or empty: $(basename "$out_gtf")"
+					_parallel_log HISAT2_RG "$SRR" WARN "Retaining BAM — StringTie GTF missing or empty: ${out_gtf##*/}"
 				fi
 			fi
 
@@ -763,7 +767,7 @@ _m1_infer_strandness() {
 
 	[[ ! -s "$bed12" ]] && { _parallel_log "$method" "$srr" WARN "BED12 conversion from GTF failed"; return 0; }
 
-	_parallel_log "$method" "$srr" INFO "Running infer_experiment.py on: $(basename "$bam")"
+	_parallel_log "$method" "$srr" INFO "Running infer_experiment.py on: ${bam##*/}"
 	local result
 	result=$(infer_experiment.py -i "$bam" -r "$bed12" 2>/dev/null)
 	printf '%s\n' "$result" >> "$sentinel"

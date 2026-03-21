@@ -13,7 +13,9 @@
 export M2_HISAT2_DN_SOURCED="true"
 
 # Source dependencies
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
+SCRIPT_DIR="${MODULES_DIR:+${MODULES_DIR}/b_main_methods}"
+SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 source "$SCRIPT_DIR/shared_utils_method.sh"
 
 # ==============================================================================
@@ -125,7 +127,7 @@ hisat2_de_novo_pipeline() {
 				fi
 				# Symlink detection summary to standard alignment summary name so QC can find it
 				local _std_summary="$_det_dir/${_det_srr}_${fasta_tag}_alignment_summary.txt"
-				[[ -s "$_det_summary" && ! -f "$_std_summary" ]] && ln -sf "$(basename "$_det_summary")" "$_std_summary"
+				[[ -s "$_det_summary" && ! -f "$_std_summary" ]] && ln -sf "${_det_summary##*/}" "$_std_summary"
 			fi
 
 			if [[ -f "$_det_bam" ]]; then
