@@ -165,50 +165,47 @@ _toml_parse_scalar() {
 # _toml_parse_array_elements <line> <array_name_ref>
 # Parses comma-separated values from an array line and appends to the named array.
 # Handles commas inside quoted strings correctly.
+# O(n) via single awk pass — replaces O(n) bash character-by-character loop which
+# was ~50-100x slower due to per-character substring extraction and string append.
 _toml_parse_array_elements() {
     local line="$1"
     local -n _arr_ref=$2
 
-    local i=0 len=${#line}
-    local in_quotes=false
-    local current=""
-    local ch
+    # Fast path: empty or whitespace-only line
+    local _trimmed="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "$_trimmed" ]] && return 0
 
-    while (( i < len )); do
-        ch="${line:$i:1}"
-
-        if [[ "$in_quotes" == true ]]; then
-            if [[ "$ch" == '"' ]]; then
-                in_quotes=false
-            else
-                current+="$ch"
-            fi
-        else
-            case "$ch" in
-                '"') in_quotes=true ;;
-                '#') break ;;  # Rest of line is comment
-                ',')
-                    # Process accumulated element
-                    # Trim whitespace
-                    current="${current#"${current%%[![:space:]]*}"}"
-                    current="${current%"${current##*[![:space:]]}"}"
-                    if [[ -n "$current" ]]; then
-                        _arr_ref+=("$current")
-                    fi
-                    current=""
-                    ;;
-                *)  current+="$ch" ;;
-            esac
-        fi
-        (( i++ ))
-    done
-
-    # Process any remaining element
-    current="${current#"${current%%[![:space:]]*}"}"
-    current="${current%"${current##*[![:space:]]}"}"
-    if [[ -n "$current" ]]; then
-        _arr_ref+=("$current")
-    fi
+    # Use awk to split comma-separated values, respecting quoted strings and # comments.
+    # Each output line is one element (already stripped of quotes and trimmed).
+    # This replaces the O(n) bash character loop which spawned no subprocesses but
+    # performed expensive ${line:$i:1} substring extraction per character.
+    local _elem
+    while IFS= read -r _elem; do
+        [[ -n "$_elem" ]] && _arr_ref+=("$_elem")
+    done < <(awk '
+    BEGIN { FS="" }
+    {
+        in_q = 0; cur = ""
+        for (i = 1; i <= NF; i++) {
+            c = $i
+            if (in_q) {
+                if (c == "\"") in_q = 0
+                else cur = cur c
+            } else if (c == "\"") {
+                in_q = 1
+            } else if (c == "#") {
+                break
+            } else if (c == ",") {
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", cur)
+                if (cur != "") print cur
+                cur = ""
+            } else {
+                cur = cur c
+            }
+        }
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", cur)
+        if (cur != "") print cur
+    }' <<< "$line")
 }
 
 # load_toml_srr_datasets <file>
