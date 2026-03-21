@@ -39,24 +39,23 @@ GPU_VRAM_GB=8
 CLEAR_LOGS="TRUE"
 CLEAR_OUTPUT_FOLDER="TRUE"
 
+# Figure resolution in DPI (300–600)
+FIGURE_DPI="${FIGURE_DPI:-300}"
+
 PIPELINE_CONFIGS=(
     # ── Full — Eggplant_V4.1 ──
-    "config/3_post_proc_configs/HPC_full_M1_Eggplant_V4.1.sh"      # M1 HISAT2 RefGuided   Eggplant_V4.1 genome
-    "config/3_post_proc_configs/HPC_full_M2_Eggplant_V4.1.sh"      # M2 HISAT2 DeNovo      Eggplant_V4.1 transcript
-    "config/3_post_proc_configs/HPC_full_M3_Eggplant_V4.1.sh"      # M3 STAR Align         Eggplant_V4.1 genome
-    "config/3_post_proc_configs/HPC_full_M4_Eggplant_V4.1.sh"      # M4 Salmon SAF         Eggplant_V4.1 transcript
-    "config/3_post_proc_configs/HPC_full_M5_Eggplant_V4.1.sh"      # M5 RSEM Bowtie2       Eggplant_V4.1 transcript
+    "config/3_post_proc_configs/HPC_full_M1_Eggplant_V4.1.toml"    # M1 HISAT2 RefGuided   Eggplant_V4.1 genome
+    "config/3_post_proc_configs/HPC_full_M2_Eggplant_V4.1.toml"    # M2 HISAT2 DeNovo      Eggplant_V4.1 transcript
+    "config/3_post_proc_configs/HPC_full_M3_Eggplant_V4.1.toml"    # M3 STAR Align         Eggplant_V4.1 genome
+    "config/3_post_proc_configs/HPC_full_M4_Eggplant_V4.1.toml"    # M4 Salmon SAF         Eggplant_V4.1 transcript
+    "config/3_post_proc_configs/HPC_full_M5_Eggplant_V4.1.toml"    # M5 RSEM Bowtie2       Eggplant_V4.1 transcript
 
     # ── Full — GPE001970 ──
-    "config/3_post_proc_configs/HPC_full_M1_GPE001970.sh"           # M1 HISAT2 RefGuided   GPE001970 genome
-    "config/3_post_proc_configs/HPC_full_M2_GPE001970.sh"           # M2 HISAT2 DeNovo      GPE001970 transcript
-    "config/3_post_proc_configs/HPC_full_M3_GPE001970.sh"           # M3 STAR Align         GPE001970 genome
-    "config/3_post_proc_configs/HPC_full_M4_GPE001970.sh"           # M4 Salmon SAF         GPE001970 transcript
-    "config/3_post_proc_configs/HPC_full_M5_GPE001970.sh"           # M5 RSEM Bowtie2       GPE001970 transcript
-
-    # ── Legacy (original unsplit full configs) ──
-    #"config/3_post_proc_configs/HPC_full_ref_guided.sh"             # HPC full,  genome (M1+M3)
-    #"config/3_post_proc_configs/HPC_full_non_ref_guided.sh"         # HPC full,  transcript (M2+M4+M5)
+    "config/3_post_proc_configs/HPC_full_M1_GPE001970.toml"         # M1 HISAT2 RefGuided   GPE001970 genome
+    "config/3_post_proc_configs/HPC_full_M2_GPE001970.toml"         # M2 HISAT2 DeNovo      GPE001970 transcript
+    "config/3_post_proc_configs/HPC_full_M3_GPE001970.toml"         # M3 STAR Align         GPE001970 genome
+    "config/3_post_proc_configs/HPC_full_M4_GPE001970.toml"         # M4 Salmon SAF         GPE001970 transcript
+    "config/3_post_proc_configs/HPC_full_M5_GPE001970.toml"         # M5 RSEM Bowtie2       GPE001970 transcript
 )
 
 #===============================================================================
@@ -72,6 +71,7 @@ UTILITIES_DIR="$BASE_DIR/modules/c_post_processing/utilities"
 
 source "$BASE_DIR/modules/logging/logging_utils.sh"
 source "$UTILITIES_DIR/pipeline_utils.sh"
+source "$BASE_DIR/config/shared/toml_parser.sh"
 
 if [[ ! -d "$ANALYSIS_MODULES_DIR" ]]; then
     log_warn "Analysis modules directory not found: $ANALYSIS_MODULES_DIR"
@@ -164,8 +164,9 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
         continue
     fi
 
-    # Load config (sets THREADS, METHODS, ANALYSES, GENE_GROUPS, SRR_DATASETS, etc.)
-    source "$CONFIG_FILE"
+    # Load config (sets METHODS, ANALYSES, GENE_GROUPS, SRR_DATASETS, etc.)
+    # TOML keys are parsed as uppercase bash variables by load_toml
+    load_toml "$CONFIG_FILE"
     log_step "Config: $(basename "$CONFIG_FILE")"
 
     # Snapshot error/warning line count so we can report per-config delta
@@ -178,7 +179,7 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
         log_warn "Use separate per-reference configs to process multiple references."
     fi
     [[ "$CLEAR_OUTPUT_FOLDER" == "TRUE" ]] && OVERWRITE_EXISTING="TRUE" || OVERWRITE_EXISTING="FALSE"
-    export AVAILABLE_RAM_GB GPU_VRAM_GB OVERWRITE_EXISTING
+    export AVAILABLE_RAM_GB GPU_VRAM_GB OVERWRITE_EXISTING FIGURE_DPI
 
     # Build combined SRR list and cache per-dataset results (avoids re-parsing later)
     SRR_COMBINED_LIST=()

@@ -39,8 +39,11 @@ REPORT_BASE="${REPORT_BASE:-${BASE_DIR}/4_CONCORDANCE_ANALYSIS}"
 # CONDA ENVIRONMENT
 #===============================================================================
 
-eval "$(conda shell.bash hook 2>/dev/null)" 2>/dev/null || true
-conda activate gea 2>/dev/null || true
+# Skip conda hook if already in the gea environment (~0.3-0.5s saved per invocation)
+if [[ "${CONDA_DEFAULT_ENV:-}" != "gea" ]]; then
+    eval "$(conda shell.bash hook 2>/dev/null)" 2>/dev/null || true
+    conda activate gea 2>/dev/null || true
+fi
 
 # Source logging utilities for consistent output
 source "${SCRIPT_DIR}/modules/logging/logging_utils.sh" 2>/dev/null || {
@@ -51,6 +54,9 @@ source "${SCRIPT_DIR}/modules/logging/logging_utils.sh" 2>/dev/null || {
     log_step()  { echo ""; echo "==> $*"; }
 }
 
+# Source TOML parser
+source "${SCRIPT_DIR}/config/shared/toml_parser.sh"
+
 #===============================================================================
 # CONFIGURATION (override via env, config file, or associative array below)
 #===============================================================================
@@ -58,17 +64,35 @@ source "${SCRIPT_DIR}/modules/logging/logging_utils.sh" 2>/dev/null || {
 CONFIG_INPUT="${1:-}"
 CONFIG_CLASS_DIR="${CONCORDANCE_CONFIG_CLASS_DIR:-${BASE_DIR}/config/4_concordance_combination}"
 
+# Analysis steps to run (comment out entries to skip)
+# ─────────────────────────────────────────────────────
+if [[ ! "$(declare -p ANALYSES 2>/dev/null)" == "declare -a"* ]]; then
+    ANALYSES=(
+        "Load_Matrices"                 # Step 1: Load & harmonize matrices (required by all others)
+        "Quantification_Concordance"    # Step 2: Compare quantification across methods
+        #"Ranking_Stability"             # Step 3: Assess gene ranking stability
+        "Generate_Report"               # Step 4: Produce concordance report
+    )
+fi
+
+# Figure resolution in DPI (300–600)
+FIGURE_DPI="${FIGURE_DPI:-300}"
+
+# Clear previous outputs before running
+CLEAR_LOGS="TRUE"
+CLEAR_OUTPUT_FOLDER="TRUE"
+
 # Optional curated config list (comment in/out as needed).
 # Entries can be:
 #   - absolute/relative file paths
 #   - class basenames from config/4_concordance_combination (with or without .sh)
 # Load order matters: later entries override earlier ones.
 CONCORDANCE_CONFIGS=(
-    # "defaults"
-    # "class_genomes_vs_genomes"
-    # "class_methods_vs_methods"
-    # "class_genes_vs_genes"
-    # "class_full_factorial_example"
+    "defaults.toml"
+    # "class_genomes_vs_genomes.toml"
+    # "class_methods_vs_methods.toml"
+    # "class_genes_vs_genes.toml"
+    # "class_full_factorial_example.toml"
 )
 
 REINVOKE_ARGS=()
@@ -80,8 +104,13 @@ source_config_file() {
     local cfg_path="$1"
     if [[ -f "$cfg_path" ]]; then
         log_info "Loading config: $cfg_path"
-        # shellcheck disable=SC1090
-        source "$cfg_path"
+        if [[ "$cfg_path" == *.toml ]]; then
+            load_toml "$cfg_path"
+        else
+            # Legacy .sh fallback
+            # shellcheck disable=SC1090
+            source "$cfg_path"
+        fi
         return 0
     fi
     return 1
@@ -95,15 +124,12 @@ load_config_entry() {
     entry="${entry%${entry##*[![:space:]]}}"
     [[ -z "$entry" ]] && return 0
 
-    if [[ -f "$entry" ]]; then
-        source_config_file "$entry"
-    elif [[ -f "${CONFIG_CLASS_DIR}/${entry}" ]]; then
-        source_config_file "${CONFIG_CLASS_DIR}/${entry}"
-    elif [[ -f "${CONFIG_CLASS_DIR}/${entry}.sh" ]]; then
-        source_config_file "${CONFIG_CLASS_DIR}/${entry}.sh"
-    else
-        log_warn "Config entry not found: ${entry}"
-    fi
+    # Loop over candidate paths — try .toml first, then .sh fallback
+    local path
+    for path in "$entry" "${CONFIG_CLASS_DIR}/${entry}" "${CONFIG_CLASS_DIR}/${entry}.toml" "${CONFIG_CLASS_DIR}/${entry}.sh"; do
+        [[ -f "$path" ]] && { source_config_file "$path"; return; }
+    done
+    log_warn "Config entry not found: ${entry}"
 }
 
 # Load manually curated config list first (for easy comment-in/out workflow).
@@ -121,9 +147,11 @@ if [[ -n "$CONFIG_INPUT" ]]; then
     elif [[ -d "$CONFIG_INPUT" ]]; then
         while IFS= read -r _cfg; do
             source_config_file "$_cfg"
-        done < <(find "$CONFIG_INPUT" -maxdepth 1 -type f -name "*.sh" | sort)
+        done < <(find "$CONFIG_INPUT" -maxdepth 1 -type f \( -name "*.toml" -o -name "*.sh" \) | sort)
     elif [[ -f "${CONFIG_CLASS_DIR}/${CONFIG_INPUT}" ]]; then
         source_config_file "${CONFIG_CLASS_DIR}/${CONFIG_INPUT}"
+    elif [[ -f "${CONFIG_CLASS_DIR}/${CONFIG_INPUT}.toml" ]]; then
+        source_config_file "${CONFIG_CLASS_DIR}/${CONFIG_INPUT}.toml"
     elif [[ -f "${CONFIG_CLASS_DIR}/${CONFIG_INPUT}.sh" ]]; then
         source_config_file "${CONFIG_CLASS_DIR}/${CONFIG_INPUT}.sh"
     else
@@ -157,6 +185,32 @@ sanitize_tag() {
     [[ -n "$clean" ]] && printf "%s" "$clean" || printf "combo"
 }
 
+# Maximum concurrent background concordance jobs (prevents CPU/memory exhaustion on
+# constrained systems when factorial modes launch many combinations).
+# O(min(N, MAX_CONCORDANCE_JOBS)) wall-clock vs O(N) unthrottled.
+MAX_CONCORDANCE_JOBS="${MAX_CONCORDANCE_JOBS:-4}"
+
+# Throttle helper: waits until the number of tracked PIDs drops below MAX_CONCORDANCE_JOBS.
+# Usage: _throttle_pids <array_name>
+# Complexity: O(J) per call where J = active jobs; total O(N) amortized across N launches.
+_throttle_pids() {
+    local -n _pids_ref=$1
+    while [[ ${#_pids_ref[@]} -ge $MAX_CONCORDANCE_JOBS ]]; do
+        # Wait for any one child to finish, then compact the PID array
+        local _still_running=()
+        for _p in "${_pids_ref[@]}"; do
+            if kill -0 "$_p" 2>/dev/null; then
+                _still_running+=("$_p")
+            else
+                wait "$_p" 2>/dev/null || true
+            fi
+        done
+        _pids_ref=("${_still_running[@]}")
+        # If still at capacity, sleep briefly to avoid busy-waiting
+        [[ ${#_pids_ref[@]} -ge $MAX_CONCORDANCE_JOBS ]] && sleep 0.5
+    done
+}
+
 # Optional multi-reference mode:
 # - RUN_ALL_MASTER_REFERENCES=TRUE: iterate over MASTER_REFERENCES and run once per reference
 # - Default FALSE: run only one reference (MASTER_REFERENCE or first MASTER_REFERENCES entry)
@@ -170,9 +224,10 @@ if [[ "${RUN_ALL_MASTER_REFERENCES^^}" == "TRUE" ]]; then
         log_info "Found ${#MASTER_REFERENCES[@]} references in MASTER_REFERENCES"
 
         # Run references in parallel — each writes to isolated output dir
-        # Reduces wall-clock from O(R × time) to O(time) for R references
-        local -a _ref_pids=()
+        # Reduces wall-clock from O(R × time) to O(max(1, R/MAX_CONCORDANCE_JOBS) × time)
+        _ref_pids=()
         for _ref in "${MASTER_REFERENCES[@]}"; do
+            _throttle_pids _ref_pids
             log_step "Launching concordance for reference: ${_ref}"
             __CONCORDANCE_OVERRIDE_REPORT_BASE="${_parent_report_base}/${_ref}" \
             __CONCORDANCE_OVERRIDE_MASTER_REFERENCE="${_ref}" \
@@ -209,12 +264,11 @@ if [[ "${RUN_ALL_METHOD_COMBINATIONS^^}" == "TRUE" ]]; then
         log_info "Found ${#METHOD_COMBINATIONS[@]} method combinations"
 
         # Run method combinations in parallel — each writes to isolated output dir
-        # Reduces wall-clock from O(C × time) to O(time) for C combinations
-        # NOTE: All combinations launch concurrently. Console output may interleave;
-        # per-combination logs in each REPORT_BASE subdir are authoritative.
-        # For large arrays, consider throttling with GNU parallel to limit CPU/memory pressure.
+        # Reduces wall-clock from O(C × time) to O(max(1, C/MAX_CONCORDANCE_JOBS) × time)
+        # Throttled to MAX_CONCORDANCE_JOBS concurrent processes to limit CPU/memory pressure.
         _combo_pids=()
         for _combo in "${METHOD_COMBINATIONS[@]}"; do
+            _throttle_pids _combo_pids
             # Single-pass: replace both comma and pipe separators with space
             _methods="${_combo//[,|]/ }"
             _combo_tag="$(sanitize_tag "$_combo")"
@@ -254,10 +308,11 @@ if [[ "${RUN_ALL_GENE_GROUP_COMBINATIONS^^}" == "TRUE" ]]; then
         log_info "Found ${#GENE_GROUP_COMBINATIONS[@]} gene-group combinations"
 
         # Run gene-group combinations in parallel — each writes to isolated output dir
-        # Reduces wall-clock from O(C × time) to O(time) for C combinations
-        # NOTE: Same caveats as method combinations above (console interleaving, resource pressure).
+        # Reduces wall-clock from O(C × time) to O(max(1, C/MAX_CONCORDANCE_JOBS) × time)
+        # Throttled to MAX_CONCORDANCE_JOBS concurrent processes to limit CPU/memory pressure.
         _gg_combo_pids=()
         for _combo in "${GENE_GROUP_COMBINATIONS[@]}"; do
+            _throttle_pids _gg_combo_pids
             _groups="${_combo//|/,}"
             _combo_tag="$(sanitize_tag "$_combo")"
             log_step "Launching concordance for gene groups: ${_groups}"
@@ -325,7 +380,7 @@ if [[ "${ENFORCE_REFERENCE_METHOD_COMPATIBILITY^^}" == "TRUE" ]]; then
 
     if [[ $_has_rule -eq 1 ]]; then
         # O(M) single-pass with pattern match instead of O(M × A) nested loop
-        local _allowed_pat
+        _allowed_pat=""
         printf -v _allowed_pat '|%s' "${_allowed_methods[@]}"
         _allowed_pat="@(${_allowed_pat:1})"  # extglob pattern: @(M1_...|M3_...)
         shopt -s extglob
@@ -411,6 +466,16 @@ if [[ "$(declare -p GENE_GROUPS 2>/dev/null)" == "declare -a"* ]]; then
 fi
 GENE_GROUPS="${GENE_GROUPS:-SmelDMPs_v5_with_18s_and_HAP2,Selected_SmelGRF-GIF_with_two_GIF}"
 
+# Helper: check if an analysis is enabled
+analysis_enabled() {
+    local target="$1"
+    local a
+    for a in "${ANALYSES[@]}"; do
+        [[ "$a" == "$target" ]] && return 0
+    done
+    return 1
+}
+
 # Gene groups directory (reference-specific — strip _genome/_transcripts suffix to match dir name)
 _GG_REF_TAG="${MASTER_REFERENCE%%_genome*}"
 _GG_REF_TAG="${_GG_REF_TAG%%_transcripts*}"
@@ -451,10 +516,35 @@ ANALYSIS_MODULES_DIR="${BASE_DIR}/modules/c_post_processing/analysis_modules"
 UTILITIES_DIR="${BASE_DIR}/modules/c_post_processing/utilities"
 CONCORDANCE_SCRIPT_DIR="${BASE_DIR}/modules/c_post_processing/cross_method_concordance"
 
+# Clear previous outputs if requested
+if [[ "${CLEAR_OUTPUT_FOLDER:-FALSE}" == "TRUE" && -d "${OUTPUT_DIR}" ]]; then
+    log_info "Clearing previous output folder: ${OUTPUT_DIR}"
+    rm -rf "${OUTPUT_DIR}"
+fi
+if [[ "${CLEAR_LOGS:-FALSE}" == "TRUE" && -d "${REPORT_BASE}/logs" ]]; then
+    log_info "Clearing previous logs: ${REPORT_BASE}/logs"
+    rm -rf "${REPORT_BASE}/logs"
+fi
+
 mkdir -p "${OUTPUT_DIR}/figures" "${OUTPUT_DIR}/tables" || {
     log_error "Failed to create output directories under ${OUTPUT_DIR}"
     exit 1
 }
+
+# Set up structured logging (mirrors run_post_processing.sh)
+LOG_DIR="${REPORT_BASE}/logs/log_files"
+TIME_DIR="${REPORT_BASE}/logs/time_logs"
+SPACE_DIR="${REPORT_BASE}/logs/space_logs"
+SPACE_TIME_DIR="${REPORT_BASE}/logs/space_time_logs"
+ERROR_WARN_DIR="${REPORT_BASE}/logs/error_warn_logs"
+SOFTWARE_CATALOG_DIR="${REPORT_BASE}/logs/software_catalogs"
+GPU_LOG_DIR="${REPORT_BASE}/logs/gpu_log"
+export LOG_DIR TIME_DIR SPACE_DIR SPACE_TIME_DIR ERROR_WARN_DIR SOFTWARE_CATALOG_DIR GPU_LOG_DIR
+
+if declare -f setup_logging &>/dev/null; then
+    setup_logging "$CLEAR_LOGS"
+    export LOG_FILE TIME_FILE SPACE_FILE SPACE_TIME_FILE ERROR_WARN_FILE SOFTWARE_FILE GPU_LOG_FILE
+fi
 
 #===============================================================================
 # EXPORT ENVIRONMENT FOR R SCRIPTS
@@ -475,6 +565,7 @@ export GENE_GROUPS GENE_GROUPS_DIR SRR_CSV_DIR
 export THREADS ENABLE_GPU AVAILABLE_RAM_GB GPU_VRAM_GB
 export CONCORDANCE_SCRIPT_DIR ANALYSIS_MODULES_DIR UTILITIES_DIR
 export OUTPUT_DIR ALIGNMENT_BASE POST_PROC_BASE REPORT_BASE
+export FIGURE_DPI
 
 #===============================================================================
 # RUN ANALYSIS PIPELINE
@@ -484,6 +575,7 @@ log_step "CROSS-METHOD CONCORDANCE ANALYSIS"
 log_info "Reference:    ${MASTER_REFERENCE}"
 log_info "Methods:      ${METHODS}"
 log_info "Gene groups:  ${GENE_GROUPS}"
+log_info "Analyses:     ${ANALYSES[*]}"
 log_info "Output:       ${OUTPUT_DIR}"
 log_info "Threads:      ${THREADS}"
 
@@ -501,47 +593,79 @@ run_step() {
 }
 
 # Step 1 must complete first (produces HARMONIZED_RDS consumed by steps 2-4)
-run_step 1 "Load & Harmonize Matrices"    "1_load_matrices.R"
+if analysis_enabled "Load_Matrices"; then
+    run_step 1 "Load & Harmonize Matrices"    "1_load_matrices.R"
+else
+    log_info "Skipping Step 1 (Load_Matrices)"
+fi
 
 # Steps 2 and 3 are independent (both read HARMONIZED_RDS, write separate outputs).
-# Run them in parallel to halve wall-clock time for this phase.
-log_step "[STEPS 2+3] Quantification Concordance & Ranking Stability (parallel)"
-_step2_log="${OUTPUT_DIR}/step2.log"
-_step3_log="${OUTPUT_DIR}/step3.log"
+# Run enabled steps in parallel to halve wall-clock time for this phase.
+_run_step2=false; _run_step3=false
+analysis_enabled "Quantification_Concordance" && _run_step2=true
+analysis_enabled "Ranking_Stability"          && _run_step3=true
 
-# Ensure temp logs are cleaned up on early exit (SIGINT/SIGTERM)
-_concordance_cleanup() { rm -f "$_step2_log" "$_step3_log"; }
-trap '_concordance_cleanup' EXIT
+if [[ "$_run_step2" == true || "$_run_step3" == true ]]; then
+    _label=""
+    $_run_step2 && _label="Quantification Concordance"
+    $_run_step3 && _label="${_label:+${_label} & }Ranking Stability"
+    log_step "[STEPS 2+3] ${_label}${_run_step2:+${_run_step3:+ (parallel)}}"
 
-Rscript "${CONCORDANCE_SCRIPT_DIR}/2_quantification_concordance.R" > "$_step2_log" 2>&1 &
-_pid2=$!
-Rscript "${CONCORDANCE_SCRIPT_DIR}/3_ranking_stability.R" > "$_step3_log" 2>&1 &
-_pid3=$!
+    _step2_log="${OUTPUT_DIR}/step2.log"
+    _step3_log="${OUTPUT_DIR}/step3.log"
 
-_step2_rc=0; _step3_rc=0
-wait "$_pid2" || _step2_rc=$?
-wait "$_pid3" || _step3_rc=$?
+    # Ensure temp logs are cleaned up on early exit (SIGINT/SIGTERM)
+    _concordance_cleanup() { rm -f "$_step2_log" "$_step3_log"; }
+    trap '_concordance_cleanup' EXIT
 
-# Stream logs to stdout for visibility
-cat "$_step2_log" "$_step3_log" 2>/dev/null
-rm -f "$_step2_log" "$_step3_log"
+    _pid2=""; _pid3=""
+    if [[ "$_run_step2" == true ]]; then
+        Rscript "${CONCORDANCE_SCRIPT_DIR}/2_quantification_concordance.R" > "$_step2_log" 2>&1 &
+        _pid2=$!
+    fi
+    if [[ "$_run_step3" == true ]]; then
+        Rscript "${CONCORDANCE_SCRIPT_DIR}/3_ranking_stability.R" > "$_step3_log" 2>&1 &
+        _pid3=$!
+    fi
 
-_any_failed=0
-if [[ $_step2_rc -ne 0 ]]; then
-    log_error "Step 2 (Quantification Concordance) failed (exit=$_step2_rc)!"
-    _any_failed=1
+    _step2_rc=0; _step3_rc=0
+    [[ -n "$_pid2" ]] && { wait "$_pid2" || _step2_rc=$?; }
+    [[ -n "$_pid3" ]] && { wait "$_pid3" || _step3_rc=$?; }
+
+    # Stream logs to stdout for visibility
+    cat "$_step2_log" "$_step3_log" 2>/dev/null
+    rm -f "$_step2_log" "$_step3_log"
+
+    _any_failed=0
+    if [[ $_step2_rc -ne 0 ]]; then
+        log_error "Step 2 (Quantification Concordance) failed (exit=$_step2_rc)!"
+        _any_failed=1
+    fi
+    if [[ $_step3_rc -ne 0 ]]; then
+        log_error "Step 3 (Ranking Stability) failed (exit=$_step3_rc)!"
+        _any_failed=1
+    fi
+    [[ $_any_failed -ne 0 ]] && exit 1
+    log_info "Steps 2+3 completed successfully"
+else
+    log_info "Skipping Steps 2+3 (Quantification_Concordance, Ranking_Stability)"
 fi
-if [[ $_step3_rc -ne 0 ]]; then
-    log_error "Step 3 (Ranking Stability) failed (exit=$_step3_rc)!"
-    _any_failed=1
-fi
-[[ $_any_failed -ne 0 ]] && exit 1
-log_info "Steps 2 and 3 completed successfully"
 
 # Step 4 reads outputs from both steps 2 and 3
-run_step 4 "Generate Report"              "4_generate_report.R"
+if analysis_enabled "Generate_Report"; then
+    run_step 4 "Generate Report"              "4_generate_report.R"
+else
+    log_info "Skipping Step 4 (Generate_Report)"
+fi
 
 log_step "CONCORDANCE ANALYSIS COMPLETE"
 log_info "Report:  ${REPORT_BASE}/cross_method_concordance_report.md"
 log_info "Figures: ${OUTPUT_DIR}/figures/"
 log_info "Tables:  ${OUTPUT_DIR}/tables/"
+
+# Copy logs into the output folder for self-contained results
+if [[ -d "${REPORT_BASE}/logs" ]]; then
+    mkdir -p "${OUTPUT_DIR}/logs"
+    cp -r "${REPORT_BASE}/logs/." "${OUTPUT_DIR}/logs/" 2>/dev/null || true
+    log_info "Logs:    ${OUTPUT_DIR}/logs/"
+fi
