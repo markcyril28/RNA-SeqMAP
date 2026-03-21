@@ -12,7 +12,9 @@
 export M3_STAR_SOURCED="true"
 
 # Source dependencies
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
+SCRIPT_DIR="${MODULES_DIR:+${MODULES_DIR}/b_main_methods}"
+SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 _M3_SCRIPT_DIR="$SCRIPT_DIR"
 source "$SCRIPT_DIR/shared_utils_method.sh"
 
@@ -334,8 +336,8 @@ star_alignment_pipeline() {
 	# isolate BAM outputs and Salmon quant per reference, preventing multi-reference collisions.
 	#
 	# The STAR genome index depends only on the genome FASTA + GTF, NOT on tissue.
-	# Always use the shared base path so star_tissue_specific_pipeline() never
-	# rebuilds the same 30+ GB index for every tissue (analogous to salmon_idx).
+	# Always use the shared base path so tissue-specific runs never
+	# rebuild the same 30+ GB index for every tissue (analogous to salmon_idx).
 	star_index_dir="${abs_star_index_root}/5_star/index"
 	if [[ -n "$tissue_tag" ]]; then
 		star_genome_dir="${abs_star_align_root}/${fasta_tag}/5_star/alignments/${tissue_tag}"
@@ -395,11 +397,11 @@ star_alignment_pipeline() {
 
 	# Explicit splice junction filtering thresholds (STAR defaults documented here
 	# so the pipeline behaviour is transparent across STAR versions).
-	# Format: 4 values for canonical GT/AG, semi-canonical CT/AC or GT/AT, non-canonical, other.
+	# Format: 4 values for (1) non-canonical, (2) GT/AG canonical, (3) GC/AG semi-canonical, (4) AT/AC semi-canonical.
 	# --outSJfilterCountUniqueMin   3 1 1 1   (min unique reads per junction type)
 	# --outSJfilterCountTotalMin    3 1 1 1   (min total reads per junction type)
 	# --outSJfilterOverhangMin      30 12 12 12 (min overhang for reported junctions)
-	# --outSJfilterIntronMaxVsReadN 50000 100000 200000 (max intron vs read length)
+	# --outSJfilterIntronMaxVsReadN 50000 100000 200000 (max intron for 1/2/3+ supporting reads)
 	local star_sj_filter_args=(
 		--outSJfilterCountUniqueMin 3 1 1 1
 		--outSJfilterCountTotalMin  3 1 1 1
@@ -813,8 +815,8 @@ star_alignment_pipeline() {
 	local ref_suffix=""
 	[[ -n "${tissue_tag:-}" ]] && ref_suffix="${tissue_tag}"
 	# The Salmon index depends only on the transcriptome FASTA, not on tissue.
-	# Do NOT include ref_suffix here; otherwise star_tissue_specific_pipeline()
-	# rebuilds the same expensive index once per tissue.
+	# Do NOT include ref_suffix here; otherwise tissue-specific runs
+	# rebuild the same expensive index once per tissue.
 	local salmon_idx="${abs_star_align_root}/${fasta_tag}/6_salmon/index"
 	local quant_root="${abs_star_align_root}/${fasta_tag}/6_salmon/quant${ref_suffix:+/${ref_suffix}}"
 	# Clean up double slashes
@@ -968,8 +970,8 @@ star_alignment_pipeline() {
 	log_step "Preparing tximport input for DESeq2 (STAR + Salmon)"
 
 	# Include tissue/ref suffix so tissue-specific runs get isolated matrix dirs.
-	# Without this, star_tissue_specific_pipeline() tissue runs overwrite each
-	# other's sample_info.tsv, tximport script, and count matrix TSVs.
+	# Without this, tissue-specific runs overwrite each other's sample_info.tsv,
+	# tximport script, and count matrix TSVs.
 	local matrix_dir="${STAR_MATRIX_ROOT}${ref_suffix:+/${ref_suffix}}"
 	# master_ref drives output filenames in tximport_star_helper.R; include the
 	# tissue suffix so per-tissue TSV files have distinct, non-colliding names.
@@ -1054,8 +1056,10 @@ run_tximport_star() {
 	local quant_dir="$1"
 	local metadata_file="$2"
 	local tx2gene_file="$3"
-	local output_dir="${4:-$(dirname "$metadata_file")}"
-	local master_ref="${5:-$(basename "$output_dir")}"
+	# NOTE: ${var%/*} differs from dirname when var has no '/'; safe here because
+	# metadata_file is always an absolute path constructed by the pipeline.
+	local output_dir="${4:-${metadata_file%/*}}"
+	local master_ref="${5:-${output_dir##*/}}"
 	local helper_script="$_M3_SCRIPT_DIR/../c_post_processing/preprocessing/STAR/tximport_star_helper.R"
 
 	if [[ ! -f "$helper_script" ]]; then
@@ -1085,69 +1089,3 @@ generate_tximport_star_script() {
 	fi
 }
 
-# ==============================================================================
-# ALTERNATIVE FLOW: TISSUE-SPECIFIC ALIGNMENT
-# ==============================================================================
-# Splits samples by condition/tissue and runs star_alignment_pipeline() per group.
-# Falls back to pooled alignment when only one tissue type is detected.
-
-star_tissue_specific_pipeline() {
-	local fasta="" rnaseq_list=() metadata_file=""
-	while [[ $# -gt 0 ]]; do
-		case "$1" in
-			--FASTA) fasta="$2"; shift 2;;
-			--METADATA) metadata_file="$2"; shift 2;;
-			--RNASEQ_LIST)
-				shift
-				while [[ $# -gt 0 && ! "$1" =~ ^-- ]]; do
-					rnaseq_list+=("$1"); shift
-				done;;
-			*) log_error "Unknown option: $1"; return 1;;
-		esac
-	done
-
-	[[ -z "$fasta" || ! -f "$fasta" ]] && { log_error "Valid FASTA required"; return 1; }
-	[[ ${#rnaseq_list[@]} -eq 0 ]] && rnaseq_list=("${SRR_COMBINED_LIST[@]}")
-
-	declare -A sample_metadata
-	if [[ -n "$metadata_file" && -f "$metadata_file" ]]; then
-		load_sample_metadata "$metadata_file" sample_metadata || {
-			log_warn "Metadata load failed - running pooled alignment"
-			star_alignment_pipeline --FASTA "$fasta" --RNASEQ_LIST "${rnaseq_list[@]}"
-			return $?
-		}
-	else
-		log_warn "No metadata - running pooled alignment"
-		star_alignment_pipeline --FASTA "$fasta" --RNASEQ_LIST "${rnaseq_list[@]}"
-		return $?
-	fi
-
-	# Group samples by tissue
-	declare -A tissue_samples
-	for SRR in "${rnaseq_list[@]}"; do
-		local tissue="${sample_metadata[${SRR}_condition]:-unknown}"
-		tissue_samples["$tissue"]+="$SRR "
-	done
-
-	local tissue_count=${#tissue_samples[@]}
-	log_info "[STAR TISSUE] Found $tissue_count tissue types"
-
-	if [[ $tissue_count -lt 2 ]]; then
-		log_warn "Single tissue detected - using pooled alignment"
-		star_alignment_pipeline --FASTA "$fasta" --RNASEQ_LIST "${rnaseq_list[@]}"
-		return $?
-	fi
-
-	log_info "[STAR TISSUE] Running tissue-specific alignments for better isoform detection"
-
-	# Run STAR per tissue
-	for tissue in "${!tissue_samples[@]}"; do
-		IFS=' ' read -ra tissue_srrs <<< "${tissue_samples[$tissue]}"
-		log_step "STAR alignment for tissue: $tissue (${#tissue_srrs[@]} samples)"
-
-		star_alignment_pipeline \
-			--FASTA "$fasta" \
-			--RNASEQ_LIST "${tissue_srrs[@]}" \
-			--TISSUE_TAG "$tissue"
-	done
-}
