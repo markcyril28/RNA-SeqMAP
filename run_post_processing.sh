@@ -293,6 +293,7 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
             continue
         fi
 
+        # SRR_COMBINED_LIST_STR holds the current dataset's samples (not a cross-dataset merge)
         export CURRENT_DATASET="$dataset" SRR_COMBINED_LIST_STR="${CURRENT_SRR_LIST[*]}"
         log_step "Dataset: $dataset (${#CURRENT_SRR_LIST[@]} samples)"
 
@@ -303,7 +304,8 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
                 -j "${#METHODS[@]}" \
                 --halt soon,fail=30% \
                 --joblog "$LOG_DIR/parallel_preproc_${dataset}.log" \
-                run_method_preprocessing {} "$MASTER_REFERENCE"
+                run_method_preprocessing {} "$MASTER_REFERENCE" \
+                || log_warn "Phase 1: Some preprocessing tasks failed for dataset '$dataset' (see joblog)"
         else
             log_info "Phase 1: Preprocessing (sequential, all threads)"
             for method in "${METHODS[@]}"; do
@@ -341,7 +343,8 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
                     -j "$_n_methods" \
                     --halt soon,fail=30% \
                     --joblog "$LOG_DIR/parallel_heavy_${dataset}.log" \
-                    _run_heavy_for_method {} "$MASTER_REFERENCE" "${HEAVY_ANALYSES[@]}"
+                    _run_heavy_for_method {} "$MASTER_REFERENCE" "${HEAVY_ANALYSES[@]}" \
+                    || log_warn "Phase 2: Some heavy analyses failed for dataset '$dataset' (see joblog)"
             else
                 log_info "Phase 2: Heavy analyses (sequential): ${HEAVY_ANALYSES[*]}"
                 for method in "${METHODS[@]}"; do
@@ -363,7 +366,8 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
                     --colsep '\t' \
                     --halt soon,fail=30% \
                     --joblog "$LOG_DIR/parallel_figures_${dataset}.log" \
-                    run_single_analysis {1} "$MASTER_REFERENCE" {2}
+                    run_single_analysis {1} "$MASTER_REFERENCE" {2} \
+                    || log_warn "Phase 3: Some figure tasks failed for dataset '$dataset' (see joblog)"
             else
                 log_info "Phase 3: Figure generation (sequential): ${FIGURE_ANALYSES[*]}"
                 for method in "${METHODS[@]}"; do
