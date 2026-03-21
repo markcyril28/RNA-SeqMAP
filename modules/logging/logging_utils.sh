@@ -125,7 +125,7 @@ _logging_setup_redirect() {
 	fi
 	# Capture the PID of the outermost process substitution
 	# ($! is set by exec > >(...) in bash)
-	[[ -n "${!}" ]] && _LOGGING_BG_PIDS+=("${!}")
+	[[ -n "${!+x}" ]] && [[ -n "$!" ]] && _LOGGING_BG_PIDS+=("$!")
 }
 
 setup_logging() {
@@ -379,11 +379,18 @@ run_with_space_time_log() {
 	local cmd_string="$*"
 	local start_ts; printf -v start_ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || start_ts=$(date '+%Y-%m-%d %H:%M:%S')
 	
-	# Measure input size before running command (du + awk combined)
+	# Measure input size before running command
+	# O(1) stat for single files (avoids du|awk 2-process pipeline); du for directories
 	local input_size_mb="0"
-	if [[ -n "$input_path" && -e "$input_path" ]]; then
-		input_size_mb=$(du -sk "$input_path" 2>/dev/null | awk '{printf "%.2f", $1/1024}')
-		input_size_mb="${input_size_mb:-0}"
+	if [[ -n "$input_path" ]]; then
+		if [[ -f "$input_path" ]]; then
+			local _sz_bytes
+			_sz_bytes=$(stat -c%s "$input_path" 2>/dev/null || stat -f%z "$input_path" 2>/dev/null || echo 0)
+			input_size_mb=$(awk "BEGIN {printf \"%.2f\", $_sz_bytes / 1048576}")
+		elif [[ -d "$input_path" ]]; then
+			input_size_mb=$(du -sk "$input_path" 2>/dev/null | awk '{printf "%.2f", $1/1024}')
+			input_size_mb="${input_size_mb:-0}"
+		fi
 	fi
 	
 	mkdir -p "$TIME_DIR" || { log_error "Failed to create TIME_DIR: $TIME_DIR"; return 1; }
@@ -446,17 +453,27 @@ run_with_space_time_log() {
 		} >> "$ERROR_WARN_FILE"
 	fi
 	
-	# Measure output size after running command (du + awk combined)
+	# Measure output size after running command
+	# O(1) stat for single files; du for directories
 	local output_size_mb="0"
-	if [[ -n "$output_path" && -e "$output_path" ]]; then
-		output_size_mb=$(du -sk "$output_path" 2>/dev/null | awk '{printf "%.2f", $1/1024}')
-		output_size_mb="${output_size_mb:-0}"
+	if [[ -n "$output_path" ]]; then
+		if [[ -f "$output_path" ]]; then
+			local _sz_bytes
+			_sz_bytes=$(stat -c%s "$output_path" 2>/dev/null || stat -f%z "$output_path" 2>/dev/null || echo 0)
+			output_size_mb=$(awk "BEGIN {printf \"%.2f\", $_sz_bytes / 1048576}")
+		elif [[ -d "$output_path" ]]; then
+			output_size_mb=$(du -sk "$output_path" 2>/dev/null | awk '{printf "%.2f", $1/1024}')
+			output_size_mb="${output_size_mb:-0}"
+		fi
 	fi
 	
-	# Append to CSV files (escape internal double quotes for valid CSV)
+	# Append to both CSV files in a single write (reduces 2 file opens to 1 process)
+	# O(1) — single printf with two redirect targets via tee replacement
 	local csv_cmd="${cmd_string//\"/\"\"}"
-	echo "${start_ts},\"${csv_cmd}\",${elapsed_time:-0},${cpu_percent:-0},${max_rss:-0},${user_time:-0},${system_time:-0},${exit_code}" >> "$TIME_FILE"
-	echo "${start_ts},\"${csv_cmd}\",${elapsed_time:-0},${cpu_percent:-0},${max_rss:-0},${user_time:-0},${system_time:-0},${input_size_mb},${output_size_mb},${exit_code}" >> "$SPACE_TIME_FILE"
+	local _time_row="${start_ts},\"${csv_cmd}\",${elapsed_time:-0},${cpu_percent:-0},${max_rss:-0},${user_time:-0},${system_time:-0},${exit_code}"
+	local _st_row="${start_ts},\"${csv_cmd}\",${elapsed_time:-0},${cpu_percent:-0},${max_rss:-0},${user_time:-0},${system_time:-0},${input_size_mb},${output_size_mb},${exit_code}"
+	printf '%s\n' "$_time_row" >> "$TIME_FILE"
+	printf '%s\n' "$_st_row" >> "$SPACE_TIME_FILE"
 	
 	rm -f "$TIME_TEMP"
 	return $exit_code

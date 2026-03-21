@@ -157,9 +157,16 @@ detect_gpu_type() {
 	log_info "Detected GPU vendor: ${GPU_VENDOR:-none}"
 }
 
-# Check if running in WSL
+# Check if running in WSL — O(1) bash built-in, avoids grep subprocess
 is_wsl() {
-	[[ -f /proc/version ]] && grep -qi "microsoft\|wsl" /proc/version 2>/dev/null
+	if [[ -f /proc/version ]]; then
+		local _ver
+		_ver=$(</proc/version)
+		_ver="${_ver,,}"  # lowercase (bash 4+)
+		[[ "$_ver" == *microsoft* || "$_ver" == *wsl* ]]
+	else
+		return 1
+	fi
 }
 
 install_base_packages() {
@@ -223,7 +230,13 @@ detect_gpu() {
 			GPU_COUNT="${_gpu_cnt}"
 			GPU_MEMORY_MB="${_gpu_mem}"
 
-			# Fallback: if parsing failed, use query-gpu (still just one extra call, not default path)
+			# Fallback: if gawk capture groups failed (mawk/nawk), recover CUDA version
+			# from the already-captured nvidia-smi output without an extra call.
+			if [[ -z "$CUDA_VERSION" ]]; then
+				CUDA_VERSION=$(awk '/CUDA Version:/ {for(i=1;i<=NF;i++) if($i=="Version:") print $(i+1)}' <<< "$_smi_full" | tr -d '[:space:]')
+			fi
+
+			# Fallback: if GPU count/memory parsing failed, use query-gpu (one extra call)
 			if [[ "$GPU_COUNT" -eq 0 || "$GPU_MEMORY_MB" -eq 0 ]] 2>/dev/null; then
 				local _query_info
 				_query_info=$(nvidia-smi --query-gpu=count,memory.total,name,driver_version --format=csv,noheader,nounits 2>/dev/null)
