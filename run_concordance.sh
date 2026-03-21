@@ -235,7 +235,7 @@ if [[ "${RUN_ALL_MASTER_REFERENCES^^}" == "TRUE" ]]; then
             __CONCORDANCE_OVERRIDE_REPORT_BASE="${_parent_report_base}/${_ref}" \
             __CONCORDANCE_OVERRIDE_MASTER_REFERENCE="${_ref}" \
             __CONCORDANCE_OVERRIDE_RUN_ALL_MASTER_REFERENCES="FALSE" \
-            bash "$0" "${REINVOKE_ARGS[@]}" &
+            bash "$0" ${REINVOKE_ARGS[@]+"${REINVOKE_ARGS[@]}"} &
             _ref_pids+=($!)
         done
         for _pid in "${_ref_pids[@]}"; do
@@ -279,7 +279,7 @@ if [[ "${RUN_ALL_METHOD_COMBINATIONS^^}" == "TRUE" ]]; then
             __CONCORDANCE_OVERRIDE_REPORT_BASE="${_parent_report_base}/methods_${_combo_tag}" \
             __CONCORDANCE_OVERRIDE_METHODS="${_methods}" \
             __CONCORDANCE_OVERRIDE_RUN_ALL_METHOD_COMBINATIONS="FALSE" \
-            bash "$0" "${REINVOKE_ARGS[@]}" &
+            bash "$0" ${REINVOKE_ARGS[@]+"${REINVOKE_ARGS[@]}"} &
             _combo_pids+=($!)
         done
         for _pid in "${_combo_pids[@]}"; do
@@ -322,7 +322,7 @@ if [[ "${RUN_ALL_GENE_GROUP_COMBINATIONS^^}" == "TRUE" ]]; then
             __CONCORDANCE_OVERRIDE_REPORT_BASE="${_parent_report_base}/genes_${_combo_tag}" \
             __CONCORDANCE_OVERRIDE_GENE_GROUPS="${_groups}" \
             __CONCORDANCE_OVERRIDE_RUN_ALL_GENE_GROUP_COMBINATIONS="FALSE" \
-            bash "$0" "${REINVOKE_ARGS[@]}" &
+            bash "$0" ${REINVOKE_ARGS[@]+"${REINVOKE_ARGS[@]}"} &
             _gg_combo_pids+=($!)
         done
         for _pid in "${_gg_combo_pids[@]}"; do
