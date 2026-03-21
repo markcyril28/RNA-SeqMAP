@@ -466,7 +466,9 @@ install_nvidia_driver() {
 	case "$DISTRO" in
 		ubuntu|debian)
 			# Add NVIDIA repository
-			local ubuntu_ver=$(lsb_release -rs 2>/dev/null | sed 's/\.//' || echo "2204")
+				local ubuntu_ver
+			ubuntu_ver=$(lsb_release -rs 2>/dev/null | sed 's/\.//')
+			ubuntu_ver="${ubuntu_ver:-2204}"
 			local keyring_url="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${ubuntu_ver}/x86_64/cuda-keyring_1.1-1_all.deb"
 			
 			if [[ ! -f /usr/share/keyrings/cuda-archive-keyring.gpg ]]; then
