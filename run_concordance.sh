@@ -13,7 +13,7 @@
 #   4. Generate unified Markdown report
 #
 # Usage:
-#   bash run_cross_method_concordance.sh [config_file|config_class|config_class_dir]
+#   bash run_concordance.sh [config_file|config_class|config_class_dir]
 #
 #   If no config_file is provided, uses internal defaults for GPE001970.
 #
@@ -55,7 +55,10 @@ source "${SCRIPT_DIR}/modules/logging/logging_utils.sh" 2>/dev/null || {
 }
 
 # Source TOML parser
-source "${SCRIPT_DIR}/config/shared/toml_parser.sh"
+source "${SCRIPT_DIR}/config/shared/toml_parser.sh" || {
+    log_error "Failed to source TOML parser at ${SCRIPT_DIR}/config/shared/toml_parser.sh"
+    exit 1
+}
 
 #===============================================================================
 # CONFIGURATION (override via env, config file, or associative array below)
@@ -407,7 +410,7 @@ if [[ "${ENFORCE_REFERENCE_METHOD_COMPATIBILITY^^}" == "TRUE" ]]; then
         METHODS="$_methods_filtered"
     fi
 
-    unset _methods_filtered _methods_dropped _has_rule _allowed_methods _m _a _is_allowed
+    unset _methods_filtered _methods_dropped _has_rule _allowed_methods _allowed_pat _m
 fi
 
 # Method-specific reference directory names
@@ -501,7 +504,8 @@ if [[ -z "${AVAILABLE_RAM_GB:-}" ]]; then
         AVAILABLE_RAM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1/1073741824}')
     fi
 fi
-AVAILABLE_RAM_GB="${AVAILABLE_RAM_GB:-24}"
+# Fallback covers both unset and empty (e.g., MemAvailable line missing from /proc/meminfo)
+[[ -z "${AVAILABLE_RAM_GB:-}" ]] && AVAILABLE_RAM_GB=24
 GPU_VRAM_GB="${GPU_VRAM_GB:-8}"
 
 #===============================================================================
@@ -609,7 +613,9 @@ if [[ "$_run_step2" == true || "$_run_step3" == true ]]; then
     _label=""
     $_run_step2 && _label="Quantification Concordance"
     $_run_step3 && _label="${_label:+${_label} & }Ranking Stability"
-    log_step "[STEPS 2+3] ${_label}${_run_step2:+${_run_step3:+ (parallel)}}"
+    _parallel_note=""
+    [[ "$_run_step2" == true && "$_run_step3" == true ]] && _parallel_note=" (parallel)"
+    log_step "[STEPS 2+3] ${_label}${_parallel_note}"
 
     _step2_log="${OUTPUT_DIR}/step2.log"
     _step3_log="${OUTPUT_DIR}/step3.log"
