@@ -58,11 +58,23 @@ log_choice="${log_choice:-1}"  # 1 = tee to console, 2 = file only
 
 # timestamp: use bash built-in printf %(%T)T (no subprocess) with date fallback for bash < 4.2
 timestamp() { local _t; printf -v _t '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null && echo "$_t" || date '+%Y-%m-%d %H:%M:%S'; }
-log() { local level="$1"; shift; local _ts; printf -v _ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _ts=$(date '+%Y-%m-%d %H:%M:%S'); printf '[%s] [%s] %s\n' "$_ts" "$level" "$*"; }
-log_info() { log INFO "$@"; }
-# Cache timestamp and format message once (was two printf calls per invocation)
-log_warn() { local _ts; printf -v _ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _ts=$(date '+%Y-%m-%d %H:%M:%S'); local _msg="[$_ts] [WARN] $*"; echo "$_msg" >&2; [[ -n "${ERROR_WARN_FILE:-}" ]] && echo "$_msg" >> "$ERROR_WARN_FILE"; }
-log_error() { local _ts; printf -v _ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _ts=$(date '+%Y-%m-%d %H:%M:%S'); local _msg="[$_ts] [ERROR] $*"; echo "$_msg" >&2; [[ -n "${ERROR_WARN_FILE:-}" ]] && echo "$_msg" >> "$ERROR_WARN_FILE"; }
+# Unified log function: O(1) timestamp via bash printf (no subprocess), single source of truth.
+# log_warn/log_error previously duplicated timestamp logic; now they call _log_impl.
+_log_impl() {
+	local level="$1"; shift
+	local _ts; printf -v _ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _ts=$(date '+%Y-%m-%d %H:%M:%S')
+	local _msg; printf -v _msg '[%s] [%s] %s' "$_ts" "$level" "$*"
+	if [[ "$level" == "WARN" || "$level" == "ERROR" ]]; then
+		echo "$_msg" >&2
+		[[ -n "${ERROR_WARN_FILE:-}" ]] && echo "$_msg" >> "$ERROR_WARN_FILE"
+	else
+		echo "$_msg"
+	fi
+}
+log() { _log_impl "$@"; }
+log_info() { _log_impl INFO "$@"; }
+log_warn() { _log_impl WARN "$@"; }
+log_error() { _log_impl ERROR "$@"; }
 log_step() { log INFO "=============== $* ==============="; }
 
 strip_ansi_stream() {
@@ -70,8 +82,9 @@ strip_ansi_stream() {
 	# carriage returns from a stream so log files remain human-readable.
 	# CR (\r) is converted to newline so progress-bar overwrites become
 	# separate lines instead of one giant unreadable blob.
-	# Single sed replaces tr+sed pipeline (1 process instead of 2).
-	sed -u 's/\r/\n/g; s/\x1B\[[0-9;?]*[a-zA-Z]//g; s/\x1B[()][A-Z0-9]//g'
+	# Single sed pass (GNU sed): \r→\n replacement + ANSI stripping in one process.
+	# O(L) where L = number of input lines — saves 1 fork vs prior tr|sed pipeline.
+	sed -u $'s/\r/\\\n/g; s/\x1B\\[[0-9;?]*[a-zA-Z]//g; s/\x1B[()][A-Z0-9]//g'
 }
 
 # Initialize CSV headers for all log files if they don't exist yet.
@@ -382,11 +395,14 @@ run_with_space_time_log() {
 	log_info "[CMD] $cmd_abbrev"
 
 	# Write begin marker directly to log file (preserves ordering with tool stdout)
-	printf '[%s] [INFO] --- BEGIN TOOL OUTPUT: %s ---\n' "$(timestamp)" "${1##*/}" >> "$LOG_FILE"
+	# Inline printf -v avoids $(timestamp) subshell forks — O(1) each, saves 2 forks per call
+	local _ts_begin; printf -v _ts_begin '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _ts_begin=$(date '+%Y-%m-%d %H:%M:%S')
+	printf '[%s] [INFO] --- BEGIN TOOL OUTPUT: %s ---\n' "$_ts_begin" "${1##*/}" >> "$LOG_FILE"
 	# Strip ANSI escape codes and carriage returns before writing to log (e.g. Salmon progress bars)
 	/usr/bin/time -v "$@" 2>"$TIME_TEMP" | strip_ansi_stream >> "$LOG_FILE"
 	exit_code=${PIPESTATUS[0]}
-	printf '[%s] [INFO] --- END TOOL OUTPUT: %s (exit=%d) ---\n' "$(timestamp)" "${1##*/}" "$exit_code" >> "$LOG_FILE"
+	local _ts_end; printf -v _ts_end '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _ts_end=$(date '+%Y-%m-%d %H:%M:%S')
+	printf '[%s] [INFO] --- END TOOL OUTPUT: %s (exit=%d) ---\n' "$_ts_end" "${1##*/}" "$exit_code" >> "$LOG_FILE"
 
 	# Single-pass extraction of all metrics from /usr/bin/time output.
 	# Replaces 6 separate grep|awk pipelines (12 process spawns) with 1 awk process.
@@ -414,7 +430,8 @@ run_with_space_time_log() {
 
 	# On failure: dump full time output for debugging
 	if [[ $exit_code -ne 0 ]]; then
-		printf '[%s] [DEBUG] --- TIME OUTPUT (failure details) ---\n' "$(timestamp)" >> "$LOG_FILE"
+		local _ts_dbg; printf -v _ts_dbg '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _ts_dbg=$(date '+%Y-%m-%d %H:%M:%S')
+		printf '[%s] [DEBUG] --- TIME OUTPUT (failure details) ---\n' "$_ts_dbg" >> "$LOG_FILE"
 		cat "$TIME_TEMP" >> "$LOG_FILE" 2>&1
 	fi
 
@@ -423,7 +440,7 @@ run_with_space_time_log() {
 	_err_lines=$(grep -iE "$_ERROR_PATTERN" "$TIME_TEMP" 2>/dev/null) || true
 	if [[ $exit_code -ne 0 ]] || [[ -n "$_err_lines" ]]; then
 		{
-			printf '[%s] [ERROR] Command failed (exit=%d): %s\n' "$(timestamp)" "$exit_code" "$cmd_string"
+			printf '[%s] [ERROR] Command failed (exit=%d): %s\n' "$_ts_end" "$exit_code" "$cmd_string"
 			[[ -n "$_err_lines" ]] && printf '%s\n' "$_err_lines"
 		} >> "$ERROR_WARN_FILE"
 	fi
@@ -501,12 +518,15 @@ catalog_all_software() {
 
 	# Record pipeline git commit SHA for provenance
 	if command -v git >/dev/null 2>&1; then
+		# Cache repo root path — avoids 3 redundant dirname subshell forks
+		local _repo_root
+		_repo_root="$(dirname "${BASH_SOURCE[0]}")/../.."
 		local git_sha
-		git_sha=$(git -C "$(dirname "${BASH_SOURCE[0]}")/../.." rev-parse --short HEAD 2>/dev/null || echo "not_a_git_repo")
+		git_sha=$(git -C "$_repo_root" rev-parse --short HEAD 2>/dev/null || echo "not_a_git_repo")
 		local git_branch
-		git_branch=$(git -C "$(dirname "${BASH_SOURCE[0]}")/../.." rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+		git_branch=$(git -C "$_repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
 		local git_dirty=""
-		if ! git -C "$(dirname "${BASH_SOURCE[0]}")/../.." diff --quiet HEAD 2>/dev/null; then
+		if ! git -C "$_repo_root" diff --quiet HEAD 2>/dev/null; then
 			git_dirty="-dirty"
 		fi
 		echo "pipeline_git_commit,${git_sha}${git_dirty}" >> "$SOFTWARE_FILE"

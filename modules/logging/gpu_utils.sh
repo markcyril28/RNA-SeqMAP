@@ -40,10 +40,15 @@ mkdir -p "$GPU_LOG_DIR" 2>/dev/null || true
 # ==============================================================================
 
 # Get timestamp for logging (prefer bash printf to avoid date subprocess)
-_get_timestamp() {
-	local _ts
-	printf -v _ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null && echo "$_ts" || date "+%Y-%m-%d %H:%M:%S"
-}
+# Reuse logging_utils.sh timestamp() if available; define standalone fallback otherwise.
+if ! declare -f timestamp &>/dev/null; then
+	_get_timestamp() {
+		local _ts
+		printf -v _ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null && echo "$_ts" || date "+%Y-%m-%d %H:%M:%S"
+	}
+else
+	_get_timestamp() { timestamp; }
+fi
 
 # Write to log file
 _write_log() {
@@ -66,36 +71,15 @@ _should_log() {
 	return 1
 }
 
-# Logging stubs (if not already defined by another module)
+# Logging stubs (only when gpu_utils.sh is sourced standalone without logging_utils.sh).
+# Single declare -f check replaces 5 separate checks; stubs are minimal wrappers
+# that delegate to _write_log for GPU log file output.
 if ! declare -f log_info &>/dev/null; then
-	log_debug() {
-		if _should_log "DEBUG"; then
-			echo "[DEBUG] $*"
-			_write_log "DEBUG" "$*"
-		fi
-	}
-	log_info() {
-		if _should_log "INFO"; then
-			echo "[INFO] $*"
-			_write_log "INFO" "$*"
-		fi
-	}
-	log_warn() {
-		if _should_log "WARN"; then
-			echo "[WARN] $*" >&2
-			_write_log "WARN" "$*"
-		fi
-	}
-	log_error() {
-		if _should_log "ERROR"; then
-			echo "[ERROR] $*" >&2
-			_write_log "ERROR" "$*"
-		fi
-	}
-	log_step() {
-		echo "=== $* ==="
-		_write_log "STEP" "$*"
-	}
+	log_debug() { ! _should_log "DEBUG" || { echo "[DEBUG] $*"; _write_log "DEBUG" "$*"; }; }
+	log_info()  { ! _should_log "INFO"  || { echo "[INFO] $*";  _write_log "INFO"  "$*"; }; }
+	log_warn()  { ! _should_log "WARN"  || { echo "[WARN] $*" >&2; _write_log "WARN"  "$*"; }; }
+	log_error() { ! _should_log "ERROR" || { echo "[ERROR] $*" >&2; _write_log "ERROR" "$*"; }; }
+	log_step()  { echo "=== $* ==="; _write_log "STEP" "$*"; }
 fi
 
 # Log system info (called lazily via _ensure_gpu_detected)
@@ -108,6 +92,22 @@ _log_system_info() {
 	_write_log "INFO" "WSL: $(is_wsl && echo 'yes' || echo 'no')"
 	_write_log "INFO" "========================================"
 }
+
+# ==============================================================================
+# BINARY AVAILABILITY CACHE
+# ==============================================================================
+# Cache command -v results at module load time (O(1) per subsequent check).
+# Eliminates repeated PATH lookups: was 4x nvidia-smi, 2x nvcc, 5x pkg-mgr.
+_HAS_NVIDIA_SMI=false; command -v nvidia-smi &>/dev/null && _HAS_NVIDIA_SMI=true
+_HAS_NVCC=false;       command -v nvcc &>/dev/null       && _HAS_NVCC=true
+_HAS_LSPCI=false;      command -v lspci &>/dev/null      && _HAS_LSPCI=true
+# Package manager detection (cached once, used by setup_cuda)
+_PKG_MGR=""
+if   command -v apt-get &>/dev/null; then _PKG_MGR="apt"
+elif command -v dnf &>/dev/null;     then _PKG_MGR="dnf"
+elif command -v yum &>/dev/null;     then _PKG_MGR="yum"
+elif command -v conda &>/dev/null;   then _PKG_MGR="conda"
+fi
 
 # ==============================================================================
 # HELPER FUNCTIONS
@@ -135,19 +135,21 @@ detect_distro() {
 detect_gpu_type() {
 	GPU_VENDOR=""
 	# Single lspci call, check output for all vendors (was 3 separate calls)
-	local _lspci_out
-	_lspci_out=$(lspci 2>/dev/null) || true
+	local _lspci_out=""
+	$_HAS_LSPCI && _lspci_out=$(lspci 2>/dev/null) || true
+	# Single-pass vendor detection: lowercase once, then bash pattern match (no grep subshells)
 	if [[ -n "$_lspci_out" ]]; then
-		if echo "$_lspci_out" | grep -qi "nvidia"; then
+		local _lspci_lower="${_lspci_out,,}"
+		if [[ "$_lspci_lower" == *nvidia* ]]; then
 			GPU_VENDOR="nvidia"
-		elif echo "$_lspci_out" | grep -qi "amd.*radeon\|amd.*vega\|amd.*navi"; then
+		elif [[ "$_lspci_lower" == *amd*radeon* || "$_lspci_lower" == *amd*vega* || "$_lspci_lower" == *amd*navi* ]]; then
 			GPU_VENDOR="amd"
-		elif echo "$_lspci_out" | grep -qi "intel.*graphics\|intel.*iris"; then
+		elif [[ "$_lspci_lower" == *intel*graphics* || "$_lspci_lower" == *intel*iris* ]]; then
 			GPU_VENDOR="intel"
 		fi
 	fi
 	# WSL2 fallback: check for nvidia-smi directly (GPU not visible via lspci in WSL2)
-	if [[ -z "$GPU_VENDOR" ]] && command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
+	if [[ -z "$GPU_VENDOR" ]] && $_HAS_NVIDIA_SMI && nvidia-smi &>/dev/null; then
 		GPU_VENDOR="nvidia"
 		log_info "WSL2 detected - using nvidia-smi for GPU detection"
 	fi
@@ -202,18 +204,24 @@ detect_gpu() {
 	CUDA_READY="false"
 
 	# Single nvidia-smi invocation: query-gpu for metrics, parse CUDA from header
-	if command -v nvidia-smi &>/dev/null; then
+	if $_HAS_NVIDIA_SMI; then
 		local _smi_full
 		_smi_full=$(nvidia-smi 2>/dev/null)
 		if [[ -n "$_smi_full" ]]; then
-			# Extract CUDA version from the header line (e.g., "CUDA Version: 12.1")
-			CUDA_VERSION=$(echo "$_smi_full" | grep -oP 'CUDA Version: \K[0-9.]+' | head -1)
-
-			# Extract GPU count and memory from the structured table (avoids second nvidia-smi call)
-			# Parse directly from the full output: MiB lines in the format "| ... 12345MiB / 24576MiB |"
+			# Single awk pass extracts CUDA version, GPU count, and memory from nvidia-smi output
+			# Replaces 3 separate echo|grep|head/tail pipelines (9 processes → 1)
+			# NOTE: match(s, re, a) capture groups require gawk; mawk silently yields empty
+			# values, triggering the query-gpu fallback at the cost of one extra nvidia-smi call.
+			local _cuda_ver _gpu_cnt _gpu_mem
+			read -r _cuda_ver _gpu_cnt _gpu_mem < <(awk '
+				/CUDA Version:/ && !cuda { match($0, /CUDA Version: ([0-9.]+)/, a); if (a[1]) cuda=a[1] }
+				/MiB \/ [0-9]+MiB/ { cnt++; match($0, /([0-9]+)MiB \|/, a); if (a[1]) mem=a[1] }
+				END { print (cuda ? cuda : ""), cnt+0, (mem ? mem : 0) }
+			' <<< "$_smi_full")
+			CUDA_VERSION="${_cuda_ver}"
 			GPU_AVAILABLE="true"
-			GPU_COUNT=$(echo "$_smi_full" | grep -cP '^\|.*MiB / \d+MiB' 2>/dev/null) || GPU_COUNT=0
-			GPU_MEMORY_MB=$(echo "$_smi_full" | grep -oP '\d+(?=MiB \|)' | tail -1) || GPU_MEMORY_MB=0
+			GPU_COUNT="${_gpu_cnt}"
+			GPU_MEMORY_MB="${_gpu_mem}"
 
 			# Fallback: if parsing failed, use query-gpu (still just one extra call, not default path)
 			if [[ "$GPU_COUNT" -eq 0 || "$GPU_MEMORY_MB" -eq 0 ]] 2>/dev/null; then
@@ -222,12 +230,12 @@ detect_gpu() {
 				if [[ -n "$_query_info" ]]; then
 					GPU_COUNT=$(grep -c '' <<< "$_query_info")
 					# Single awk replaces head|cut|tr 3-process pipe
-				GPU_MEMORY_MB=$(awk -F',' 'NR==1 {gsub(/[[:space:]]/,"",$2); print $2}' <<< "$_query_info")
+					GPU_MEMORY_MB=$(awk -F',' 'NR==1 {gsub(/[[:space:]]/,"",$2); print $2}' <<< "$_query_info")
 				fi
 			fi
 
-			# Check if CUDA toolkit is ready
-			if command -v nvcc &>/dev/null; then
+			# Check if CUDA toolkit is ready (cached at module load)
+			if $_HAS_NVCC; then
 				CUDA_READY="true"
 			fi
 		fi
@@ -271,13 +279,13 @@ log_gpu_status() {
 check_cuda_prerequisites() {
 	local missing=()
 	
-	# Check for nvidia driver
-	if ! command -v nvidia-smi &>/dev/null; then
+	# Check for nvidia driver (uses cached binary availability)
+	if ! $_HAS_NVIDIA_SMI; then
 		missing+=("nvidia-driver")
 	fi
-	
-	# Check for nvcc (CUDA compiler)
-	if ! command -v nvcc &>/dev/null; then
+
+	# Check for nvcc (CUDA compiler, cached)
+	if ! $_HAS_NVCC; then
 		missing+=("cuda-toolkit")
 	fi
 	
@@ -318,18 +326,9 @@ setup_cuda() {
 	log_info "[CUDA] Missing components: $missing"
 	log_info "[CUDA] Attempting installation..."
 	
-	# Detect package manager
-	local pkg_mgr=""
-	if command -v apt-get &>/dev/null; then
-		pkg_mgr="apt"
-	elif command -v yum &>/dev/null; then
-		pkg_mgr="yum"
-	elif command -v dnf &>/dev/null; then
-		pkg_mgr="dnf"
-	elif command -v conda &>/dev/null; then
-		pkg_mgr="conda"
-	fi
-	
+	# Use cached package manager detection (avoids 4 command -v spawns)
+	local pkg_mgr="$_PKG_MGR"
+
 	case "$pkg_mgr" in
 		apt)
 			install_cuda_apt
@@ -348,6 +347,10 @@ setup_cuda() {
 	esac
 	
 	configure_cuda_env
+	# Refresh binary availability cache after installation (stale values from module load
+	# would cause detect_gpu/verify_installation to miss newly installed nvcc/nvidia-smi)
+	_HAS_NVIDIA_SMI=false; command -v nvidia-smi &>/dev/null && _HAS_NVIDIA_SMI=true
+	_HAS_NVCC=false;       command -v nvcc &>/dev/null       && _HAS_NVCC=true
 	detect_gpu  # Re-detect after installation
 	log_gpu_status
 }
@@ -472,11 +475,13 @@ install_nvidia_driver() {
 			sudo dnf install -y nvidia-driver nvidia-settings
 			;;
 	esac
+	# Refresh binary cache after driver installation (nvidia-smi may now be available)
+	_HAS_NVIDIA_SMI=false; command -v nvidia-smi &>/dev/null && _HAS_NVIDIA_SMI=true
 }
 
 install_cuda_toolkit() {
 	log_step "Installing CUDA Toolkit"
-	
+
 	case "$DISTRO" in
 		ubuntu|debian)
 			sudo apt-get install -y cuda-toolkit nvidia-cuda-toolkit 2>/dev/null || \
@@ -486,7 +491,9 @@ install_cuda_toolkit() {
 			sudo dnf install -y cuda-toolkit
 			;;
 	esac
-	
+
+	# Refresh binary cache after installation (nvcc may now be available)
+	_HAS_NVCC=false; command -v nvcc &>/dev/null && _HAS_NVCC=true
 	# Configure environment
 	configure_cuda_env 2>/dev/null || configure_cuda_env_standalone
 }
@@ -576,15 +583,15 @@ verify_installation() {
 	
 	case "$GPU_VENDOR" in
 		nvidia)
-			if command -v nvidia-smi &>/dev/null; then
+			if $_HAS_NVIDIA_SMI; then
 				log_info "nvidia-smi: OK"
 				nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
 			else
 				log_warn "nvidia-smi: NOT FOUND"
 				success=false
 			fi
-			
-			if command -v nvcc &>/dev/null; then
+
+			if $_HAS_NVCC; then
 				log_info "CUDA compiler: OK ($(nvcc --version | awk '/release/{gsub(/,/,"",$5); print $5}'))"
 			else
 				log_warn "CUDA compiler (nvcc): NOT FOUND - reboot may be required"
