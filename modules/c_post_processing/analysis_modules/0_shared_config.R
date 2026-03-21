@@ -55,6 +55,11 @@ if (is.na(GLOBAL_RANDOM_SEED)) { warning("GLOBAL_RANDOM_SEED env var is non-nume
 # Memory-aware settings (with 24GB+ RAM: prioritize accuracy over memory conservation)
 HIGH_MEMORY_MODE <- AVAILABLE_RAM_GB >= 16
 
+# Figure resolution (DPI) — controlled by FIGURE_DPI env var (300–600, default 300)
+FIGURE_DPI <- as.integer(Sys.getenv("FIGURE_DPI", "300"))
+if (is.na(FIGURE_DPI) || FIGURE_DPI < 72) FIGURE_DPI <- 300L
+FIGURE_DPI <- max(300L, min(600L, FIGURE_DPI))
+
 # GPU status variables (initialized later by detect_gpu())
 GPU_AVAILABLE <- FALSE
 GPU_BACKEND <- "none"  # "none", "cuda", or "torch"

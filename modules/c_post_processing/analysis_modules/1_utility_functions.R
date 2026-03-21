@@ -16,6 +16,10 @@ if (!exists("CURRENT_METHOD")) {
   source(file.path(.utils_dir, "0_shared_config.R"))
 }
 
+# Cache package availability at module load — avoids repeated requireNamespace()
+# calls inside hot-path functions (each requireNamespace() does a PATH scan). O(1) lookup.
+.HAS_MATRIXSTATS <- requireNamespace("matrixStats", quietly = TRUE)
+
 # ===============================================
 # GPU-ACCELERATED COMPUTATION FUNCTIONS
 # ===============================================
@@ -106,7 +110,7 @@ gpu_prcomp <- function(x, center = TRUE, scale. = FALSE, rank. = NULL) {
         x_mat <- sweep(x_mat, 2, col_means, "-")
       }
       if (scale.) {
-        col_sds <- if (requireNamespace("matrixStats", quietly = TRUE)) {
+        col_sds <- if (.HAS_MATRIXSTATS) {
           matrixStats::colSds(x_mat, na.rm = TRUE)
         } else {
           # Vectorized fallback: O(n×p) vs apply()'s O(n×p + p×alloc) overhead
@@ -272,9 +276,10 @@ read_count_matrix <- function(file_path) {
     rownames(data) <- data[, 1]
     data <- data[, -1, drop = FALSE]
     # Vectorized type coercion: identify non-numeric columns in one pass, convert in bulk
-    non_num <- which(!vapply(data, is.numeric, logical(1)))
-    if (length(non_num) > 0) {
-      data[non_num] <- lapply(data[non_num], function(x) suppressWarnings(as.numeric(x)))
+    # Use logical mask directly — skip unnecessary which() allocation. O(ncol).
+    non_num_mask <- !vapply(data, is.numeric, logical(1))
+    if (any(non_num_mask)) {
+      data[non_num_mask] <- lapply(data[non_num_mask], function(x) suppressWarnings(as.numeric(x)))
     }
     data_matrix <- as.matrix(data)
     data_matrix[is.na(data_matrix)] <- 0
@@ -361,9 +366,9 @@ truncate_labels <- function(labels, max_length = 25) {
 # Big O: O(n + m) where n=length(data_rownames), m=length(gene_list).
 # Hash-based lookup via environment avoids O(n×m) brute-force matching.
 match_gene_ids <- function(gene_list, data_rownames) {
-  # Precompute base IDs by stripping version suffixes (.X.XX then .X)
-  base_ids <- sub("\\.[0-9]+\\.[0-9]+$", "", data_rownames)
-  base_ids <- sub("\\.[0-9]+$", "", base_ids)
+  # Precompute base IDs by stripping version suffixes — single-pass regex
+  # handles both .X and .X.XX suffixes. O(n) vs prior 2 × O(n).
+  base_ids <- sub("(\\.[0-9]+){1,2}$", "", data_rownames)
 
   # Build lookup: base_id -> data_rownames indices (vectorized, O(n) via split)
   # Use environment as hash map for O(1) lookups
@@ -568,7 +573,7 @@ preprocess_for_deseq2_normalized <- function(data_matrix, count_type = "expected
 
   # Calculate size factors (median of ratios for each sample)
   ratios <- sweep(nonzero_genes[valid_genes, , drop = FALSE], 1, geo_means[valid_genes], FUN = "/")
-  size_factors <- if (requireNamespace("matrixStats", quietly = TRUE)) {
+  size_factors <- if (.HAS_MATRIXSTATS) {
     matrixStats::colMedians(ratios, na.rm = TRUE)
   } else {
     apply(ratios, 2, median, na.rm = TRUE)

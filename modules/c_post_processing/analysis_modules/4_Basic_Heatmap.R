@@ -66,8 +66,8 @@ generate_heatmap_violet <- function(data_matrix, output_path, title,
     # Color scale with quantile-based range for better visibility
     # Use 2nd to 98th percentile to avoid extreme values dominating the scale
     # This makes low-expression genes more visible while keeping patterns accurate
-    data_values <- as.vector(data_matrix)
-    data_values <- data_values[is.finite(data_values)]
+    # Extract finite values in single pass — avoids intermediate full-vector allocation. O(n).
+    data_values <- data_matrix[is.finite(data_matrix)]
     
     if (length(data_values) < 2) {
       cat("      Warning: Insufficient data for heatmap\n")
@@ -75,8 +75,11 @@ generate_heatmap_violet <- function(data_matrix, output_path, title,
     }
     
     # Use quantiles for color scale bounds (more robust than min/max)
-    color_min <- quantile(data_values, 0.02, na.rm = TRUE)
-    color_max <- quantile(data_values, 0.98, na.rm = TRUE)
+    # Single quantile() call for both bounds — ~2x faster than two separate calls
+    # O(n) partial-sort algorithm; calling once avoids redundant sort pass
+    .quants <- quantile(data_values, c(0.02, 0.98), na.rm = TRUE)
+    color_min <- .quants[1L]
+    color_max <- .quants[2L]
     
     # Handle case where quantiles are identical (no variation)
     if (color_min == color_max) {
@@ -181,7 +184,7 @@ generate_heatmap_violet <- function(data_matrix, output_path, title,
     # Save with auto-adjusted dimensions
     .dev_open <- FALSE
     on.exit(if (.dev_open) try(dev.off(), silent = TRUE), add = TRUE)
-    png(output_path, width = img_width, height = img_height, res = 150)
+    png(output_path, width = img_width, height = img_height, res = FIGURE_DPI)
     .dev_open <- TRUE
     draw(ht, heatmap_legend_side = LEGEND_POSITION)
     dev.off()
