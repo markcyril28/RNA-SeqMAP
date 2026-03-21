@@ -88,7 +88,9 @@ log_info "Validated: $local_rows genes, $local_samples samples in gene_count_mat
 
 # Warn if the count matrix is missing samples relative to the configured dataset
 if [[ -n "${SRR_COMBINED_LIST_STR:-}" ]]; then
-    configured_samples=$(echo "$SRR_COMBINED_LIST_STR" | wc -w)
+    # Pure bash word count — avoids echo|wc subprocess spawn. O(1).
+    read -ra _tmp_arr <<< "$SRR_COMBINED_LIST_STR"
+    configured_samples=${#_tmp_arr[@]}
     if [[ "$local_samples" -lt "$configured_samples" ]]; then
         log_warn "gene_count_matrix.csv has $local_samples samples but $configured_samples are configured."
         log_warn "DESeq2 Differential_Expression will only cover the $local_samples aligned samples."
