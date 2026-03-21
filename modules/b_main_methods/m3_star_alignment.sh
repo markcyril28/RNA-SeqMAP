@@ -16,6 +16,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _M3_SCRIPT_DIR="$SCRIPT_DIR"
 source "$SCRIPT_DIR/shared_utils_method.sh"
 
+# Binary availability cached in shared_utils_method.sh: _SHARED_HAS_PARALLEL, _SHARED_HAS_SAMTOOLS
+
 # ==============================================================================
 # STAR CONFIGURATION - IMPORTANT PARAMETERS (tweak here)
 # ==============================================================================
@@ -236,8 +238,8 @@ star_alignment_pipeline() {
 
 	local fasta="" transcriptome_fasta="" rnaseq_list=() tissue_tag=""
 
-	# Check for GNU parallel
-	if ! command -v parallel >/dev/null 2>&1; then
+	# Check for GNU parallel (uses shared cache from shared_utils_method.sh)
+	if ! $_SHARED_HAS_PARALLEL; then
 		log_warn "[PERFORMANCE] GNU parallel not found - Salmon quantification will run sequentially"
 	fi
 
@@ -269,8 +271,16 @@ star_alignment_pipeline() {
 		#   2. <prefix>_transcripts.fa          (strip _genome suffix: GPE001970_transcripts.fa)
 		#   3. <prefix>_transcripts.function.fa (e.g. Eggplant_V4.1_transcripts.function.fa)
 		local fasta_dir fasta_stem auto_tx=""
-		fasta_dir="$(dirname "$fasta")"
-		fasta_stem="$(basename "${fasta%.*}")"
+		# Pure bash parameter expansion — avoids 2 subshell forks
+		# Edge cases: bare filename → ".", root path "/file.fa" → "/", normal path → dirname
+		fasta_dir="${fasta%/*}"
+		if [[ "$fasta_dir" == "$fasta" ]]; then
+			fasta_dir="."
+		elif [[ -z "$fasta_dir" ]]; then
+			fasta_dir="/"
+		fi
+		local _fasta_name="${fasta##*/}"
+		fasta_stem="${_fasta_name%.*}"
 		local prefix="${fasta_stem%_genome}"  # strip _genome suffix if present
 		for candidate in \
 			"${fasta_dir}/${fasta_stem}_transcripts.fa" \
@@ -301,7 +311,8 @@ star_alignment_pipeline() {
 	[[ ${#rnaseq_list[@]} -eq 0 ]] && { log_error "No RNA-seq samples provided."; return 1; }
 
 	local fasta_base fasta_tag star_index_dir star_genome_dir
-	fasta_base="$(basename "$fasta")"
+	# Pure bash parameter expansion — avoids 1 subshell fork vs $(basename ...)
+	fasta_base="${fasta##*/}"
 	fasta_tag="${fasta_base%.*}"
 	set_fasta_output_dirs "$fasta_tag"
 
@@ -482,6 +493,10 @@ star_alignment_pipeline() {
 	log_step "STAR splice-aware alignment for $fasta_tag samples"
 
 	local parallel_jobs="${PARALLEL_JOBS:-${JOBS:-2}}"
+	# Adaptive: cap parallel jobs at sample count to maximize per-job thread allocation
+	local _n_samples=${#rnaseq_list[@]}
+	(( parallel_jobs > _n_samples )) && parallel_jobs=$_n_samples
+	(( parallel_jobs < 1 )) && parallel_jobs=1
 	local threads_per_job=$((THREADS / parallel_jobs))
 	[[ $threads_per_job -lt 1 ]] && threads_per_job=1
 
@@ -492,7 +507,8 @@ star_alignment_pipeline() {
 	_star_sort_ram_bytes=$(_star_sort_ram "$parallel_jobs")
 	export _star_sort_ram_bytes
 
-	if command -v parallel >/dev/null 2>&1 && [[ "$parallel_jobs" -gt 1 ]] && [[ "${USE_GNU_PARALLEL:-TRUE}" != "FALSE" ]]; then
+	# Use cached parallel availability (set at module load) to avoid per-invocation command -v
+	if $_SHARED_HAS_PARALLEL && [[ "$parallel_jobs" -gt 1 ]] && [[ "${USE_GNU_PARALLEL:-TRUE}" != "FALSE" ]]; then
 		log_step "[PARALLEL] STAR alignment: ${#rnaseq_list[@]} samples, $parallel_jobs jobs x $threads_per_job threads"
 		log_warn "[PARALLEL] STAR is memory-intensive (~30GB/instance). Ensure sufficient RAM for $parallel_jobs concurrent jobs."
 		_prepare_parallel_env
@@ -858,7 +874,8 @@ star_alignment_pipeline() {
 	# Quantify samples
 	log_info "[SALMON] Starting quantification for ${#rnaseq_list[@]} samples"
 
-	if command -v parallel >/dev/null 2>&1 && [[ "$parallel_jobs" -gt 1 ]] && [[ "${USE_GNU_PARALLEL:-TRUE}" != "FALSE" ]]; then
+	# Use cached parallel availability (set at module load) to avoid per-invocation command -v
+	if $_SHARED_HAS_PARALLEL && [[ "$parallel_jobs" -gt 1 ]] && [[ "${USE_GNU_PARALLEL:-TRUE}" != "FALSE" ]]; then
 		log_step "[PARALLEL] Salmon quant (STAR): ${#rnaseq_list[@]} samples, $parallel_jobs jobs x $threads_per_job threads"
 		_prepare_parallel_env
 

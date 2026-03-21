@@ -24,6 +24,12 @@ source "$SCRIPT_DIR/../a_preprocessing/shared_utils_preproc.sh"
 # Detect pigz once at module load; methods use $_SHARED_GZIP_DC instead of
 # repeatedly spawning `command -v pigz` per sample.
 
+# Cache binary availability at module load — O(1) per subsequent check across all methods.
+# Avoids repeated command -v spawns per-sample in alignment loops.
+_SHARED_HAS_PARALLEL=false; command -v parallel >/dev/null 2>&1 && _SHARED_HAS_PARALLEL=true
+_SHARED_HAS_SAMTOOLS=false; command -v samtools >/dev/null 2>&1 && _SHARED_HAS_SAMTOOLS=true
+export _SHARED_HAS_PARALLEL _SHARED_HAS_SAMTOOLS
+
 # Only detect if not already set by shared_utils_preproc.sh (avoids redundant command -v spawn)
 if [[ -z "${_SHARED_GZIP_C:-}" ]]; then
 	if command -v pigz &>/dev/null; then
@@ -91,8 +97,13 @@ load_sample_metadata() {
 	line_count=$(awk '!/^#/ && !/^$/ && !/^SRR_ID/ {n++} END{print n+0}' "$metadata_file")
 	[[ $line_count -lt 2 ]] && { log_error "Metadata file must contain at least 2 samples (found: $line_count)"; return 1; }
 	
+	# O(S) single pass: skip blank lines, comments, and header without per-line regex
+	local _line_num=0
 	while IFS=$'\t' read -r srr condition batch; do
-		[[ -z "$srr" || "$srr" =~ ^# || "$srr" == "SRR_ID" ]] && continue
+		(( ++_line_num ))
+		[[ -z "$srr" || "$srr" == \#* ]] && continue
+		# Skip header (first non-blank line with "SRR_ID")
+		[[ "$srr" == "SRR_ID" ]] && continue
 		metadata_array["${srr}_condition"]="$condition"
 		metadata_array["${srr}_batch"]="$batch"
 	done < "$metadata_file"

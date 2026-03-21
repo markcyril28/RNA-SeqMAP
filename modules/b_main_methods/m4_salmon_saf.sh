@@ -51,7 +51,7 @@ salmon_saf_pipeline() {
 	[[ -z "$fasta" || -z "$genome" ]] && { log_error "Usage: --FASTA genes.fa --GENOME genome.fa"; return 1; }
 	[[ ${#rnaseq_list[@]} -eq 0 ]] && rnaseq_list=("${SRR_COMBINED_LIST[@]}")
 
-	local tag="$(basename "${fasta%.*}")"
+	local _fn="${fasta##*/}"; local tag="${_fn%.*}"
 	set_fasta_output_dirs "$tag"
 	# Use an absolute path so $work is unambiguous regardless of the caller's CWD
 	local work="$SALMON_SAF_ROOT/tmp_${tag}_gentrome"
@@ -98,10 +98,14 @@ salmon_saf_pipeline() {
 
 	# QUANTIFICATION PER SRR
 	local parallel_jobs="${PARALLEL_JOBS:-${JOBS:-2}}"
+	# Adaptive: cap parallel jobs at sample count to maximize per-job thread allocation
+	local _n_samples=${#rnaseq_list[@]}
+	(( parallel_jobs > _n_samples )) && parallel_jobs=$_n_samples
+	(( parallel_jobs < 1 )) && parallel_jobs=1
 	local threads_per_job=$((THREADS / parallel_jobs))
 	[[ $threads_per_job -lt 1 ]] && threads_per_job=1
 
-	if command -v parallel >/dev/null 2>&1 && [[ "$parallel_jobs" -gt 1 ]] && [[ "${USE_GNU_PARALLEL:-TRUE}" != "FALSE" ]]; then
+	if $_SHARED_HAS_PARALLEL && [[ "$parallel_jobs" -gt 1 ]] && [[ "${USE_GNU_PARALLEL:-TRUE}" != "FALSE" ]]; then
 		log_step "[PARALLEL] Salmon quantification: ${#rnaseq_list[@]} samples, $parallel_jobs jobs x $threads_per_job threads"
 		_prepare_parallel_env
 

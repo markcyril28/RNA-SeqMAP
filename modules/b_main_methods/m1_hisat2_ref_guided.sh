@@ -17,6 +17,8 @@ export M1_HISAT2_REF_SOURCED="true"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/shared_utils_method.sh"
 
+# Binary availability cached in shared_utils_method.sh: _SHARED_HAS_SAMTOOLS, _SHARED_HAS_PARALLEL
+
 # ==============================================================================
 # POST-ALIGNMENT QC
 # ==============================================================================
@@ -234,7 +236,8 @@ _m1_collect_bam_metrics() {
 	local method="${3:-HISAT2_RG}" srr="${4:-SAMPLE}"
 	local metrics_file="$out_dir/${srr}_bam_metrics.txt"
 
-	if ! command -v samtools >/dev/null 2>&1 || [[ ! -f "$bam" ]]; then
+	# Use cached samtools availability (set in shared_utils_method.sh) to avoid per-BAM command -v
+	if ! $_SHARED_HAS_SAMTOOLS || [[ ! -f "$bam" ]]; then
 		return 0
 	fi
 
@@ -337,7 +340,8 @@ hisat2_ref_guided_pipeline() {
 	fi
 
 	local fasta_base fasta_tag index_prefix
-	fasta_base="$(basename "$fasta")"
+	# Pure bash parameter expansion — avoids basename subshell fork
+	fasta_base="${fasta##*/}"
 	fasta_tag="${fasta_base%.*}"
 	set_fasta_output_dirs "$fasta_tag"
 	index_prefix="$HISAT2_REF_GUIDED_INDEX_DIR/${fasta_tag}_ref_guided"
@@ -417,10 +421,15 @@ hisat2_ref_guided_pipeline() {
 
 	# ALIGNMENT AND STRINGTIE ASSEMBLY (pure quantification: single pass with -e)
 	local parallel_jobs="${PARALLEL_JOBS:-${JOBS:-2}}"
+	# Adaptive: don't spawn more parallel jobs than samples — wastes thread allocation
+	# O(1) min check avoids reserving e.g. 32 threads/job when only 3 samples exist on 64-thread node
+	local _n_samples=${#rnaseq_list[@]}
+	(( parallel_jobs > _n_samples )) && parallel_jobs=$_n_samples
+	(( parallel_jobs < 1 )) && parallel_jobs=1
 	local threads_per_job=$((THREADS / parallel_jobs))
 	[[ $threads_per_job -lt 1 ]] && threads_per_job=1
 
-	if command -v parallel >/dev/null 2>&1 && [[ "$parallel_jobs" -gt 1 ]] && [[ "${USE_GNU_PARALLEL:-TRUE}" != "FALSE" ]]; then
+	if $_SHARED_HAS_PARALLEL && [[ "$parallel_jobs" -gt 1 ]] && [[ "${USE_GNU_PARALLEL:-TRUE}" != "FALSE" ]]; then
 		log_step "[PARALLEL] HISAT2 Ref-Guided Align+StringTie: ${#rnaseq_list[@]} samples, $parallel_jobs jobs x $threads_per_job threads"
 		_prepare_parallel_env
 
@@ -504,9 +513,15 @@ hisat2_ref_guided_pipeline() {
 			# Collect BAM metrics before potential deletion
 			[[ -f "$bam" ]] && _m1_collect_bam_metrics "$bam" "$HISAT2_DIR" "HISAT2_RG" "$SRR"
 
+			# Only delete BAM after verifying StringTie produced valid output
+			# Prevents unrecoverable data loss if StringTie exits 0 but produces empty/missing GTF
 			if [[ "$keep_bam_global" != "y" && -f "$bam" ]]; then
-				_parallel_log HISAT2_RG "$SRR" WARN "Deleting BAM to save disk (set keep_bam_global=y to retain): $(basename "$bam")"
-				rm -f "$bam" "${bam}.bai" "${bam}.csi"
+				if [[ -f "$out_gtf" && -s "$out_gtf" ]]; then
+					_parallel_log HISAT2_RG "$SRR" WARN "Deleting BAM to save disk (set keep_bam_global=y to retain): $(basename "$bam")"
+					rm -f "$bam" "${bam}.bai" "${bam}.csi"
+				else
+					_parallel_log HISAT2_RG "$SRR" WARN "Retaining BAM — StringTie GTF missing or empty: $(basename "$out_gtf")"
+				fi
 			fi
 
 			_parallel_log HISAT2_RG "$SRR" INFO "Completed successfully"
@@ -617,9 +632,14 @@ hisat2_ref_guided_pipeline() {
 			# Collect BAM metrics before potential deletion
 			[[ -f "$bam" ]] && _m1_collect_bam_metrics "$bam" "$HISAT2_DIR" "HISAT2_RG" "$SRR"
 
+			# Only delete BAM after verifying StringTie produced valid output
 			if [[ "$keep_bam_global" != "y" && -f "$bam" ]]; then
-				log_warn "[BAM] Deleting $SRR BAM to save disk (set keep_bam_global=y to retain)"
-				rm -f "$bam" "${bam}.bai" "${bam}.csi"
+				if [[ -f "$out_gtf" && -s "$out_gtf" ]]; then
+					log_warn "[BAM] Deleting $SRR BAM to save disk (set keep_bam_global=y to retain)"
+					rm -f "$bam" "${bam}.bai" "${bam}.csi"
+				else
+					log_warn "[BAM] Retaining $SRR BAM — StringTie GTF missing or empty"
+				fi
 			fi
 		done
 	fi

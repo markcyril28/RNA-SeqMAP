@@ -42,7 +42,7 @@ hisat2_de_novo_pipeline() {
 	[[ ${#rnaseq_list[@]} -eq 0 ]] && rnaseq_list=("${SRR_COMBINED_LIST[@]}")
 
 	local fasta_base fasta_tag index_prefix
-	fasta_base="$(basename "$fasta")"
+	fasta_base="${fasta##*/}"
 	fasta_tag="${fasta_base%.*}"
 	set_fasta_output_dirs "$fasta_tag"
 	index_prefix="$HISAT2_DE_NOVO_INDEX_DIR/${fasta_tag}_index"
@@ -149,10 +149,14 @@ hisat2_de_novo_pipeline() {
 
 	# ALIGNMENT AND STRINGTIE ASSEMBLY
 	local parallel_jobs="${PARALLEL_JOBS:-${JOBS:-2}}"
+	# Adaptive: cap parallel jobs at sample count to maximize per-job thread allocation
+	local _n_samples=${#rnaseq_list[@]}
+	(( parallel_jobs > _n_samples )) && parallel_jobs=$_n_samples
+	(( parallel_jobs < 1 )) && parallel_jobs=1
 	local threads_per_job=$((THREADS / parallel_jobs))
 	[[ $threads_per_job -lt 1 ]] && threads_per_job=1
 
-	if command -v parallel >/dev/null 2>&1 && [[ "$parallel_jobs" -gt 1 ]] && [[ "${USE_GNU_PARALLEL:-TRUE}" != "FALSE" ]]; then
+	if $_SHARED_HAS_PARALLEL && [[ "$parallel_jobs" -gt 1 ]] && [[ "${USE_GNU_PARALLEL:-TRUE}" != "FALSE" ]]; then
 		log_step "[PARALLEL] HISAT2 De Novo: ${#rnaseq_list[@]} samples, $parallel_jobs jobs x $threads_per_job threads"
 		_prepare_parallel_env
 
@@ -230,8 +234,13 @@ hisat2_de_novo_pipeline() {
 					{ _parallel_log HISAT2_DN "$SRR" ERROR "StringTie failed"; rm -f "$out_gtf" "$out_abund"; return 1; }
 			fi
 
+			# Only delete BAM after verifying StringTie produced valid output
 			if [[ "$keep_bam_global" != "y" ]]; then
-				rm -f "$bam" "${bam}.bai" "${bam}.csi"
+				if [[ -f "$out_gtf" && -s "$out_gtf" ]]; then
+					rm -f "$bam" "${bam}.bai" "${bam}.csi"
+				else
+					_parallel_log HISAT2_DN "$SRR" WARN "Retaining BAM — StringTie GTF missing or empty"
+				fi
 			fi
 			_parallel_log HISAT2_DN "$SRR" INFO "Completed successfully"
 			return 0
@@ -333,9 +342,13 @@ hisat2_de_novo_pipeline() {
 					|| { log_error "[STRINGTIE] Assembly failed for $SRR"; rm -f "$out_gtf" "$out_abund"; ((_seq_failures++)) || true; continue; }
 			fi
 
-			# Cleanup BAM files if configured
+			# Only delete BAM after verifying StringTie produced valid output
 			if [[ "$keep_bam_global" != "y" ]]; then
-				rm -f "$bam" "${bam}.bai" "${bam}.csi"
+				if [[ -f "$out_gtf" && -s "$out_gtf" ]]; then
+					rm -f "$bam" "${bam}.bai" "${bam}.csi"
+				else
+					log_warn "[BAM] Retaining $SRR BAM — StringTie GTF missing or empty"
+				fi
 			fi
 
 			log_info "[STRINGTIE] Done processing $SRR (de novo)"

@@ -239,7 +239,7 @@ bowtie2_rsem_pipeline() {
 		dos2unix "$fasta" 2>/dev/null || true
 	fi
 
-	local tag="$(basename "${fasta%.*}")"
+	local _fn="${fasta##*/}"; local tag="${_fn%.*}"
 	set_fasta_output_dirs "$tag"
 	local rsem_idx="$RSEM_INDEX_ROOT/rsem_ref"
 	local quant_root="$RSEM_QUANT_ROOT"
@@ -466,6 +466,9 @@ _rsem_quantify_parallel() {
 	fi
 
 	local parallel_jobs="${MAX_PARALLEL_SAMPLES:-2}"
+	# Adaptive: cap parallel jobs at sample count to maximize per-job thread allocation
+	(( parallel_jobs > num_samples )) && parallel_jobs=$num_samples
+	(( parallel_jobs < 1 )) && parallel_jobs=1
 	local threads_per_job="${THREADS_PER_RSEM_JOB:-$((THREADS / parallel_jobs))}"
 	[[ $threads_per_job -lt 1 ]] && threads_per_job=1
 
@@ -835,7 +838,7 @@ _create_rsem_summary() {
 # Check if GNU Parallel should be used for sample processing
 _rsem_should_use_parallel() {
 	[[ "${USE_GNU_PARALLEL:-FALSE}" != "TRUE" ]] && return 1
-	command -v parallel >/dev/null 2>&1 || return 1
+	$_SHARED_HAS_PARALLEL || return 1
 	return 0
 }
 
