@@ -56,11 +56,14 @@ find_trimmed_fastq() {
 		trimmed2="$TrimGalore_DIR/${SRR}_2_val_2.fq"
 	else
 		# Glob fallback for non-standard paired-end names (no subshell via compgen)
-		local files1=("$TrimGalore_DIR"/${SRR}*val_1.*)
-		if [[ -f "${files1[0]:-}" ]]; then
-			local files2=("$TrimGalore_DIR"/${SRR}*val_2.*)
-			trimmed1="${files1[0]}"
-			[[ -f "${files2[0]:-}" ]] && trimmed2="${files2[0]}"
+		# Single glob expansion for both val_1 and val_2 — O(1) readdir vs O(2).
+		local _all_vals=("$TrimGalore_DIR"/${SRR}*val_[12].*)
+		if [[ -f "${_all_vals[0]:-}" ]]; then
+			local _v
+			for _v in "${_all_vals[@]}"; do
+				[[ "$_v" == *val_1* && -f "$_v" ]] && trimmed1="$_v"
+				[[ "$_v" == *val_2* && -f "$_v" ]] && trimmed2="$_v"
+			done
 		# Single-end patterns (compressed first)
 		elif [[ -f "$TrimGalore_DIR/${SRR}_trimmed.fq.gz" ]]; then
 			trimmed1="$TrimGalore_DIR/${SRR}_trimmed.fq.gz"
@@ -133,27 +136,43 @@ verify_trimming_and_cleanup() {
 # READ LENGTH DETECTION
 # ==============================================================================
 
+# Global read length cache — avoids redundant FASTQ decompression when multiple
+# methods (M1, M2, M3, M5) detect read length from the same trimmed files.
+# Key: file path, Value: detected read length. Persists across method calls.
+declare -gA _READ_LENGTH_CACHE 2>/dev/null || declare -A _READ_LENGTH_CACHE
+
 # Detect read length from FASTQ file
 detect_read_length() {
 	local fastq="$1"
 	local default_length="${2:-150}"
-	
+
 	[[ ! -f "$fastq" ]] && { echo "$default_length"; return 1; }
-	
+
+	# O(1) cache check — skip decompression if already detected for this file
+	if [[ -n "${_READ_LENGTH_CACHE[$fastq]:-}" ]]; then
+		echo "${_READ_LENGTH_CACHE[$fastq]}"
+		return 0
+	fi
+
 	# Use cached pigz detection (set at module load) instead of per-call command -v
 	local decompress_cmd="cat"
 	case "$fastq" in
 		*.gz) decompress_cmd="${_SHARED_GZIP_DC:-zcat}" ;;
 		*.bz2) decompress_cmd="bzcat" ;;
 	esac
-	
-	local avg_length=$($decompress_cmd "$fastq" 2>/dev/null | \
-		awk 'NR%4==2 {sum+=length($0); count++} count==1000 {print int(sum/count); exit} END {if (count>0 && count<1000) print int(sum/count)}')
-	
+
+	# Sample 100 reads (400 lines) instead of 1000 — statistically equivalent for
+	# read length detection but 10x fewer lines decompressed. O(400) vs O(4000).
+	local avg_length=$($decompress_cmd "$fastq" 2>/dev/null | head -n 400 | \
+		awk 'NR%4==2 {sum+=length($0); count++} END {if (count>0) print int(sum/count)}')
+
 	if [[ -z "$avg_length" || $avg_length -lt 50 || $avg_length -gt 300 ]]; then
 		echo "$default_length"
 		return 1
 	fi
+
+	# Cache result for subsequent calls with the same file
+	_READ_LENGTH_CACHE["$fastq"]="$avg_length"
 	echo "$avg_length"
 }
 
@@ -163,17 +182,20 @@ detect_read_length() {
 
 # Check if GNU Parallel should be used
 # Returns 0 (true) if parallel should be used, 1 (false) otherwise
+# O(1) check using cached binary availability from shared_utils_method.sh or local cache.
+# Avoids per-call `command -v parallel` subprocess spawn.
 should_use_parallel() {
-	if [[ "${USE_GNU_PARALLEL:-FALSE}" != "TRUE" ]]; then
-		return 1
+	[[ "${USE_GNU_PARALLEL:-FALSE}" != "TRUE" ]] && return 1
+	# Use cached detection if available, else cache now (first call)
+	if [[ -z "${_SHARED_HAS_PARALLEL:-}" ]]; then
+		_SHARED_HAS_PARALLEL=false
+		command -v parallel &>/dev/null && _SHARED_HAS_PARALLEL=true
 	fi
-	if ! command -v parallel &>/dev/null; then
+	if [[ "$_SHARED_HAS_PARALLEL" != "true" ]]; then
 		log_warn "GNU Parallel requested but not installed. Falling back to sequential processing."
 		return 1
 	fi
-	if [[ "${JOBS:-1}" -le 1 ]]; then
-		return 1
-	fi
+	[[ "${JOBS:-1}" -le 1 ]] && return 1
 	return 0
 }
 
