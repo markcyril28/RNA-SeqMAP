@@ -23,24 +23,19 @@ export OVERWRITE_MODE
 # Active configuration file — uncomment as needed:
 CONFIG_FILES=(
 	# --- Download & Trim ---
-	#"config/1_download_and_trim/HPC_download_and_trim.sh"		# Download + trim all SRRs
+	#"config/1_download_and_trim/HPC_download_and_trim.toml"	# Download + trim all SRRs
 
 	# --- Test runs (all M1-M5, 3 SRRs) ---
-	#"config/2_alignment/HPC_test_genome_M1_M3.sh"				# M1 + M3 (genome FASTA)
-	#"config/2_alignment/HPC_test_transcript_M2_M4_M5.sh"		# M2 + M4 + M5 (transcript FASTA)
-
-	# --- Test runs (individual methods) ---
-	#"config/2_alignment/HPC_test_hisat2.sh"
-	#"config/2_alignment/HPC_test_star.sh"
-	#"config/2_alignment/HPC_test_salmon_bowtie2.sh"
-	#"config/2_alignment/HPC_test_genome.sh"
+	#"config/2_alignment/HPC_test_genome_M1_M3.toml"			# M1 + M3 (genome FASTA)
+	#"config/2_alignment/HPC_test_transcript_M2_M4_M5.toml"	# M2 + M4 + M5 (transcript FASTA)
 
 	# --- Full runs ---
-	"config/2_alignment/HPC_full_ref_guided.sh"				# Reference-guided (M1 + M3)
-	"config/2_alignment/HPC_full_non_ref_guided.sh"			# Non-reference-guided (M2 + M4 + M5)
+	"config/2_alignment/HPC_full_ref_guided.toml"				# Reference-guided (M1 + M3)
+	"config/2_alignment/HPC_full_non_ref_guided.toml"			# Non-reference-guided (M2 + M4 + M5)
 
 	# --- Local ---
-	#"config/2_alignment/local_test.sh"							# Local testing
+	#"config/2_alignment/local_full_ref_guided.toml"			# Local ref-guided (M1 + M3)
+	#"config/2_alignment/local_full_non_ref_guided.toml"		# Local non-ref-guided (M2 + M4 + M5)
 )
 
 # ==============================================================================
@@ -291,6 +286,10 @@ source "${PROJECT_ROOT}/modules/logging/logging_utils.sh" 2>/dev/null || {
 	log_step()  { echo ""; echo "==> $*"; }
 }
 
+# Source TOML parser and shared runtime defaults
+source "${PROJECT_ROOT}/config/shared/toml_parser.sh"
+source "${PROJECT_ROOT}/config/shared/runtime_defaults.sh"
+
 # Cleanup trap: log summary on exit; clean up STAR temp dirs on signal kill
 _pipeline_cleanup() {
 	local rc=$?
@@ -306,6 +305,9 @@ _pipeline_cleanup() {
 }
 trap _pipeline_cleanup EXIT
 
+# Big O: O(C × R × M × S) where C=configs, R=ref_pairs, M=enabled_methods, S=samples.
+# Methods run in parallel when PARALLEL_METHODS=TRUE, reducing M dimension to O(1) wall-clock.
+# Per-method inner loops are parallelized via GNU Parallel (S/JOBS threads).
 total_failures=0
 
 for config_file in "${CONFIG_FILES[@]}"; do
@@ -314,8 +316,34 @@ for config_file in "${CONFIG_FILES[@]}"; do
 	[[ -f "$config_file" ]] || { log_error "Configuration file not found: $config_file"; exit 1; }
 	GENOME_REF_PAIRS=()
 	ALL_FASTA_FILES=()
-	unset gtf_file STAR_TRANSCRIPTOME_FASTA decoy
-	source "$config_file" || { log_error "Failed to load config: $config_file"; exit 1; }
+	PIPELINE_STAGES=()
+	SRR_COMBINED_LIST=()
+	unset gtf_file STAR_TRANSCRIPTOME_FASTA decoy DECOY KEEP_BAM_GLOBAL STAR_READ_LENGTH HISAT2_STRANDNESS
+	load_toml "$config_file" || { log_error "Failed to load config: $config_file"; exit 1; }
+	# Export STAR_READ_LENGTH if set by config
+	[[ -n "${STAR_READ_LENGTH:-}" ]] && export STAR_READ_LENGTH
+
+	# Load SRR datasets: test configs define SRR_COMBINED_LIST inline;
+	# full configs load from shared srr_datasets.toml
+	if [[ ${#SRR_COMBINED_LIST[@]} -eq 0 ]]; then
+		load_toml_srr_datasets "${PROJECT_ROOT}/config/shared/srr_datasets.toml"
+	fi
+
+	# Map TOML uppercase keys to lowercase aliases used by method modules
+	[[ -n "${DECOY:-}" ]] && decoy="$DECOY"
+	[[ -n "${KEEP_BAM_GLOBAL:-}" ]] && keep_bam_global="$KEEP_BAM_GLOBAL"
+	[[ -n "${HISAT2_STRANDNESS:-}" ]] || HISAT2_STRANDNESS=""
+	[[ -n "${POST_PROCESSING_ROOT:-}" ]] && export POST_PROCESSING_ROOT
+
+	# Re-derive THREADS_PER_JOB from potentially updated THREADS/JOBS
+	if [[ "${USE_GNU_PARALLEL:-FALSE}" == "TRUE" ]]; then
+		THREADS_PER_JOB=$((${THREADS:-4} / ${JOBS:-1}))
+		[[ $THREADS_PER_JOB -lt 1 ]] && THREADS_PER_JOB=1
+	else
+		THREADS_PER_JOB="${THREADS:-4}"
+	fi
+	export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
+
 	set_pipeline_flags
 
 	mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT"
