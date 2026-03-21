@@ -16,6 +16,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/shared_utils_preproc.sh"
 
 # ==============================================================================
+# SKIP-IF-EXISTS CHECK (DRY helper — consolidates 4 identical check patterns)
+# ==============================================================================
+# Returns 0 (skip) if trimmed or raw files already exist for this SRR.
+# O(1) glob checks; avoids duplicating the find_trimmed/find_raw pattern.
+_srr_already_downloaded() {
+	local SRR="$1"
+	find_trimmed_fastq "$SRR"
+	[[ -n "$trimmed1" ]] && return 0
+	find_raw_fastq "$SRR"
+	[[ -n "$raw1" ]] && return 0
+	return 1
+}
+
+# ==============================================================================
 # PRIMARY: SRA Toolkit (prefetch + fasterq-dump)
 # ==============================================================================
 
@@ -27,13 +41,7 @@ download_srrs() {
 		local raw_dir="$RAW_DIR_ROOT/$SRR"
 		mkdir -p "$raw_dir"
 		
-		# Check if trimmed files exist
-		find_trimmed_fastq "$SRR"
-		[[ -n "$trimmed1" ]] && { log_info "Trimmed files for $SRR exist. Skipping download."; continue; }
-		
-		# Check if raw files exist
-		find_raw_fastq "$SRR"
-		[[ -n "$raw1" ]] && { log_info "Raw files for $SRR exist. Skipping download."; continue; }
+		_srr_already_downloaded "$SRR" && { log_info "Files for $SRR exist. Skipping download."; continue; }
 		
 		log_info "Downloading $SRR..."
 		run_with_space_time_log prefetch "$SRR" --output-directory "$raw_dir"
@@ -73,12 +81,8 @@ download_srrs_wget() {
 		local raw_dir="$RAW_DIR_ROOT/$SRR"
 		mkdir -p "$raw_dir"
 		
-		find_trimmed_fastq "$SRR"
-		[[ -n "$trimmed1" ]] && { log_info "Trimmed $SRR exists. Skipping."; continue; }
-		
-		find_raw_fastq "$SRR"
-		[[ -n "$raw1" ]] && { log_info "Raw $SRR exists. Skipping."; continue; }
-		
+		_srr_already_downloaded "$SRR" && { log_info "Files for $SRR exist. Skipping."; continue; }
+
 		# Get ENA links
 		local ena_links=$(curl -s "https://www.ebi.ac.uk/ena/portal/api/filereport?accession=${SRR}&result=read_run&fields=fastq_ftp&format=tsv" | tail -n +2)
 		[[ -z "$ena_links" ]] && { log_warn "No ENA links for $SRR"; continue; }
@@ -114,12 +118,8 @@ download_srrs_kingfisher() {
 		local raw_dir="$RAW_DIR_ROOT/$SRR"
 		mkdir -p "$raw_dir"
 		
-		find_trimmed_fastq "$SRR"
-		[[ -n "$trimmed1" ]] && { log_info "Trimmed $SRR exists. Skipping."; continue; }
-		
-		find_raw_fastq "$SRR"
-		[[ -n "$raw1" ]] && { log_info "Raw $SRR exists. Skipping."; continue; }
-		
+		_srr_already_downloaded "$SRR" && { log_info "Files for $SRR exist. Skipping."; continue; }
+
 		log_info "Downloading $SRR with kingfisher..."
 		run_with_space_time_log kingfisher get --run-identifiers "$SRR" --output-directory "$raw_dir" \
 			--download-threads "$THREADS" --extraction-threads "$THREADS" --gzip --check-md5sums \
@@ -147,7 +147,7 @@ download_srrs_parallel() {
 	log_info "Running parallel downloads with GNU Parallel (JOBS=${JOBS:-2})"
 	export PATH CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_EXE
 	export RAW_DIR_ROOT TRIM_DIR_ROOT THREADS THREADS_PER_JOB
-	export -f timestamp log log_info log_warn log_error find_trimmed_fastq find_raw_fastq
+	export -f timestamp log log_info log_warn log_error find_trimmed_fastq find_raw_fastq _srr_already_downloaded
 	
 	_download_worker() {
 		local SRR="$1"
@@ -161,11 +161,7 @@ download_srrs_parallel() {
 		local raw_dir="$RAW_DIR_ROOT/$SRR"
 		mkdir -p "$raw_dir"
 		
-		find_trimmed_fastq "$SRR"
-		[[ -n "$trimmed1" ]] && return 0
-		
-		find_raw_fastq "$SRR"
-		[[ -n "$raw1" ]] && return 0
+		_srr_already_downloaded "$SRR" && return 0
 		
 		prefetch "$SRR" --output-directory "$raw_dir" || return 1
 		fasterq-dump --split-files --threads "${THREADS_PER_JOB:-2}" "$raw_dir/$SRR/$SRR.sra" -O "$raw_dir" || return 1
