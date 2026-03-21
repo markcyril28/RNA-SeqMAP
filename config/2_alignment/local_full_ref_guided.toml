@@ -1,0 +1,40 @@
+# ==============================================================================
+# LOCAL FULL CONFIG: REFERENCE-GUIDED METHODS (M1 + M3)
+# ==============================================================================
+
+# Runtime
+threads = 64
+jobs = 2
+use_gnu_parallel = true
+keep_bam_global = "n"
+star_read_length = 89    # Actual read length for PRJNA328564 (89 bp)
+hisat2_strandness = ""
+
+# Pipeline Stages
+pipeline_stages = [
+    #"MAMBA_INSTALLATION",
+    #"DOWNLOAD_SRR",
+    #"TRIM_SRR",
+    #"DOWNLOAD_TRIM_and_DELETE_RAW_SRR",
+    #"GZIP_TRIMMED_FILES",
+    #"QUALITY_CONTROL",
+    #"DELETE_RAW_SRR",
+    #"DELETE_TRIMMED_FASTQ_FILES",
+    "METHOD_1_HISAT2_REF_GUIDED",
+    #"METHOD_2_HISAT2_DE_NOVO",
+    "METHOD_3_STAR_ALIGNMENT",
+    #"METHOD_4_SALMON_SAF",
+    #"METHOD_5_BOWTIE2_RSEM",
+]
+
+# Input
+genome_ref_pairs = [
+    "inputs/gtf/reference/GPE001970_genome.gtf|inputs/fasta/reference_genome/GPE001970_genome.fa|inputs/fasta/reference_genome/GPE001970_transcripts.fa",
+    "inputs/gtf/reference/Eggplant_V4.1_function_IPR_final_stringtie.gtf|inputs/fasta/reference_genome/Eggplant_V4.1.fa|inputs/fasta/reference_genome/Eggplant_V4.1_transcripts.function.fa",
+]
+
+# Output
+post_processing_root = "3_POST_PROC"
+
+# Cleanup
+activate_rm = false

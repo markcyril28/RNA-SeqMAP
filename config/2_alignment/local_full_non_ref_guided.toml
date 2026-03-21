@@ -1,0 +1,40 @@
+# ==============================================================================
+# LOCAL FULL CONFIG: NON-REFERENCE-GUIDED METHODS (M2 + M4 + M5)
+# ==============================================================================
+
+# Runtime
+threads = 64
+jobs = 2
+use_gnu_parallel = true
+keep_bam_global = "n"
+
+# Pipeline Stages
+pipeline_stages = [
+    #"MAMBA_INSTALLATION",
+    #"DOWNLOAD_SRR",
+    #"TRIM_SRR",
+    #"DOWNLOAD_TRIM_and_DELETE_RAW_SRR",
+    #"GZIP_TRIMMED_FILES",
+    #"QUALITY_CONTROL",
+    #"DELETE_RAW_SRR",
+    #"DELETE_TRIMMED_FASTQ_FILES",
+    #"METHOD_1_HISAT2_REF_GUIDED",
+    "METHOD_2_HISAT2_DE_NOVO",
+    #"METHOD_3_STAR_ALIGNMENT",
+    "METHOD_4_SALMON_SAF",
+    "METHOD_5_BOWTIE2_RSEM",
+]
+
+# Input
+decoy = "inputs/fasta/experimental/TEST.fasta"
+
+all_fasta_files = [
+    "inputs/fasta/reference_genome/GPE001970_transcripts.fa",
+    "inputs/fasta/reference_genome/Eggplant_V4.1_transcripts.function.fa",
+]
+
+# Output
+post_processing_root = "3_POST_PROC"
+
+# Cleanup
+activate_rm = false
