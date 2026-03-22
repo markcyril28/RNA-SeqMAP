@@ -48,7 +48,9 @@ all_fasta_files = [
     "inputs/fasta/reference_genome/GPE001970_transcripts.fa",
 ]
 
-# SRR datasets loaded from config/shared/srr_datasets.toml
+# SRR dataset file — relative to config/shared/ or absolute path
+# Available files: srr_datasets.toml (full), srr_datasets_download.toml (download subset)
+srr_datasets = "srr_datasets_download.toml"
 
 # Output
 post_processing_root = "3_POST_PROC"
