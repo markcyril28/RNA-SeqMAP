@@ -26,15 +26,15 @@ export OVERWRITE_MODE
 # Active configuration file — uncomment as needed:
 CONFIG_FILES=(
 	# --- Download & Trim ---
-	#"config/1_download_and_trim/HPC_download_and_trim.toml"	# Download + trim all SRRs
+	"config/1_download_and_trim/HPC_download_and_trim.toml"	# Download + trim all SRRs
 
 	# --- Test runs (all M1-M5, 3 SRRs) ---
 	#"config/2_alignment/HPC_test_genome_M1_M3.toml"			# M1 + M3 (genome FASTA)
 	#"config/2_alignment/HPC_test_transcript_M2_M4_M5.toml"	# M2 + M4 + M5 (transcript FASTA)
 
 	# --- Full runs ---
-	"config/2_alignment/HPC_full_ref_guided.toml"				# Reference-guided (M1 + M3)
-	"config/2_alignment/HPC_full_non_ref_guided.toml"			# Non-reference-guided (M2 + M4 + M5)
+	#"config/2_alignment/HPC_full_ref_guided.toml"				# Reference-guided (M1 + M3)
+	#"config/2_alignment/HPC_full_non_ref_guided.toml"			# Non-reference-guided (M2 + M4 + M5)
 
 	# --- Local ---
 	#"config/2_alignment/local_full_ref_guided.toml"			# Local ref-guided (M1 + M3)
@@ -244,7 +244,11 @@ run_all() {
 		for _mlog in "${_method_logs[@]}"; do
 			[[ -f "$_mlog" ]] && _existing_logs+=("$_mlog")
 		done
-		[[ ${#_existing_logs[@]} -gt 0 ]] && cat "${_existing_logs[@]}" >> "$LOG_FILE"
+		if [[ ${#_existing_logs[@]} -gt 0 ]]; then
+			cat "${_existing_logs[@]}" >> "$LOG_FILE"
+			# Clean up per-method temp logs to prevent accumulation across runs
+			rm -f "${_existing_logs[@]}"
+		fi
 	else
 		# PARALLEL_METHODS=FALSE: sequential fallback
 		log_step "Running ${#_enabled_methods[@]} methods sequentially"
@@ -269,7 +273,9 @@ run_all() {
 	local _end_fmt; printf -v _end_fmt '%(%Y-%m-%d %H:%M:%S)T' "$end_time" 2>/dev/null || _end_fmt=$(date -d "@$end_time" '+%Y-%m-%d %H:%M:%S')
 	log_info "Script ended at: $_end_fmt"
 	# Pure bash arithmetic (avoids date subshell spawn)
-	log_info "Elapsed time: $(printf '%02d:%02d:%02d' $((elapsed/3600)) $(((elapsed%3600)/60)) $((elapsed%60)))"
+	# O(1) bash builtin — avoids $(printf) subprocess fork
+	local _elapsed_fmt; printf -v _elapsed_fmt '%02d:%02d:%02d' $((elapsed/3600)) $(((elapsed%3600)/60)) $((elapsed%60))
+	log_info "Elapsed time: $_elapsed_fmt"
 
 	if [[ $method_failures -gt 0 ]]; then
 		log_error "$method_failures method(s) failed for $fasta_tag"
@@ -335,11 +341,18 @@ for config_file in "${CONFIG_FILES[@]}"; do
 	[[ -n "${STAR_READ_LENGTH:-}" ]] && export STAR_READ_LENGTH
 
 	# Load SRR datasets: test configs define SRR_COMBINED_LIST inline;
-	# full configs load from shared srr_datasets.toml.
+	# full configs load from shared srr_datasets TOML.
+	# SRR_DATASETS (set by config TOML) overrides the default filename.
 	# Cache result — avoids re-parsing the same TOML across multiple configs.
 	# O(L) TOML parse on first call; O(1) array copy on subsequent calls.
 	if [[ ${#SRR_COMBINED_LIST[@]} -eq 0 ]]; then
-		_srr_toml="${PROJECT_ROOT}/config/shared/srr_datasets.toml"
+		_srr_basename="${SRR_DATASETS:-srr_datasets.toml}"
+		# Resolve: absolute path used as-is, relative resolved under config/shared/
+		if [[ "$_srr_basename" == /* ]]; then
+			_srr_toml="$_srr_basename"
+		else
+			_srr_toml="${PROJECT_ROOT}/config/shared/${_srr_basename}"
+		fi
 		if [[ "${_SRR_DATASETS_CACHED_FILE:-}" == "$_srr_toml" && ${#_SRR_DATASETS_CACHED[@]} -gt 0 ]]; then
 			SRR_COMBINED_LIST=("${_SRR_DATASETS_CACHED[@]}")
 		else
