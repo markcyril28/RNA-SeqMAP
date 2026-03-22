@@ -229,6 +229,12 @@ table.grid td.row-header { background: var(--surface2); padding: 8px 12px; font-
     <div class="chip-group" id="filter-sort"></div>
   </div>
   <div class="sidebar-section">
+    <h3>Display</h3>
+    <div class="chip-group">
+      <span class="chip" id="toggle-hide-empty" onclick="toggleHideEmpty()">Hide empty columns</span>
+    </div>
+  </div>
+  <div class="sidebar-section">
     <button class="reset-btn" onclick="resetFilters()">&#10006; Reset All Filters</button>
   </div>
 </aside>
@@ -297,16 +303,17 @@ const REF_TO_ACCESSION = {};
 ACCESSION_GROUPS.forEach(ag => ag.refs.forEach(r => { REF_TO_ACCESSION[r] = ag.id; }));
 
 // ── State ──────────────────────────────────────────────────────────────────
-// null = no filter active (show all). Filters narrow down from there.
-// gene_groups_active: empty Set = all groups shown; non-empty = only those columns.
+// Every filter is a Set. Empty Set = no restriction (show all).
+// Multiple selections within a filter are OR'd; across filters are AND'd.
 const state = {
-  analysis:           null,
-  gene_groups_active: new Set(),
-  processing_level:   null,
-  count_type:         null,
-  norm_scheme:        null,
-  row_orientation:    null,
-  sort_order:         null,
+  analyses_active:          new Set(),
+  gene_groups_active:       new Set(),
+  processing_levels_active: new Set(),
+  count_types_active:       new Set(),
+  norm_schemes_active:      new Set(),
+  row_orientations_active:  new Set(),
+  sort_orders_active:       new Set(),
+  hide_empty_cols:          false,
 };
 
 // Cell image navigation state (per cell: method×reference)
@@ -332,13 +339,13 @@ document.addEventListener("DOMContentLoaded", () => {
     document.body.insertBefore(banner, document.querySelector(".layout"));
   }
 
-  buildChips("filter-analysis",       d.analyses,          "analysis");
-  buildMultiChips("filter-gene-group", d.gene_groups,       "gene_groups_active");
-  buildChips("filter-proc-level",     d.processing_levels, "processing_level");
-  buildChips("filter-count-type", d.count_types,       "count_type");
-  buildChips("filter-norm",       d.norm_schemes,      "norm_scheme");
-  buildChips("filter-row-orient", d.row_orientations,  "row_orientation");
-  buildChips("filter-sort",       d.sort_orders,       "sort_order");
+  buildChips("filter-analysis",   d.analyses,          "analyses_active");
+  buildChips("filter-gene-group", d.gene_groups,       "gene_groups_active",       prettyGeneGroup);
+  buildChips("filter-proc-level", d.processing_levels, "processing_levels_active");
+  buildChips("filter-count-type", d.count_types,       "count_types_active");
+  buildChips("filter-norm",       d.norm_schemes,      "norm_schemes_active");
+  buildChips("filter-row-orient", d.row_orientations,  "row_orientations_active");
+  buildChips("filter-sort",       d.sort_orders,       "sort_orders_active");
 
   document.getElementById("img-count").textContent =
     MANIFEST.total_images + " images";
@@ -347,32 +354,16 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // ── Filter helpers ─────────────────────────────────────────────────────────
-// Single-select chips: click activates; click again deactivates (exclusive).
-function buildChips(containerId, values, stateKey) {
-  const el = document.getElementById(containerId);
-  values.forEach(v => {
-    const c = document.createElement("span");
-    c.className = "chip";  // no pre-active — all filters start as null
-    c.textContent = prettyLabel(v);
-    c.dataset.value = v;
-    c.onclick = () => {
-      state[stateKey] = state[stateKey] === v ? null : v;
-      el.querySelectorAll(".chip").forEach(x =>
-        x.classList.toggle("active", x.dataset.value === state[stateKey]));
-      render();
-    };
-    el.appendChild(c);
-  });
-}
-
-// Multi-select chips: each chip toggles independently.
-// Empty Set = show all groups; non-empty = show only selected groups as columns.
-function buildMultiChips(containerId, values, stateKey) {
+// All chips are multi-select: each toggles independently within its Set.
+// Empty Set = no restriction; non-empty = show only matching values.
+// labelFn: optional function to format the chip label (defaults to prettyLabel).
+function buildChips(containerId, values, stateKey, labelFn) {
+  const fmt = labelFn || prettyLabel;
   const el = document.getElementById(containerId);
   values.forEach(v => {
     const c = document.createElement("span");
     c.className = "chip";
-    c.textContent = prettyGeneGroup(v);
+    c.textContent = fmt(v);
     c.dataset.value = v;
     c.onclick = () => {
       if (state[stateKey].has(v)) {
@@ -389,43 +380,39 @@ function buildMultiChips(containerId, values, stateKey) {
 }
 
 function resetFilters() {
-  state.analysis           = null;
-  state.gene_groups_active = new Set();
-  state.processing_level   = null;
-  state.count_type         = null;
-  state.norm_scheme        = null;
-  state.row_orientation    = null;
-  state.sort_order         = null;
-  // Sync chip UI (deactivate all chips including multi-select gene groups)
+  state.analyses_active          = new Set();
+  state.gene_groups_active       = new Set();
+  state.processing_levels_active = new Set();
+  state.count_types_active       = new Set();
+  state.norm_schemes_active      = new Set();
+  state.row_orientations_active  = new Set();
+  state.sort_orders_active       = new Set();
+  state.hide_empty_cols          = false;
   ["filter-analysis","filter-gene-group","filter-proc-level","filter-count-type",
    "filter-norm","filter-row-orient","filter-sort"].forEach(id => {
     document.getElementById(id).querySelectorAll(".chip")
       .forEach(c => c.classList.remove("active"));
   });
+  document.getElementById("toggle-hide-empty").classList.remove("active");
   render();
 }
 
-function chipIdToKey(id) {
-  return {
-    "filter-analysis": "analysis",
-    "filter-proc-level": "processing_level",
-    "filter-count-type": "count_type",
-    "filter-norm": "norm_scheme",
-    "filter-row-orient": "row_orientation",
-    "filter-sort": "sort_order",
-  }[id];
+function toggleHideEmpty() {
+  state.hide_empty_cols = !state.hide_empty_cols;
+  document.getElementById("toggle-hide-empty").classList.toggle("active", state.hide_empty_cols);
+  render();
 }
 
 // ── Filter images ──────────────────────────────────────────────────────────
 function filteredImages() {
   return MANIFEST.images.filter(img => {
-    if (state.analysis && img.analysis !== state.analysis) return false;
-    if (state.gene_groups_active.size > 0 && !state.gene_groups_active.has(img.gene_group)) return false;
-    if (state.processing_level && img.processing_level !== state.processing_level) return false;
-    if (state.count_type && img.count_type !== state.count_type) return false;
-    if (state.norm_scheme && img.norm_scheme !== state.norm_scheme) return false;
-    if (state.row_orientation && img.row_orientation !== state.row_orientation) return false;
-    if (state.sort_order && img.sort_order !== state.sort_order) return false;
+    if (state.analyses_active.size > 0          && !state.analyses_active.has(img.analysis))                return false;
+    if (state.gene_groups_active.size > 0       && !state.gene_groups_active.has(img.gene_group))           return false;
+    if (state.processing_levels_active.size > 0 && !state.processing_levels_active.has(img.processing_level)) return false;
+    if (state.count_types_active.size > 0       && !state.count_types_active.has(img.count_type))           return false;
+    if (state.norm_schemes_active.size > 0      && !state.norm_schemes_active.has(img.norm_scheme))         return false;
+    if (state.row_orientations_active.size > 0  && !state.row_orientations_active.has(img.row_orientation)) return false;
+    if (state.sort_orders_active.size > 0       && !state.sort_orders_active.has(img.sort_order))           return false;
     return true;
   });
 }
@@ -465,12 +452,25 @@ function render() {
   images.forEach(img => { if (!geneGroupSet.includes(img.gene_group)) geneGroupSet.push(img.gene_group); });
   if (geneGroupSet.length === 0) MANIFEST.dimensions.gene_groups.forEach(g => geneGroupSet.push(g));
 
-  // Total leaf columns = accessions × gene_groups
-  const totalLeafCols = cols.length * geneGroupSet.length;
-
   // Always render all known methods as rows (cells are "No data" when empty)
   const methods = METHOD_ORDER.filter(m =>
     MANIFEST.dimensions.methods.includes(m));
+
+  // Per-accession gene group visibility: when hide_empty_cols is on, drop sub-columns
+  // where every method has no data for that (accession × gene_group) pair.
+  const ggPerAccession = {};
+  cols.forEach(ag => {
+    if (state.hide_empty_cols) {
+      ggPerAccession[ag.id] = geneGroupSet.filter(gg =>
+        methods.some(m => (((lookup[m] || {})[ag.id] || {})[gg] || []).length > 0)
+      );
+    } else {
+      ggPerAccession[ag.id] = [...geneGroupSet];
+    }
+  });
+
+  // Total leaf columns = sum of visible gene groups per accession
+  const totalLeafCols = cols.reduce((sum, ag) => sum + ggPerAccession[ag.id].length, 0);
 
   const table = document.createElement("table");
   table.className = "grid";
@@ -491,20 +491,22 @@ function render() {
   thCat.textContent = "Accessions";
   catRow.appendChild(thCat);
 
-  // Row 2: one accession header spanning its gene_group sub-columns
+  // Row 2: one accession header spanning its visible gene_group sub-columns
   const accRow = thead.insertRow();
   cols.forEach(ag => {
+    const visibleCount = ggPerAccession[ag.id].length;
+    if (visibleCount === 0) return;  // skip accession with no visible columns
     const th = document.createElement("th");
-    th.colSpan = geneGroupSet.length;
+    th.colSpan = visibleCount;
     th.style.cssText = "text-align:center;font-size:13px;font-weight:700;border-bottom:1px solid var(--border);";
     th.textContent = ag.label;
     accRow.appendChild(th);
   });
 
-  // Row 3: gene group sub-column headers (repeated per accession)
+  // Row 3: gene group sub-column headers (per accession, only visible groups)
   const ggRow = thead.insertRow();
-  cols.forEach(() => {
-    geneGroupSet.forEach(gg => {
+  cols.forEach(ag => {
+    ggPerAccession[ag.id].forEach(gg => {
       const th = document.createElement("th");
       th.style.cssText = "text-align:center;min-width:180px;font-size:11px;color:var(--muted);font-weight:500;";
       th.textContent = prettyGeneGroup(gg);
@@ -524,7 +526,7 @@ function render() {
     row.appendChild(rh);
 
     cols.forEach(ag => {
-      geneGroupSet.forEach(gg => {
+      ggPerAccession[ag.id].forEach(gg => {
         const td = row.insertCell();
         const imgs = ((lookup[method] || {})[ag.id] || {})[gg] || [];
         if (imgs.length === 0) {
