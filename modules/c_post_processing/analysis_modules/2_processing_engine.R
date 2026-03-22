@@ -112,34 +112,33 @@ process_all_combinations <- function(
     
     for (processing_level in active_processing_levels) {
       for (count_type in active_count_types) {
+        # Hoist norm scheme computation outside gene_type/label_type loops —
+        # schemes depend only on count_type, not on gene_type or label_type.
+        # Eliminates O(|GENE_TYPES| × |LABEL_TYPES|) redundant get_norm_schemes() calls.
+        valid_schemes <- get_norm_schemes(count_type)
+        active_norm_schemes <- NORM_SCHEMES[NORM_SCHEMES %in% valid_schemes]
+        dropped_schemes <- NORM_SCHEMES[!NORM_SCHEMES %in% valid_schemes]
+        if (length(dropped_schemes) > 0) {
+          cat("    Note: skipping invalid norm schemes for", count_type, ":",
+              paste(dropped_schemes, collapse = ", "), "\n")
+        }
         for (gene_type in GENE_TYPES) {
           for (label_type in LABEL_TYPES) {
-            
-            input_file <- build_input_path(gene_group, processing_level, count_type, 
+
+            input_file <- build_input_path(gene_group, processing_level, count_type,
                                            gene_type, matrices_dir, config$master_reference,
                                            CURRENT_METHOD, label_type)
-            
+
             validation <- validate_and_read_matrix(input_file, min_rows)
-            
+
             if (!validation$success) {
-              cat("  Skipping (", validation$reason, "):", processing_level, "|", 
+              cat("  Skipping (", validation$reason, "):", processing_level, "|",
                   basename(input_file), "\n", sep = "")
               next
             }
-            
-            cat("  Processing:", processing_level, "|", count_type, "|", gene_type, "|", 
+
+            cat("  Processing:", processing_level, "|", count_type, "|", gene_type, "|",
                 label_type, "- Found", validation$n_genes, "genes\n")
-            
-            # Sequential processing for normalization schemes
-            # Filter configured NORM_SCHEMES to only those valid for this count type
-            # (e.g., "raw"/"cpm"/"deseq2_normalized" are invalid for pre-normalized TPM/FPKM)
-            valid_schemes <- get_norm_schemes(count_type)
-            active_norm_schemes <- NORM_SCHEMES[NORM_SCHEMES %in% valid_schemes]
-            dropped_schemes <- NORM_SCHEMES[!NORM_SCHEMES %in% valid_schemes]
-            if (length(dropped_schemes) > 0) {
-              cat("    Note: skipping invalid norm schemes for", count_type, ":",
-                  paste(dropped_schemes, collapse = ", "), "\n")
-            }
             # Pre-apply labels to raw data ONCE (independent of norm_scheme)
             # Normalization only changes values, not row/column structure,
             # so we label once and normalize the labeled data directly.

@@ -88,8 +88,8 @@ if (is.null(.tx2gene_file) && nzchar(.input_fastas_dir)) {
 .tx2gene <- if (!is.null(.tx2gene_file)) {
   tryCatch({
     .t2g <- if (.use_dt_salmon) {
-      as.data.frame(data.table::fread(.tx2gene_file, header = FALSE, sep = "\t",
-                                       strip.white = TRUE, showProgress = FALSE))
+      data.table::fread(.tx2gene_file, header = FALSE, sep = "\t",
+                        strip.white = TRUE, showProgress = FALSE, data.table = FALSE)
     } else {
       read.table(.tx2gene_file, header = FALSE, sep = "\t", stringsAsFactors = FALSE,
                  strip.white = TRUE)

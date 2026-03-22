@@ -41,54 +41,68 @@ fits_in_gpu_vram <- function(nrow, ncol, safety_factor = 0.7) {
 }
 
 # GPU-accelerated correlation matrix computation
-# WGCNA cor() is the bottleneck for large datasets
+# Supports Pearson and Spearman. Spearman = Pearson on column-wise ranks,
+# so the rank transform runs on CPU (cheap O(n×p×log n)) and the expensive
+# O(p²×n) matrix multiply runs on GPU.
 gpu_cor <- function(x, method = "pearson") {
-  # GPU path only supports Pearson; fall back to CPU for Spearman/Kendall
-  if (!GPU_AVAILABLE || nrow(x) < 100 || !fits_in_gpu_vram(nrow(x), ncol(x)) || method != "pearson") {
-    if (GPU_AVAILABLE && method != "pearson") {
+  gpu_eligible <- GPU_AVAILABLE && nrow(x) >= 100 &&
+                  fits_in_gpu_vram(nrow(x), ncol(x)) &&
+                  method %in% c("pearson", "spearman")
+  if (!gpu_eligible) {
+    if (GPU_AVAILABLE && !method %in% c("pearson", "spearman")) {
       message("[GPU] ", method, " correlation not supported on GPU, using CPU")
     } else if (GPU_AVAILABLE && !fits_in_gpu_vram(nrow(x), ncol(x))) {
       message("[GPU] Matrix too large for ", GPU_VRAM_GB, "GB VRAM, using CPU")
     }
-    # Use CPU for small matrices, large matrices, non-Pearson, or when GPU unavailable
     return(cor(x, method = method, use = "pairwise.complete.obs"))
   }
 
   tryCatch({
+    x_mat <- as.matrix(x)
+    col_names <- colnames(x)
+
+    # Spearman = Pearson on ranks: rank-transform columns on CPU (O(n×p×log n),
+    # lightweight vs the O(p²×n) GPU matmul that follows)
+    if (method == "spearman") {
+      x_mat <- apply(x_mat, 2, rank, na.last = "keep")
+    }
+
+    # Replace NAs with column means so GPU path (no NA support) is numerically
+    # equivalent to use="pairwise.complete.obs" for sparse NA patterns
+    if (anyNA(x_mat)) {
+      col_mu <- colMeans(x_mat, na.rm = TRUE)
+      na_idx <- which(is.na(x_mat), arr.ind = TRUE)
+      x_mat[na_idx] <- col_mu[na_idx[, 2]]
+    }
+
     if (GPU_BACKEND == "torch") {
-      # Use torch for GPU column-column correlation (matching R's cor())
-      x_tensor <- torch::torch_tensor(as.matrix(x), device = "cuda")
+      # GPU Pearson: center → cov via matmul → normalize
+      x_tensor <- torch::torch_tensor(x_mat, device = "cuda")
       n <- x_tensor$size(0)
       if (n < 2) stop("Need at least 2 rows for correlation")
-      # Center columns: mean(dim=0) averages across rows for each column
       x_centered <- x_tensor - x_tensor$mean(dim = 0, keepdim = TRUE)
-      # Column-column covariance: t(X_c) %*% X_c / (nrow - 1)
       cov_matrix <- torch::torch_mm(x_centered$t(), x_centered) / (n - 1)
-      # Compute standard deviations of columns (clamp to avoid division by zero for constant columns)
       std_dev <- torch::torch_sqrt(torch::torch_diag(cov_matrix))
       std_dev <- torch::torch_clamp(std_dev, min = 1e-12)
-      # Compute correlation
       cor_matrix <- cov_matrix / torch::torch_outer(std_dev, std_dev)
       result <- as.matrix(cor_matrix$cpu())
-      rownames(result) <- colnames(x)
-      colnames(result) <- colnames(x)
+      rownames(result) <- col_names
+      colnames(result) <- col_names
       return(result)
     } else if (GPU_BACKEND == "gpuR") {
-      # Use gpuR for GPU correlation (cov() computes column-column covariance)
-      x_gpu <- gpuR::vclMatrix(as.matrix(x), type = "float")
+      x_gpu <- gpuR::vclMatrix(x_mat, type = "float")
       result <- as.matrix(gpuR::cov(x_gpu))
-      # Convert covariance to correlation (clamp to avoid division by zero for constant columns)
       std_dev <- sqrt(diag(result))
       std_dev[std_dev == 0] <- 1e-12
       result <- result / outer(std_dev, std_dev)
-      rownames(result) <- colnames(x)
-      colnames(result) <- colnames(x)
+      rownames(result) <- col_names
+      colnames(result) <- col_names
       return(result)
     }
   }, error = function(e) {
     message("[GPU] Correlation failed, falling back to CPU: ", e$message)
   })
-  
+
   # Fallback to CPU
   return(cor(x, method = method, use = "pairwise.complete.obs"))
 }
@@ -268,14 +282,10 @@ read_count_matrix <- function(file_path) {
       read.csv(file_path, header = TRUE, stringsAsFactors = FALSE,
                check.names = FALSE, na.strings = c("", "NA", "null"))
     }
-    # Normalize duplicate column names: fread uses "_1" suffixes but downstream
-    # code (apply_labels, replicate averaging) expects ".1" from make.unique()
-    if (any(duplicated(colnames(data)))) {
-      colnames(data) <- make.unique(colnames(data))
-    }
-    if (any(duplicated(data[, 1]))) {
-      data[, 1] <- make.unique(as.character(data[, 1]), sep = "_")
-    }
+    # Normalize duplicate column/row names: make.unique() is a no-op when names
+    # are already unique, so the redundant any(duplicated()) guard is unnecessary.
+    colnames(data) <- make.unique(colnames(data))
+    data[, 1] <- make.unique(as.character(data[, 1]), sep = "_")
     rownames(data) <- data[, 1]
     data <- data[, -1, drop = FALSE]
     # Vectorized type coercion: identify non-numeric columns in one pass, convert in bulk
@@ -434,7 +444,8 @@ match_gene_ids <- function(gene_list, data_rownames) {
 
 preprocess_for_raw <- function(data_matrix) {
   if (is.null(data_matrix) || nrow(data_matrix) == 0) return(NULL)
-  data_matrix[is.na(data_matrix) | is.infinite(data_matrix)] <- 0
+  # !is.finite() catches NA, NaN, and Inf in a single C-level pass (vs two passes + logical OR)
+  data_matrix[!is.finite(data_matrix)] <- 0
   return(data_matrix)
 }
 
@@ -461,14 +472,14 @@ preprocess_for_cpm <- function(data_matrix, count_type = "expected_count") {
     lib_sizes[zero_libs] <- 1
   }
   data_cpm <- sweep(data_matrix, 2, lib_sizes/1e6, FUN = "/")
-  data_cpm[is.na(data_cpm) | is.infinite(data_cpm)] <- 0
+  data_cpm[!is.finite(data_cpm)] <- 0
   return(log2(data_cpm + 1))  # +1 pseudocount before log
 }
 
 preprocess_for_count_type_normalized <- function(data_matrix, count_type) {
   if (is.null(data_matrix) || nrow(data_matrix) == 0) return(NULL)
   data_processed <- log2(data_matrix + 1)
-  data_processed[is.na(data_processed) | is.infinite(data_processed)] <- 0
+  data_processed[!is.finite(data_processed)] <- 0
   return(data_processed)
 }
 
@@ -487,7 +498,7 @@ preprocess_for_zscore <- function(data_matrix, count_type, .log2_cache = NULL) {
     global_sd <- sd(data_norm, na.rm = TRUE)
     if (global_sd == 0 || !is.finite(global_sd)) global_sd <- 1
     data_zscore <- (data_norm - global_mean) / global_sd
-    data_zscore[is.na(data_zscore) | is.infinite(data_zscore)] <- 0
+    data_zscore[!is.finite(data_zscore)] <- 0
     return(data_zscore)
   }
   return(data_norm)
@@ -509,7 +520,7 @@ preprocess_for_zscore_row <- function(data_matrix, count_type, .log2_cache = NUL
     row_sds <- sqrt(rowSums((data_norm - row_means)^2, na.rm = TRUE) / (n_c - 1))
     row_sds[row_sds == 0 | !is.finite(row_sds)] <- 1  # Avoid division by zero
     data_zscore <- (data_norm - row_means) / row_sds
-    data_zscore[is.na(data_zscore) | is.infinite(data_zscore)] <- 0
+    data_zscore[!is.finite(data_zscore)] <- 0
     return(data_zscore)
   }
   return(data_norm)
@@ -537,7 +548,7 @@ preprocess_for_zscore_scaled_to_ten <- function(data_matrix, count_type, .log2_c
     rownames(data_scaled) <- rownames(data_zscore)
     colnames(data_scaled) <- colnames(data_zscore)
   }
-  data_scaled[is.na(data_scaled) | is.infinite(data_scaled)] <- 0
+  data_scaled[!is.finite(data_scaled)] <- 0
   return(data_scaled)
 }
 
@@ -592,7 +603,7 @@ preprocess_for_deseq2_normalized <- function(data_matrix, count_type = "expected
   
   # Apply log2 transformation
   data_normalized <- log2(data_normalized + 1)
-  data_normalized[is.na(data_normalized) | is.infinite(data_normalized)] <- 0
+  data_normalized[!is.finite(data_normalized)] <- 0
   
   return(data_normalized)
 }
@@ -805,26 +816,40 @@ convert_to_shortened_names <- function(counts_matrix, gene_group) {
   base_double <- sub("\\.[0-9]+\\.[0-9]+$", "", current_rownames)
   base_single <- sub("\\.[0-9]+$", "", base_double)
 
-  # Cascade: first match wins (avoids repeated subset+reassign passes)
+  # Cascade: first match wins. Use which() to track unmatched positions —
+  # avoids O(n) is.na() scan on the full vector at each step; only checks
+  # the shrinking set of unmatched positions. O(n) total instead of O(4n).
   new_rownames <- mapping[current_rownames]
-  na_mask <- is.na(new_rownames)
-  if (any(na_mask)) {
-    new_rownames[na_mask] <- mapping[base_one_level[na_mask]]
-    na_mask <- is.na(new_rownames)
+  unmatched <- which(is.na(new_rownames))
+  if (length(unmatched) > 0L) {
+    hits <- mapping[base_one_level[unmatched]]
+    matched <- !is.na(hits)
+    if (any(matched)) {
+      new_rownames[unmatched[matched]] <- hits[matched]
+      unmatched <- unmatched[!matched]
+    }
   }
-  if (any(na_mask)) {
-    new_rownames[na_mask] <- mapping[base_double[na_mask]]
-    na_mask <- is.na(new_rownames)
+  if (length(unmatched) > 0L) {
+    hits <- mapping[base_double[unmatched]]
+    matched <- !is.na(hits)
+    if (any(matched)) {
+      new_rownames[unmatched[matched]] <- hits[matched]
+      unmatched <- unmatched[!matched]
+    }
   }
-  if (any(na_mask)) {
-    new_rownames[na_mask] <- mapping[base_single[na_mask]]
-    na_mask <- is.na(new_rownames)
+  if (length(unmatched) > 0L) {
+    hits <- mapping[base_single[unmatched]]
+    matched <- !is.na(hits)
+    if (any(matched)) {
+      new_rownames[unmatched[matched]] <- hits[matched]
+      unmatched <- unmatched[!matched]
+    }
   }
 
   # Reverse lookup: row ID is shorter than mapping key (e.g., gene-level "SMEL5_06g022750"
   # when mapping has transcript-level "SMEL5_06g022750.1" as key).
   # Also handles row IDs longer than mapping keys via stripped-row matching.
-  if (any(na_mask)) {
+  if (length(unmatched) > 0L) {
     mapping_keys <- names(mapping)
     stripped_keys <- sub("\\.[0-9]+$", "", mapping_keys)
     # Only use entries where stripping actually changed the key (avoids false matches)
@@ -834,22 +859,30 @@ convert_to_shortened_names <- function(counts_matrix, gene_group) {
       # Remove duplicates (keep first occurrence)
       reverse_mapping <- reverse_mapping[!duplicated(names(reverse_mapping))]
       # Try raw row names first, then stripped variants
-      reverse_hits <- reverse_mapping[current_rownames[na_mask]]
+      reverse_hits <- reverse_mapping[current_rownames[unmatched]]
       na_rev <- is.na(reverse_hits)
       if (any(na_rev)) {
-        reverse_hits[na_rev] <- reverse_mapping[base_one_level[na_mask][na_rev]]
-        na_rev <- is.na(reverse_hits)
+        hits2 <- reverse_mapping[base_one_level[unmatched[na_rev]]]
+        matched2 <- !is.na(hits2)
+        if (any(matched2)) {
+          reverse_hits[which(na_rev)[matched2]] <- hits2[matched2]
+          na_rev <- is.na(reverse_hits)
+        }
       }
       if (any(na_rev)) {
-        reverse_hits[na_rev] <- reverse_mapping[base_double[na_mask][na_rev]]
+        hits3 <- reverse_mapping[base_double[unmatched[na_rev]]]
+        matched3 <- !is.na(hits3)
+        if (any(matched3)) {
+          reverse_hits[which(na_rev)[matched3]] <- hits3[matched3]
+        }
       }
-      new_rownames[na_mask] <- reverse_hits
+      new_rownames[unmatched] <- reverse_hits
     }
   }
 
   # Keep original name if still no mapping found
-  na_mask <- is.na(new_rownames)
-  new_rownames[na_mask] <- current_rownames[na_mask]
+  still_na <- is.na(new_rownames)
+  new_rownames[still_na] <- current_rownames[still_na]
   
   result <- counts_matrix
   rownames(result) <- new_rownames

@@ -114,14 +114,27 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
       return(results)
     }
     # Prefer 3_Matrix_Creation_STAR.R; this branch is a fallback only.
+    # Resolve quant.sf paths once — reused by both gene-level and isoform-level imports.
+    # Avoids duplicate filesystem scan when both GENERATE_GENE_LEVEL and GENERATE_ISOFORM_LEVEL are TRUE.
+    .m3_quant_files <- if (GENERATE_GENE_LEVEL || GENERATE_ISOFORM_LEVEL) {
+      .resolve_quant_files(quant_dir, sample_ids)
+    } else {
+      character(0)
+    }
     if (GENERATE_GENE_LEVEL) {
       tx2gene_file <- list.files(file.path("count_matrices_from_STAR", master_ref),
                                   pattern = "^tx2gene.*\\.tsv$", full.names = TRUE)
       if (length(tx2gene_file) > 0) {
         # Read without col.names to detect actual column count and order.
         # Matches the approach in 3_Matrix_Creation_STAR.R / tximport_star_to_matrices.R.
-        raw_tx2gene <- read.delim(tx2gene_file[1], header = FALSE,
-                                  stringsAsFactors = FALSE, colClasses = "character")
+        # O(N) where N = tx2gene rows (50K-200K); fread is 10-50x faster
+        raw_tx2gene <- if (.HAS_DATATABLE) {
+          data.table::fread(tx2gene_file[1], header = FALSE, colClasses = "character",
+                            data.table = FALSE)
+        } else {
+          read.delim(tx2gene_file[1], header = FALSE,
+                     stringsAsFactors = FALSE, colClasses = "character")
+        }
         if (ncol(raw_tx2gene) >= 2) {
           # Detect column order: tximport needs c(TXNAME, GENEID)
           # star_alignment_pipeline writes: transcript_id TAB gene_id (col1=TX, col2=GENE)
@@ -142,8 +155,7 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
         if (is.null(tx2gene)) {
           cat("  Skipping M3 gene-level import (malformed tx2gene)\n")
         } else {
-        # Resolve quant.sf paths (with tissue-specific directory fallback)
-        .m3_quant_files <- .resolve_quant_files(quant_dir, sample_ids)
+        # quant.sf paths already resolved above (hoisted before gene/isoform blocks)
         if (length(.m3_quant_files) < 2) {
           cat("  Error: Need >= 2 quant.sf files for M3 gene-level import, found",
               length(.m3_quant_files), "\n")
@@ -184,10 +196,7 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
       }
     }
     if (GENERATE_ISOFORM_LEVEL) {
-      # Reuse resolved quant files from gene-level, or resolve fresh
-      if (!exists(".m3_quant_files") || length(.m3_quant_files) == 0) {
-        .m3_quant_files <- .resolve_quant_files(quant_dir, sample_ids)
-      }
+      # quant.sf paths already resolved above (hoisted before gene/isoform blocks)
       if (length(.m3_quant_files) < 2) {
         cat("  Error: Need >= 2 quant.sf files for M3 isoform-level import, found",
             length(.m3_quant_files), "\n")
@@ -304,12 +313,20 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
           if (nzchar(.c) && file.exists(.c)) {
             # .rds sidecar cache: 5-10x faster reload vs TSV re-parsing
             .m4_rds <- paste0(.c, ".tx2gene.rds")
-            if (file.exists(.m4_rds) && file.mtime(.m4_rds) >= file.mtime(.c)) {
+            # Single file.info() call replaces file.exists() + 2x file.mtime() (3 stat → 1 stat)
+            .rds_info <- file.info(.m4_rds)
+            if (!is.na(.rds_info$mtime) && .rds_info$mtime >= file.mtime(.c)) {
               .raw <- readRDS(.m4_rds)
               cat("  Loaded tx2gene from .rds cache:", basename(.m4_rds), "\n")
             } else {
-              .raw <- read.table(.c, header = FALSE, sep = "\t", stringsAsFactors = FALSE,
-                                 strip.white = TRUE)
+              # O(N) where N = gene_trans_map rows; fread is 10-50x faster
+              .raw <- if (.HAS_DATATABLE) {
+                data.table::fread(.c, header = FALSE, sep = "\t", strip.white = TRUE,
+                                  data.table = FALSE)
+              } else {
+                read.table(.c, header = FALSE, sep = "\t", stringsAsFactors = FALSE,
+                           strip.white = TRUE)
+              }
               tryCatch(saveRDS(.raw, .m4_rds), error = function(e) NULL)
             }
             .raw <- .raw[, 1:2, drop = FALSE]
@@ -327,8 +344,14 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
           # (e.g., "V4" matching "V4.1")
           .hits <- .all_maps[grepl(paste0("(^|[/\\\\])", master_ref, "\\."), .all_maps)]
           if (length(.hits) > 0) {
-            .raw <- read.table(.hits[1], header = FALSE, sep = "\t", stringsAsFactors = FALSE,
-                               strip.white = TRUE)
+            # O(N) where N = gene_trans_map rows; fread is 10-50x faster
+            .raw <- if (.HAS_DATATABLE) {
+              data.table::fread(.hits[1], header = FALSE, sep = "\t", strip.white = TRUE,
+                                data.table = FALSE)
+            } else {
+              read.table(.hits[1], header = FALSE, sep = "\t", stringsAsFactors = FALSE,
+                         strip.white = TRUE)
+            }
             .raw <- .raw[, 1:2, drop = FALSE]
             colnames(.raw) <- c("GENEID", "TXNAME")
             .tx2gene_m4 <- .raw[, c("TXNAME", "GENEID")]

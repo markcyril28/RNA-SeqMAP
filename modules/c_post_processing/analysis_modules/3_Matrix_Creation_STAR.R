@@ -127,8 +127,14 @@ if (GENERATE_GENE_LEVEL) {
     } else {
       # Read without col.names to detect actual column count (col.names would force 2 columns,
       # masking single-column files). Matches tximport_star_to_matrices.R approach.
-      raw_tx2gene <- read.delim(tx2gene_files[1], header = FALSE,
-                                stringsAsFactors = FALSE, colClasses = "character")
+      # O(N) where N = tx2gene rows (50K-200K); fread is 10-50x faster
+      raw_tx2gene <- if (.HAS_DATATABLE) {
+        data.table::fread(tx2gene_files[1], header = FALSE, colClasses = "character",
+                          data.table = FALSE)
+      } else {
+        read.delim(tx2gene_files[1], header = FALSE,
+                   stringsAsFactors = FALSE, colClasses = "character")
+      }
       tryCatch(saveRDS(raw_tx2gene, .tx2gene_rds), error = function(e) NULL)
     }
     if (nrow(raw_tx2gene) == 0 || ncol(raw_tx2gene) < 2) {

@@ -221,7 +221,7 @@ get_cuda_version <- function() {
   
   if (!is.null(nvcc_version)) return(nvcc_version)
   
-  # Fallback: detect from nvidia-smi (driver's max supported version)
+  # Fallback: detect from nvidia-smi (driver's max supported version, backward-compatible)
   tryCatch({
     cuda_output <- system("nvidia-smi 2>/dev/null", intern = TRUE)
     cuda_line <- grep("CUDA Version", cuda_output, value = TRUE)
@@ -234,54 +234,76 @@ get_cuda_version <- function() {
 }
 
 # Detect GPU and compatible packages
-# Note: R torch supports CUDA 11.7-11.8 and 12.1
-# For other CUDA versions, GPU ops fall back to CPU
+# R torch bundles its own CUDA runtime (libtorch). nvidia-smi reports the
+# driver's maximum supported CUDA version (backward-compatible), so a driver
+# reporting 12.8 can run torch's bundled CUDA 12.1 runtime without issues.
+# Only nvcc / conda report the actual toolkit version.
 detect_gpu <- function() {
   if (!ENABLE_GPU) {
     return(list(available = FALSE, backend = "cpu", message = "GPU disabled by configuration"))
   }
-  
+
   # Check for GPU hardware via nvidia-smi
   gpu_available <- tryCatch({
     result <- system("nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null", intern = TRUE)
     length(result) > 0 && !grepl("error|fail", result[1], ignore.case = TRUE)
   }, error = function(e) FALSE, warning = function(w) FALSE)
-  
+
   if (!gpu_available) {
     return(list(available = FALSE, backend = "cpu", message = "No NVIDIA GPU detected"))
   }
-  
+
   # Check CUDA version
   cuda_info <- get_cuda_version()
   cuda_version <- if (!is.null(cuda_info$version)) suppressWarnings(as.numeric(cuda_info$version)) else 0
   if (is.na(cuda_version)) cuda_version <- 0  # Guard against unparseable version strings (e.g., "12.1.1")
 
-  # R torch supports CUDA 11.7, 11.8, and 12.1
-  torch_supported <- (cuda_version >= 11.7 && cuda_version <= 11.8) || (cuda_version >= 12.1 && cuda_version < 12.2)
+  # nvidia-smi reports driver capability (backward-compatible): any driver >= 11.7
+  # can run torch's bundled CUDA 11.7/11.8/12.1 runtime.
+  # nvcc/conda report the actual installed toolkit which must match exactly.
+  if (cuda_info$source == "nvidia-smi") {
+    torch_supported <- cuda_version >= 11.7
+  } else {
+    torch_supported <- (cuda_version >= 11.7 && cuda_version <= 11.8) ||
+                       (cuda_version >= 12.1 && cuda_version < 12.2)
+  }
 
   if (!is.null(cuda_info$version)) {
     message("[GPU] CUDA ", cuda_info$version, " detected (", cuda_info$source, ")")
     if (!torch_supported) {
-      message("[GPU] Note: R torch requires CUDA 11.7, 11.8, or 12.1, found ", cuda_info$version)
+      if (cuda_info$source == "nvidia-smi") {
+        message("[GPU] Note: Driver CUDA ", cuda_info$version, " is below minimum 11.7 required by R torch")
+      } else {
+        message("[GPU] Note: R torch requires CUDA 11.7, 11.8, or 12.1 toolkit, found ", cuda_info$version)
+      }
       message("[GPU] GPU matrix operations will use CPU. This does not affect pipeline results.")
     }
   }
-  
+
   # Check for torch (preferred for matrix operations)
   if (requireNamespace("torch", quietly = TRUE)) {
-    cuda_works <- tryCatch({
-      torch::cuda_is_available()
-    }, error = function(e) FALSE)
-    
+    # suppressMessages silences torch's own "libraries installed but loading
+    # unsuccessful" noise — we provide clearer guidance below.
+    cuda_works <- tryCatch(
+      suppressMessages(torch::cuda_is_available()),
+      error = function(e) FALSE
+    )
+
     if (cuda_works) {
-      return(list(available = TRUE, backend = "torch", 
+      return(list(available = TRUE, backend = "torch",
                   message = paste0("GPU available via torch (", torch::cuda_device_count(), " device(s))")))
-    } else if (torch_supported) {
-      message("[GPU] torch package found but CUDA backend not installed")
+    }
+    # torch R package is installed but CUDA backend (libtorch) is missing or broken
+    torch_installed <- tryCatch(suppressMessages(torch::torch_is_installed()), error = function(e) FALSE)
+    if (!torch_installed) {
+      message("[GPU] torch R package found but libtorch backend not installed")
       message("[GPU] Run: Rscript -e 'torch::install_torch(type=\"cuda\")'")
+    } else {
+      message("[GPU] torch libtorch is installed but CUDA is not available")
+      message("[GPU] Try reinstalling: Rscript -e 'torch::install_torch(type=\"cuda\", reinstall=TRUE)'")
     }
   }
-  
+
   # Check for gpuR (alternative for matrix operations)
   if (requireNamespace("gpuR", quietly = TRUE)) {
     tryCatch({
@@ -289,8 +311,8 @@ detect_gpu <- function() {
       return(list(available = TRUE, backend = "gpuR", message = "GPU available via gpuR"))
     }, error = function(e) NULL)
   }
-  
-  return(list(available = FALSE, backend = "cpu", 
+
+  return(list(available = FALSE, backend = "cpu",
               message = "GPU detected but R GPU acceleration not available (using CPU - this is fine)"))
 }
 
@@ -538,17 +560,26 @@ read_config_file <- function(file_path, default_value, is_boolean = FALSE) {
 }
 
 load_runtime_config <- function(method_modules_dir = ".") {
-  gene_groups <- read_config_file(
-    file.path(method_modules_dir, ".gene_groups_temp.txt"),
-    default_value = c("SmelDMPs", "SmelGRF-GIF")
-  )
-  
-  master_reference <- read_config_file(
-    file.path(method_modules_dir, ".master_reference_temp.txt"),
-    default_value = MASTER_REFERENCE
-  )
-  if (length(master_reference) > 1) master_reference <- master_reference[1]
-  
+  # GENE_GROUPS_STR env var (space-separated) is per-process and immune to the
+  # parallel-config race condition where concurrent configs overwrite the shared
+  # .gene_groups_temp.txt file.  Fall back to the temp file only when the env
+  # var is absent (e.g. manual/interactive invocations).
+  gene_groups_env <- Sys.getenv("GENE_GROUPS_STR", unset = "")
+  if (nzchar(gene_groups_env)) {
+    gene_groups <- trimws(strsplit(gene_groups_env, " ")[[1]])
+    gene_groups <- gene_groups[nzchar(gene_groups)]
+  } else {
+    gene_groups <- read_config_file(
+      file.path(method_modules_dir, ".gene_groups_temp.txt"),
+      default_value = c("SmelDMPs", "SmelGRF-GIF")
+    )
+  }
+
+  # MASTER_REFERENCE is already read from its env var into the R global in
+  # Section 1 — use that directly so parallel configs never read each other's
+  # stale .master_reference_temp.txt.
+  master_reference <- MASTER_REFERENCE
+
   # Check environment variable first (set by bash wrapper), then fall back to temp file
   overwrite_env <- Sys.getenv("OVERWRITE_EXISTING", unset = "")
   if (nzchar(overwrite_env)) {
@@ -560,7 +591,7 @@ load_runtime_config <- function(method_modules_dir = ".") {
       is_boolean = TRUE
     )
   }
-  
+
   list(
     gene_groups = gene_groups,
     master_reference = master_reference,
@@ -654,13 +685,40 @@ build_input_path <- function(gene_group, processing_level, count_type, gene_type
   }
 }
 
-build_title_base <- function(gene_group, count_type, gene_type, label_type, 
+build_title_base <- function(gene_group, count_type, gene_type, label_type,
                              processing_level, norm_scheme, master_ref = MASTER_REFERENCE,
                              dataset = CURRENT_DATASET) {
   # Include dataset in title if specified
   base_name <- get_output_folder_name(gene_group, dataset)
   paste0(base_name, "_", count_type, "_", gene_type, "_",
          label_type, "_from_", master_ref, "_", processing_level, "_", norm_scheme)
+}
+
+# Wrap a long title string to fit within a given width in mm at a given font size.
+# Splits on underscores (natural word boundaries in pipeline names) and inserts
+# newlines so no line exceeds max_width_mm. Returns the wrapped string and
+# the number of lines for sizing calculations.
+wrap_title <- function(title, max_width_mm, font_size_pt = 14) {
+  char_width_mm <- font_size_pt * 0.24
+  max_chars <- max(20L, floor(max_width_mm / char_width_mm))
+  if (nchar(title) <= max_chars) {
+    return(list(text = title, n_lines = 1L))
+  }
+  # Split on underscores, rejoin with wrapping
+  tokens <- strsplit(title, "_")[[1]]
+  lines <- character(0)
+  current <- tokens[1]
+  for (tok in tokens[-1]) {
+    candidate <- paste0(current, "_", tok)
+    if (nchar(candidate) > max_chars && nchar(current) > 0) {
+      lines <- c(lines, current)
+      current <- tok
+    } else {
+      current <- candidate
+    }
+  }
+  if (nchar(current) > 0) lines <- c(lines, current)
+  list(text = paste(lines, collapse = "\n"), n_lines = length(lines))
 }
 
 validate_and_read_matrix <- function(input_file, min_rows = 2) {

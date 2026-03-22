@@ -52,19 +52,18 @@ calculate_cv <- function(data_matrix, is_log_scale = FALSE, margin = 1) {
       warning("Cannot compute row-wise CV with < 2 samples")
       return(rep(NA_real_, nrow(data_matrix)))
     }
-    if (is_log_scale) {
-      rm <- rowMeans(data_matrix, na.rm = TRUE)
-      n_c <- ncol(data_matrix)
-      row_sds <- sqrt(rowSums((data_matrix - rm)^2, na.rm = TRUE) / (n_c - 1))
-      row_sds[!is.finite(row_sds)] <- NA
-      return(row_sds)
-    }
+    # Compute rowMeans and rowSds once — shared by both log-scale and linear-scale paths.
+    # O(G×S) for rowMeans + O(G×S) for rowSums = 2 passes over the matrix total.
     rm <- rowMeans(data_matrix, na.rm = TRUE)
     n_c <- ncol(data_matrix)
     row_sds <- sqrt(rowSums((data_matrix - rm)^2, na.rm = TRUE) / (n_c - 1))
-    cv <- ifelse(rm > 0 & is.finite(rm) & is.finite(row_sds), row_sds / rm * 100, NA)
-    # Clamp Inf values from near-zero means (division by very small positive number)
-    cv[is.infinite(cv)] <- NA
+    if (is_log_scale) {
+      row_sds[!is.finite(row_sds)] <- NA
+      return(row_sds)
+    }
+    # Direct division + vectorized mask — avoids ifelse() allocation of O(G) logical + result vectors
+    cv <- (row_sds / rm) * 100
+    cv[rm <= 0 | !is.finite(cv)] <- NA
     return(cv)
   } else {
     # Column-wise (per sample) — need at least 2 genes for meaningful SD
@@ -73,20 +72,22 @@ calculate_cv <- function(data_matrix, is_log_scale = FALSE, margin = 1) {
       return(rep(NA_real_, ncol(data_matrix)))
     }
     # Column-wise SD: use matrixStats::colSds when available (single C-level pass,
-    # zero R-level allocation) vs t(t(x)-cm)^2 which allocates 2 O(G×S) temporaries.
+    # zero R-level allocation). Fallback uses sweep() which allocates 1 O(G×S) temporary
+    # instead of t(t(x)-cm)^2 which would allocate 2 O(G×S) temporaries.
     cm <- colMeans(data_matrix, na.rm = TRUE)
     col_sds <- if (.HAS_MATRIXSTATS) {
       matrixStats::colSds(data_matrix, na.rm = TRUE)
     } else {
-      sqrt(colSums(t(t(data_matrix) - cm)^2, na.rm = TRUE) / (nrow(data_matrix) - 1))
+      # sweep() creates 1 O(G×S) centered matrix; colSums on it is O(G×S). Total: 1 temp.
+      sqrt(colSums(sweep(data_matrix, 2, cm)^2, na.rm = TRUE) / (nrow(data_matrix) - 1))
     }
     if (is_log_scale) {
       col_sds[!is.finite(col_sds)] <- NA
       return(col_sds)
     }
-    cv <- ifelse(cm > 0 & is.finite(cm) & is.finite(col_sds), col_sds / cm * 100, NA)
-    # Clamp Inf values from near-zero means (division by very small positive number)
-    cv[is.infinite(cv)] <- NA
+    # Direct division + vectorized mask — avoids ifelse() allocation overhead
+    cv <- (col_sds / cm) * 100
+    cv[cm <= 0 | !is.finite(cv)] <- NA
     return(cv)
   }
 }
@@ -135,11 +136,11 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
         data_matrix <- data_matrix[, sort_order, drop = FALSE]
         col_cv <- col_cv[sort_order]
       } else {
-        # Genes_as_Rows: sort rows (genes) so high expression is at the top
-        row_means <- rowMeans(data_matrix, na.rm = TRUE)
-        sort_order <- order(row_means, decreasing = TRUE)
-        data_matrix <- data_matrix[sort_order, , drop = FALSE]
-        row_cv <- row_cv[sort_order]
+        # Genes_as_Rows: sort columns (organs) so high expression is RIGHT — genes keep original row order
+        col_means <- colMeans(data_matrix, na.rm = TRUE)
+        sort_order <- order(col_means, decreasing = FALSE)
+        data_matrix <- data_matrix[, sort_order, drop = FALSE]
+        col_cv <- col_cv[sort_order]
       }
     }
     
@@ -230,12 +231,36 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
     n_cols <- ncol(data_matrix)
     cell_size <- unit(12, "mm")  # Square cell size
     
-    # Auto-calculate image dimensions based on heatmap size
-    # Add extra margins for CV annotation columns/rows (both row CV and column CV)
-    margin_width <- 650   # Space for row names, row CV annotation, and legend
-    margin_height <- 650  # Space for column names, column CV annotation, title, legend
-    img_width <- max(900, n_cols * 60 + margin_width)
-    img_height <- max(800, n_rows * 60 + margin_height)
+    # Auto-calculate image dimensions based on heatmap size (DPI-aware)
+    # All layout math in mm, converted to pixels at the end via DPI
+    mm_to_px <- FIGURE_DPI / 25.4
+
+    # Estimate label space from actual text lengths (at 11pt, ~0.24mm per char)
+    max_row_label_len <- max(nchar(rownames(data_matrix)), 0)
+    max_col_label_len <- max(nchar(colnames(data_matrix)), 0)
+    char_width_mm <- 11 * 0.24  # approximate mm per character at 11pt
+    # Row labels: horizontal text + CV annotation bar (~15mm)
+    row_label_mm <- max(20, max_row_label_len * char_width_mm + 5) + 15
+    # Column labels at 45°: project into height + CV annotation bar (~15mm)
+    col_label_height_mm <- max(20, max_col_label_len * char_width_mm * sin(pi/4) + 5) + 15
+
+    # Wrap title to fit within the heatmap body width
+    body_width_mm <- n_cols * 12
+    title_wrap <- wrap_title(title, max(body_width_mm, 80))
+    title <- title_wrap$text
+    title_height_mm <- title_wrap$n_lines * 14 * 0.35 + 5  # ~0.35mm line height per pt
+
+    # Padding in mm: draw() padding (15mm each side) + legend + CV annotations
+    pad_left_mm   <- row_label_mm + 15   # row labels + CV anno + draw padding
+    pad_right_mm  <- 45                  # legend + CV legend + draw padding
+    pad_bottom_mm <- col_label_height_mm + 15  # col labels + CV anno + draw padding
+    pad_top_mm    <- title_height_mm + 20      # wrapped title + draw padding
+
+    img_width  <- ceiling((body_width_mm + pad_left_mm + pad_right_mm) * mm_to_px)
+    img_height <- ceiling((n_rows * 12 + pad_bottom_mm + pad_top_mm) * mm_to_px)
+    # Enforce minimum canvas (3.5 inches each dimension)
+    img_width  <- max(ceiling(3.5 * FIGURE_DPI), img_width)
+    img_height <- max(ceiling(3.5 * FIGURE_DPI), img_height)
     
     # Build column CV annotation BEFORE the Heatmap call so it can be passed
     # as top_annotation / bottom_annotation (avoids %v% mixing with row annotations)
@@ -336,7 +361,8 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
     on.exit(if (.dev_open) try(dev.off(), silent = TRUE), add = TRUE)
     png(output_path, width = img_width, height = img_height, res = FIGURE_DPI)
     .dev_open <- TRUE
-    suppressWarnings(draw(ht, heatmap_legend_side = LEGEND_POSITION))
+    suppressWarnings(draw(ht, heatmap_legend_side = LEGEND_POSITION,
+      padding = unit(c(15, 15, 15, 15), "mm")))
     dev.off()
     .dev_open <- FALSE
 
@@ -421,7 +447,11 @@ process_cv_heatmap <- function(gene_group, gene_group_output_dir, processing_lev
   local_skipped <- 0
   
   norm_display <- get_norm_display_name(norm_scheme)
-  
+  # Hoist title_base outside O×S loop — it depends only on outer-loop variables,
+  # not on orientation or sorting. Saves 3 redundant calls per norm_scheme.
+  title_base <- build_title_base(gene_group, count_type, gene_type,
+                                 label_type, processing_level, norm_scheme)
+
   # O(O × S) where O = orientation options (2), S = sorting options (2); 4 variants per call
   for (orient in get_orientation_options(gene_group)) {
     for (sorting in get_sorting_options()) {
@@ -432,8 +462,6 @@ process_cv_heatmap <- function(gene_group, gene_group_output_dir, processing_lev
       )
       ensure_output_dir(version_dir)
 
-      title_base <- build_title_base(gene_group, count_type, gene_type,
-                                     label_type, processing_level, norm_scheme)
       output_path <- file.path(version_dir, paste0(title_base, "_with_CV.png"))
       
       local_total <- local_total + 1
