@@ -16,7 +16,7 @@ export M1_HISAT2_REF_SOURCED="true"
 # Source dependencies
 # Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
 SCRIPT_DIR="${MODULES_DIR:+${MODULES_DIR}/b_main_methods}"
-SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+if [[ -z "$SCRIPT_DIR" ]]; then SCRIPT_DIR="${BASH_SOURCE[0]%/*}"; [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."; fi
 source "$SCRIPT_DIR/shared_utils_method.sh"
 
 # Binary availability cached in shared_utils_method.sh: _SHARED_HAS_SAMTOOLS, _SHARED_HAS_PARALLEL

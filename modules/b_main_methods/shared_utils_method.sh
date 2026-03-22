@@ -15,7 +15,7 @@ export METHOD_SHARED_SOURCED="true"
 # Source dependencies
 # Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
 SCRIPT_DIR="${MODULES_DIR:+${MODULES_DIR}/b_main_methods}"
-SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+if [[ -z "$SCRIPT_DIR" ]]; then SCRIPT_DIR="${BASH_SOURCE[0]%/*}"; [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."; fi
 source "$SCRIPT_DIR/global_config_method.sh"
 source "$SCRIPT_DIR/../logging/logging_utils.sh"
 source "$SCRIPT_DIR/../a_preprocessing/shared_utils_preproc.sh"
@@ -171,7 +171,7 @@ create_sample_metadata() {
 # Get the helper scripts directory (method-specific tximport helpers in subfolders)
 # Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
 HELPERS_DIR="${MODULES_DIR:+${MODULES_DIR}/c_post_processing/preprocessing}"
-HELPERS_DIR="${HELPERS_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../c_post_processing/preprocessing" && pwd)}"
+if [[ -z "$HELPERS_DIR" ]]; then HELPERS_DIR="${BASH_SOURCE[0]%/*}/../c_post_processing/preprocessing"; fi
 
 # Run tximport using method-specific R helper script
 # Usage: run_tximport <method> <quant_dir> <metadata_file> [output_dir]
