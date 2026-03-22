@@ -53,6 +53,10 @@ _ensure_rsem_threads() {
 	[[ $THREADS_PER_RSEM_JOB -gt $THREADS ]] && THREADS_PER_RSEM_JOB=$THREADS
 }
 
+# Cache tool availability at module load — avoids command -v subprocess per call
+_M5_HAS_SALMON=false; command -v salmon &>/dev/null && _M5_HAS_SALMON=true
+_M5_HAS_DOS2UNIX=false; command -v dos2unix &>/dev/null && _M5_HAS_DOS2UNIX=true
+
 # Library strandedness: none (unstranded), forward (sense), reverse (antisense/dUTP)
 # Set to "reverse" for dUTP-based stranded libraries (most modern Illumina RNA-seq)
 # Set to "auto" to auto-detect using Salmon --libType A (recommended)
@@ -90,8 +94,8 @@ _rsem_detect_strandedness() {
 		esac
 	fi
 
-	# Check that Salmon is available
-	if ! command -v salmon >/dev/null 2>&1; then
+	# Check that Salmon is available (uses module-level cache to avoid per-call subprocess)
+	if [[ "${_M5_HAS_SALMON:-false}" != "true" ]]; then
 		log_warn "[STRANDEDNESS] Salmon not found — falling back to 'none' (unstranded)"
 		RSEM_STRANDEDNESS="none"
 		return 0
@@ -252,7 +256,7 @@ bowtie2_rsem_pipeline() {
 	[[ ${#rnaseq_list[@]} -eq 0 ]] && rnaseq_list=("${SRR_COMBINED_LIST[@]}")
 
 	# Convert line endings only if CRLF detected (avoids modifying file timestamp on every run)
-	if command -v dos2unix >/dev/null 2>&1 && grep -q $'\r' "$fasta" 2>/dev/null; then
+	if [[ "$_M5_HAS_DOS2UNIX" == "true" ]] && grep -q $'\r' "$fasta" 2>/dev/null; then
 		dos2unix "$fasta" 2>/dev/null || true
 	fi
 
@@ -374,7 +378,7 @@ _rsem_parallel_worker() {
 
 	# Reactivate conda in subshell if needed (uses cached path to avoid dirname subshell)
 	if [[ -n "${CONDA_PREFIX:-}" && -n "${CONDA_EXE:-}" ]]; then
-		source "${_CONDA_PROFILE_SCRIPT:-$(dirname "$CONDA_EXE")/../etc/profile.d/conda.sh}" 2>/dev/null || true
+		source "${_CONDA_PROFILE_SCRIPT:-${CONDA_EXE%/*}/../etc/profile.d/conda.sh}" 2>/dev/null || true
 		conda activate "${CONDA_DEFAULT_ENV:-base}" 2>/dev/null || true
 	fi
 
@@ -635,28 +639,29 @@ _create_manual_rsem_matrix() {
 		return 1
 	fi
 
-	local num_genes
-	num_genes=$(awk 'END{print NR}' "$temp_gene_ids")
+	# Count gene IDs without forking wc — O(G) bash read loop
+	local num_genes=0
+	while IFS= read -r _; do ((num_genes++)); done < "$temp_gene_ids"
 
 	for SRR in "${srr_list[@]}"; do
 		if [[ -f "$quant_root/$SRR/${SRR}.genes.results" ]]; then
-			# Validate gene count matches first sample (detect truncated outputs).
-			# wc -l + arithmetic avoids awk fork per sample — O(S) forks saved.
+			# Single awk pass: validate gene count AND extract counts/TPM/FPKM simultaneously.
+			# Combines line counting + column extraction into one file traversal per sample
+			# (was: while-read line count + separate awk extraction = 2 passes). O(G) per sample.
 			local sample_genes
-			sample_genes=$(( $(wc -l < "$quant_root/$SRR/${SRR}.genes.results") - 1 ))
+			sample_genes=$(awk -F'\t' -v n="$num_genes" \
+				-v c="$matrix_dir/${SRR}_counts.tmp" \
+				-v t="$matrix_dir/${SRR}_tpm.tmp" \
+				-v f="$matrix_dir/${SRR}_fpkm.tmp" '
+				NR>1 { print $5 > c; print $6 > t; print $7 > f; g++ }
+				END  { print g+0 }
+			' "$quant_root/$SRR/${SRR}.genes.results")
 			if [[ "$sample_genes" -ne "$num_genes" ]]; then
 				log_warn "[RSEM MATRIX] $SRR has $sample_genes genes (expected $num_genes) — filling with zeros"
 				awk -v n="$num_genes" -v c="$matrix_dir/${SRR}_counts.tmp" \
 					-v t="$matrix_dir/${SRR}_tpm.tmp" -v f="$matrix_dir/${SRR}_fpkm.tmp" \
 					'BEGIN{for(i=0;i<n;i++){print 0>c; print 0>t; print 0>f}}'
-				continue
 			fi
-			# Single awk pass extracts counts, TPM, FPKM simultaneously (was 3 separate passes per sample)
-			awk -F'\t' 'NR>1 {print $5 > counts; print $6 > tpm; print $7 > fpkm}' \
-				counts="$matrix_dir/${SRR}_counts.tmp" \
-				tpm="$matrix_dir/${SRR}_tpm.tmp" \
-				fpkm="$matrix_dir/${SRR}_fpkm.tmp" \
-				"$quant_root/$SRR/${SRR}.genes.results"
 		else
 			log_warn "[RSEM MATRIX] Missing results for $SRR — filling with zeros in count matrix"
 			# Single awk generates all three zero-fill files (replaces 3 yes|head pipelines = 6 processes)
@@ -675,8 +680,7 @@ _create_manual_rsem_matrix() {
 	done
 
 	# Build headers with single printf (was N+1 echo calls per matrix, 3 matrices)
-	local header
-	header=$(printf '\t%s' "${srr_list[@]}")
+	local header; printf -v header '\t%s' "${srr_list[@]}"
 
 	# Build all 3 matrices concurrently — each paste reads temp_gene_ids once in parallel
 	# (background jobs share OS page cache so temp_gene_ids is only loaded from disk once)
@@ -857,10 +861,13 @@ _create_rsem_summary() {
 # INTERNAL HELPERS
 # ==============================================================================
 
-# Check if GNU Parallel should be used for sample processing
+# Check if GNU Parallel should be used for sample processing.
+# Consistent with M1-M4 inline guards: requires USE_GNU_PARALLEL=TRUE,
+# parallel binary available, AND JOBS > 1 (single-job parallel is wasteful).
 _rsem_should_use_parallel() {
 	[[ "${USE_GNU_PARALLEL:-FALSE}" != "TRUE" ]] && return 1
 	$_SHARED_HAS_PARALLEL || return 1
+	[[ "${JOBS:-1}" -gt 1 ]] || return 1
 	return 0
 }
 

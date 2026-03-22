@@ -326,8 +326,8 @@ star_alignment_pipeline() {
 	# absolute paths via PROJECT_ROOT/pwd; just guard the edge case).
 	local abs_star_index_root="$STAR_INDEX_ROOT"
 	local abs_star_align_root="$STAR_ALIGN_ROOT"
-	[[ "$abs_star_index_root" != /* ]] && abs_star_index_root="${PROJECT_ROOT:-$(pwd)}/$abs_star_index_root"
-	[[ "$abs_star_align_root" != /* ]] && abs_star_align_root="${PROJECT_ROOT:-$(pwd)}/$abs_star_align_root"
+	[[ "$abs_star_index_root" != /* ]] && abs_star_index_root="${PROJECT_ROOT:-$PWD}/$abs_star_index_root"
+	[[ "$abs_star_align_root" != /* ]] && abs_star_align_root="${PROJECT_ROOT:-$PWD}/$abs_star_align_root"
 	abs_star_index_root="${abs_star_index_root//\/\//\/}"
 	abs_star_align_root="${abs_star_align_root//\/\//\/}"
 
@@ -381,9 +381,13 @@ star_alignment_pipeline() {
 
 	# Pre-compute Salmon library type strings from strandedness config.
 	# Computed once here so all per-sample calls (sequential + parallel) are consistent.
+	# Inline case avoids 2 subshell forks (was: $(_get_salmon_lib_type ...))
 	local _sal_lib_pe _sal_lib_se
-	_sal_lib_pe=$(_get_salmon_lib_type "${STAR_STRAND_SPECIFIC:-None}" "true")
-	_sal_lib_se=$(_get_salmon_lib_type "${STAR_STRAND_SPECIFIC:-None}" "false")
+	case "${STAR_STRAND_SPECIFIC:-None}" in
+		Forward) _sal_lib_pe="ISF"; _sal_lib_se="SF" ;;
+		Reverse) _sal_lib_pe="ISR"; _sal_lib_se="SR" ;;
+		*)       _sal_lib_pe="A";   _sal_lib_se="A"  ;;
+	esac
 	log_info "[STAR] Salmon library type: PE=${_sal_lib_pe}  SE=${_sal_lib_se}  (STAR_STRAND_SPECIFIC=${STAR_STRAND_SPECIFIC:-None})"
 
 	# Pre-compute STAR strandedness and splice-junction args (used in both parallel + sequential).
@@ -1003,17 +1007,18 @@ star_alignment_pipeline() {
 	# This correctly handles multi-transcript genes; version-stripping FASTA headers is not reliable.
 	if [[ ! -f "$tx2gene_file" || "${OVERWRITE_MODE:-skip}" == "overwrite" ]]; then
 		log_info "[TXIMPORT] Creating transcript-to-gene mapping from GTF: $STAR_GTF_FILE"
+		# Single-awk pass: extract tid/gid AND deduplicate (eliminates second awk process)
 		awk '$3=="transcript" {
 			tid=""; gid=""
 			for (i=9; i<=NF; i++) {
 				if ($i == "transcript_id") { gsub(/[";]/, "", $(i+1)); tid=$(i+1) }
 				if ($i == "gene_id")       { gsub(/[";]/, "", $(i+1)); gid=$(i+1) }
 			}
-			if (tid != "" && gid != "") print tid "\t" gid
-		}' "$STAR_GTF_FILE" | awk '!seen[$0]++' > "$tx2gene_file"
-		# O(n) awk dedup vs O(n log n) sort -u; awk END{print NR} vs wc -l subprocess
-		local tx2gene_count
-		tx2gene_count=$(awk 'END{print NR}' "$tx2gene_file")
+			if (tid != "" && gid != "") { row = tid "\t" gid; if (!seen[row]++) print row }
+		}' "$STAR_GTF_FILE" > "$tx2gene_file"
+		# O(n) awk dedup vs O(n log n) sort -u; inline count avoids wc -l subprocess
+		local tx2gene_count=0
+		while IFS= read -r _; do ((tx2gene_count++)); done < "$tx2gene_file"
 		if [[ "$tx2gene_count" -eq 0 ]]; then
 			log_error "[TXIMPORT] tx2gene mapping is empty - check GTF has 'transcript' features with transcript_id/gene_id attributes"
 			return 1

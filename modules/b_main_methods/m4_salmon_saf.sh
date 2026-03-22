@@ -304,8 +304,7 @@ _create_manual_salmon_matrix() {
 	# NOTE: Column 1 of quant.sf is the transcript Name, so this fallback matrix
 	# is transcript-level despite the "genes" filename.  The authoritative gene-level
 	# matrices are produced by tximport_salmon_to_matrices.R (uses tximport aggregation).
-	local col_order
-	col_order="$(printf '%s' "${_col_types[@]}")"
+	local col_order; printf -v col_order '%s' "${_col_types[@]}"
 
 	# Emit header + matrix body in a single pipeline — eliminates temp_matrix.txt disk I/O.
 	# printf -v avoids subshell fork for header construction.

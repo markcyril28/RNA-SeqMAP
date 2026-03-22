@@ -78,7 +78,7 @@ unset _ow
 # if [[ "$path" != /* ]] pattern (was 3 copies; now single source of truth).
 _make_absolute_path() {
 	local p="$1"
-	[[ "$p" != /* ]] && p="$(pwd)/$p"
+	[[ "$p" != /* ]] && p="$PWD/$p"
 	printf '%s' "$p"
 }
 

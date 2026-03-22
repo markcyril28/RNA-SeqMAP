@@ -169,9 +169,9 @@ hisat2_de_novo_pipeline() {
 
 		export fasta_tag index_prefix threads_per_job hisat2_strand_opts stringtie_strand_opt
 		local abs_hisat2_dn_root="$HISAT2_DE_NOVO_ROOT"
-		[[ "$abs_hisat2_dn_root" != /* ]] && abs_hisat2_dn_root="$(pwd)/$abs_hisat2_dn_root"
+		[[ "$abs_hisat2_dn_root" != /* ]] && abs_hisat2_dn_root="$PWD/$abs_hisat2_dn_root"
 		local abs_stringtie_dn_root="$STRINGTIE_HISAT2_DE_NOVO_ROOT"
-		[[ "$abs_stringtie_dn_root" != /* ]] && abs_stringtie_dn_root="$(pwd)/$abs_stringtie_dn_root"
+		[[ "$abs_stringtie_dn_root" != /* ]] && abs_stringtie_dn_root="$PWD/$abs_stringtie_dn_root"
 		export abs_hisat2_dn_root abs_stringtie_dn_root
 
 		_m2_align_parallel_worker() {

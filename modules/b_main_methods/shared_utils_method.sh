@@ -375,7 +375,7 @@ _init_parallel_worker() {
 	# Reactivate conda in subshell if needed (skip if already active)
 	# Uses cached _CONDA_PROFILE_SCRIPT to avoid dirname subshell per worker
 	if [[ -n "${CONDA_PREFIX:-}" && -n "${CONDA_EXE:-}" && "${_PARALLEL_CONDA_READY:-}" != "true" ]]; then
-		source "${_CONDA_PROFILE_SCRIPT:-$(dirname "$CONDA_EXE")/../etc/profile.d/conda.sh}" 2>/dev/null || true
+		source "${_CONDA_PROFILE_SCRIPT:-${CONDA_EXE%/*}/../etc/profile.d/conda.sh}" 2>/dev/null || true
 		conda activate "${CONDA_DEFAULT_ENV:-base}" 2>/dev/null || true
 		export _PARALLEL_CONDA_READY="true"
 	fi
@@ -432,11 +432,11 @@ _prepare_parallel_env() {
 	export keep_bam_global
 
 	abs_trim_dir_root="$TRIM_DIR_ROOT"
-	[[ "$abs_trim_dir_root" != /* ]] && abs_trim_dir_root="$(pwd)/$abs_trim_dir_root"
+	[[ "$abs_trim_dir_root" != /* ]] && abs_trim_dir_root="$PWD/$abs_trim_dir_root"
 	export abs_trim_dir_root
 
 	abs_error_warn_file="${ERROR_WARN_FILE:-}"
-	[[ -n "$abs_error_warn_file" && "$abs_error_warn_file" != /* ]] && abs_error_warn_file="$(pwd)/$abs_error_warn_file"
+	[[ -n "$abs_error_warn_file" && "$abs_error_warn_file" != /* ]] && abs_error_warn_file="$PWD/$abs_error_warn_file"
 	export abs_error_warn_file
 }
 

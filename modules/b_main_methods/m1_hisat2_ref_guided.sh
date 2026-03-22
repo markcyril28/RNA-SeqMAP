@@ -180,15 +180,18 @@ _m1_validate_fasta_gtf_chromosomes() {
 			}
 		' "$fasta_source" "$gtf" 2>/dev/null)
 	else
+		# Single awk pass over both files — replaces 3 separate awk processes.
+		# Uses FILENAME==ARGV[1] guard (same pattern as the FAI path above).
+		# FASTA: exits early after 20 unique headers. GTF: scans first 20 unique chroms.
+		# O(header_positions) instead of O(file_size) for FASTA.
 		result=$(awk '
-			# Pass 1: FASTA chromosome names (first 20)
-			FILENAME == ARGV[1] && /^>/ && fasta_n < 20 {
-				chr = $0; sub(/^>/, "", chr); sub(/[[:space:]].*/, "", chr)
-				if (!(chr in fasta_seen)) { fasta_seen[chr]=1; fasta_n++ }
+			FILENAME == ARGV[1] && /^>/ {
+				sub(/^>/, ""); sub(/[[:space:]].*/, "")
+				if (!fasta_seen[$0]++) { fasta_n++ }
+				if (fasta_n >= 20) nextfile
 			}
-			# Pass 2: GTF chromosome names (first 20 unique, skip comments)
 			FILENAME == ARGV[2] && !/^#/ && gtf_n < 20 {
-				if (!($1 in gtf_seen)) { gtf_seen[$1]=1; gtf_n++ }
+				if (!gtf_seen[$1]++) { gtf_n++ }
 			}
 			END {
 				overlap = 0
@@ -253,17 +256,16 @@ _m1_collect_bam_metrics() {
 	local _st_threads=${threads_per_job:-${THREADS:-4}}
 	(( _st_threads > 4 )) && _st_threads=4
 	local stats
-	# O(N) — samtools stats performs a linear scan of all N alignments in the BAM
-	stats=$(samtools stats -@ "$_st_threads" "$bam" 2>/dev/null | grep '^SN\t') || return 0
-
-	# Single awk pass extracts all 4 metrics (here-string avoids echo|pipe subshell)
+	# O(N) — samtools stats performs a linear scan of all N alignments in the BAM.
+	# Single awk pass directly on samtools output — eliminates redundant grep subprocess
+	# since awk already filters on /^SN\t/ patterns.
 	local total_bases bases_clipped insert_mean insert_sd
-	eval "$(awk -F'\t' '
+	eval "$(samtools stats -@ "$_st_threads" "$bam" 2>/dev/null | awk -F'\t' '
 		/^SN\tbases mapped \(cigar\)/               { printf "total_bases=%s ", $3 }
 		/^SN\tbases trimmed/                         { printf "bases_clipped=%s ", $3 }
 		/^SN\tinsert size average/                   { printf "insert_mean=%s ", $3 }
 		/^SN\tinsert size standard deviation/        { printf "insert_sd=%s ", $3 }
-	' <<< "$stats")"
+	')" || return 0
 
 	# Save metrics to file for post-hoc review
 	{
@@ -408,14 +410,16 @@ hisat2_ref_guided_pipeline() {
 
 		# Build options based on available annotation data
 		if [[ -s "$splice_sites" ]]; then
-			log_info "[INDEX] Extracted $(wc -l < "$splice_sites") splice sites"
+			local _ss_n=0; while IFS= read -r _; do ((_ss_n++)); done < "$splice_sites"
+			log_info "[INDEX] Extracted $_ss_n splice sites"
 			build_opts="$build_opts --ss $splice_sites"
 		else
 			log_warn "[INDEX] No splice sites found - GTF may contain only single-exon transcripts"
 		fi
 
 		if [[ -s "$exons" ]]; then
-			log_info "[INDEX] Extracted $(wc -l < "$exons") exons"
+			local _ex_n=0; while IFS= read -r _; do ((_ex_n++)); done < "$exons"
+			log_info "[INDEX] Extracted $_ex_n exons"
 			build_opts="$build_opts --exon $exons"
 		else
 			log_warn "[INDEX] No exons extracted from GTF"
@@ -450,11 +454,11 @@ hisat2_ref_guided_pipeline() {
 		local abs_index_dir="${index_prefix%/*}"
 		export fasta_tag index_prefix abs_index_dir threads_per_job hisat2_strand_opts stringtie_strand_opt OVERWRITE_MODE
 		local abs_hisat2_rg_root="$HISAT2_REF_GUIDED_ROOT"
-		[[ "$abs_hisat2_rg_root" != /* ]] && abs_hisat2_rg_root="$(pwd)/$abs_hisat2_rg_root"
+		[[ "$abs_hisat2_rg_root" != /* ]] && abs_hisat2_rg_root="$PWD/$abs_hisat2_rg_root"
 		local abs_stringtie_rg_root="$STRINGTIE_HISAT2_REF_GUIDED_ROOT"
-		[[ "$abs_stringtie_rg_root" != /* ]] && abs_stringtie_rg_root="$(pwd)/$abs_stringtie_rg_root"
+		[[ "$abs_stringtie_rg_root" != /* ]] && abs_stringtie_rg_root="$PWD/$abs_stringtie_rg_root"
 		local abs_gtf="$gtf"
-		[[ "$abs_gtf" != /* ]] && abs_gtf="$(pwd)/$abs_gtf"
+		[[ "$abs_gtf" != /* ]] && abs_gtf="$PWD/$abs_gtf"
 		export abs_hisat2_rg_root abs_stringtie_rg_root abs_gtf
 
 		_m1_align_parallel_worker() {
@@ -777,7 +781,8 @@ _m1_infer_strandness() {
 	# Single-end:       "++,--"      (FR) /       "+-,-+"       (RF)
 	# Single AWK pass replaces 4-8 grep pipelines (saves 8-16 process spawns)
 	local val1 val2
-	read -r val1 val2 < <(printf '%s' "$result" | awk '
+	# Herestring avoids printf subprocess — $result is already in memory
+	read -r val1 val2 < <(awk '
 		/1\+\+,1--,2\+-,2-\+/ || /"\+\+,--"/ {
 			match($0, /[0-9]+\.[0-9]+/); if (RSTART) v1 = substr($0, RSTART, RLENGTH)
 		}
@@ -785,7 +790,7 @@ _m1_infer_strandness() {
 			match($0, /[0-9]+\.[0-9]+/); if (RSTART) v2 = substr($0, RSTART, RLENGTH)
 		}
 		END { print (v1 ? v1 : ""), (v2 ? v2 : "") }
-	')
+	' <<< "$result")
 
 	# Bash integer arithmetic for float comparison (×1000): avoids 2 awk forks.
 	# Right-pad decimal to 3 digits so 0.6→600, 0.75→750, 0.123→123.
