@@ -120,11 +120,12 @@ install_gpu_packages <- function() {
     }, error = function(e) NULL)
     
     if (!is.null(sys_cuda)) {
-      message("System CUDA version: ", sys_cuda)
-      if (as.numeric(sys_cuda) >= 12.2 && !nzchar(conda_cuda_version)) {
-        message("WARNING: System CUDA ", sys_cuda, " is not supported by R torch (max 12.1)")
-        message("Activate conda environment with CUDA 12.1 for GPU support")
-        message("Run: source activate gea")
+      message("Driver CUDA capability: ", sys_cuda)
+      # nvidia-smi reports driver capability (backward-compatible).
+      # torch bundles CUDA 12.1 runtime — any driver >= 11.7 is fine.
+      if (suppressWarnings(as.numeric(sys_cuda)) < 11.7) {
+        message("WARNING: Driver CUDA ", sys_cuda, " is below minimum 11.7 required by R torch")
+        message("Update your NVIDIA driver for GPU support")
       }
     }
   }

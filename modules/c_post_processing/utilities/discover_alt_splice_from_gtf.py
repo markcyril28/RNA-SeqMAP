@@ -44,9 +44,13 @@ def reverse_complement(seq: str) -> str:
     return seq.translate(comp)[::-1]
 
 
-def read_fasta(path: Path) -> Dict[str, str]:
+def read_fasta(path: Path, needed_seqnames: set = None) -> Dict[str, str]:
+    """Read FASTA file. If needed_seqnames is provided, only load those sequences
+    (skips reading sequence lines for unneeded chromosomes — saves memory and I/O
+    for large genomes where only a fraction of chromosomes are needed)."""
     seqs: Dict[str, List[str]] = {}
     curr = None
+    skip = False
     with path.open("r", encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
@@ -54,9 +58,12 @@ def read_fasta(path: Path) -> Dict[str, str]:
                 continue
             if line.startswith(">"):
                 curr = line[1:].split()[0]
-                if curr not in seqs:
+                skip = needed_seqnames is not None and curr not in needed_seqnames
+                if not skip and curr not in seqs:
                     seqs[curr] = []
             else:
+                if skip:
+                    continue
                 if curr is None:
                     raise ValueError(f"Invalid FASTA format in {path}")
                 seqs[curr].append(line)
@@ -157,7 +164,14 @@ def extract_transcript_fasta(
     alt_genes: set,
     genome_fasta: Path,
 ) -> Tuple[int, int]:
-    genome = read_fasta(genome_fasta)
+    # Collect needed seqnames from alt-spliced genes to avoid loading entire genome.
+    # For large genomes (multi-GB), this can reduce memory by 50-95%.
+    needed_seqnames: set = set()
+    for gene_id in alt_genes:
+        for tx_id, exons in gene_tx_exons[gene_id].items():
+            if exons:
+                needed_seqnames.add(exons[0].seqname)
+    genome = read_fasta(genome_fasta, needed_seqnames=needed_seqnames)
     written = 0
     skipped = 0
     skipped_seqnames: set = set()
