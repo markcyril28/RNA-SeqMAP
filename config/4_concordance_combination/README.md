@@ -1,34 +1,34 @@
-# Concordance Combination Config Classes
+# Concordance Combination Config Crosses
 
-This folder defines reusable config classes for `run_concordance.sh`.
+This folder defines reusable config crosses for `run_concordance.sh`.
 
 ## How To Use
 
-Run with a single class:
+Run with a single cross:
 
 ```bash
 bash run_concordance.sh config/4_concordance_combination/defaults.toml
 ```
 
-Run with class basename:
+Run with cross basename:
 
 ```bash
 bash run_concordance.sh defaults
 ```
 
-Chain multiple classes using env var (later class overrides earlier values):
+Chain multiple crosses using env var (later cross overrides earlier values):
 
 ```bash
-CONCORDANCE_CONFIG_CLASSES="defaults,class_methods_vs_methods" bash run_concordance.sh
+CONCORDANCE_CONFIG_CROSSES="defaults,cross_methods_vs_methods" bash run_concordance.sh
 ```
 
-## Class Types
+## Cross Types
 
 - `defaults.toml`: baseline defaults (single-run behavior)
-- `class_genomes_vs_genomes.toml`: iterate across `MASTER_REFERENCES`
-- `class_methods_vs_methods.toml`: iterate across `METHOD_COMBINATIONS`
-- `class_genes_vs_genes.toml`: iterate across `GENE_GROUP_COMBINATIONS`
-- `class_full_factorial_example.toml`: nested combinations (genomes x methods x genes)
+- `cross_genomes_vs_genomes.toml`: iterate across `MASTER_REFERENCES`
+- `cross_methods_vs_methods.toml`: iterate across `METHOD_COMBINATIONS`
+- `cross_genes_vs_genes.toml`: iterate across `GENE_GROUP_COMBINATIONS`
+- `cross_full_factorial_example.toml`: nested combinations (genomes x methods x genes)
 
 ## Combination Flags
 

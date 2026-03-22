@@ -1,0 +1,20 @@
+# ==============================================================================
+# CROSS: GENOMES VS GENOMES
+# ==============================================================================
+# Cross-genome concordance: for a fixed method, compare TPM across different
+# reference genomes. Produces a genome-vs-genome correlation heatmap showing
+# how expression estimates agree across references.
+
+concordance_mode = "cross_genome"
+
+# Method to use for the cross-genome comparison
+fixed_method = "M1_HISAT2_RefGuided"
+
+# Genomes to compare (the comparison axis)
+concordance_genomes = [
+    "GPE001970_genome",
+    "Eggplant_V4.1_genome",
+]
+
+# Keep default target gene groups unless overridden
+gene_groups = "SmelDMPs_v5_with_18s_and_HAP2,Selected_SmelGRF-GIF_with_two_GIF"

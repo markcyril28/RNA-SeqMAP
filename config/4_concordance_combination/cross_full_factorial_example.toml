@@ -1,5 +1,5 @@
 # ==============================================================================
-# CLASS: FULL FACTORIAL EXAMPLE
+# CROSS: FULL FACTORIAL EXAMPLE
 # ==============================================================================
 # Demonstrates nested combination runs:
 #   references x method_combinations x gene_group_combinations

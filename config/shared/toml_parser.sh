@@ -29,7 +29,7 @@
 # ==============================================================================
 
 [[ "${_TOML_PARSER_SOURCED:-}" == "true" ]] && return 0
-export _TOML_PARSER_SOURCED="true"
+_TOML_PARSER_SOURCED="true"
 
 # load_toml <file>
 # Parses a TOML file and sets bash variables in the caller's scope.
@@ -175,10 +175,43 @@ _toml_parse_array_elements() {
     local _trimmed="${line#"${line%%[![:space:]]*}"}"
     [[ -z "$_trimmed" ]] && return 0
 
-    # Use awk to split comma-separated values, respecting quoted strings and # comments.
-    # Each output line is one element (already stripped of quotes and trimmed).
-    # This replaces the O(n) bash character loop which spawned no subprocesses but
-    # performed expensive ${line:$i:1} substring extraction per character.
+    # Fast path: simple comma-separated quoted strings with no embedded commas or #.
+    # Matches: "val1", "val2", "val3"  (most pipeline config lines)
+    # O(E) pure-bash IFS split — avoids awk subprocess fork per array line.
+    # Falls through to awk for lines with unquoted values, embedded commas, or # comments.
+    # On fallthrough, partial parse is undone by truncating _arr_ref to _pre_fast_len.
+    if [[ "$_trimmed" == '"'* && "$_trimmed" != *'#'* ]]; then
+        local _simple=true _val
+        local _pre_fast_len=${#_arr_ref[@]}
+        local IFS=','
+        for _val in $_trimmed; do
+            # Strip whitespace
+            _val="${_val#"${_val%%[![:space:]]*}"}"
+            _val="${_val%"${_val##*[![:space:]]}"}"
+            # Must be "quoted" — reject unquoted or complex values
+            if [[ "$_val" == '"'*'"' ]]; then
+                _val="${_val#\"}"
+                _val="${_val%\"}"
+                _arr_ref+=("$_val")
+            elif [[ -z "$_val" ]]; then
+                continue  # trailing comma
+            else
+                _simple=false; break
+            fi
+        done
+        $_simple && return 0
+        # Undo partial parse on fallthrough — truncate array back to pre-fast-path length.
+        # (rare: only triggers for malformed lines that start with " but aren't all quoted)
+        # O(K) where K = number of elements added by the failed fast path.
+        local _new_len=${#_arr_ref[@]}
+        local _added=$(( _new_len - _pre_fast_len ))
+        if (( _added > 0 )); then
+            _arr_ref=("${_arr_ref[@]:0:_pre_fast_len}")
+        fi
+    fi
+
+    # Fallback: awk for complex lines (unquoted values, embedded commas, # comments).
+    # O(n) single awk pass over the line.
     local _elem
     while IFS= read -r _elem; do
         [[ -n "$_elem" ]] && _arr_ref+=("$_elem")
