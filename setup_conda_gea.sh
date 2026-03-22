@@ -30,7 +30,10 @@ set -euo pipefail
 
 ENV_NAME="gea"
 PYTHON_VERSION="3.11"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Parameter expansion avoids nested $(dirname) subshell fork
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
 CHANNELS="-c conda-forge -c bioconda"
 
 UPDATE_MODE=false
@@ -239,9 +242,9 @@ if ${PKG_MGR} env list | grep -q "^${ENV_NAME} "; then
 
     if [[ "$ENV_RESTART_MODE" == true ]]; then
         log_info "Removing existing environment '${ENV_NAME}'..."
-        run_cmd ${PKG_MGR} env remove -n "${ENV_NAME}" -y
+        run_cmd "${PKG_MGR}" env remove -n "${ENV_NAME}" -y
         log_info "Recreating environment '${ENV_NAME}'..."
-        run_cmd ${PKG_MGR} create -n "${ENV_NAME}" python="${PYTHON_VERSION}" -y
+        run_cmd "${PKG_MGR}" create -n "${ENV_NAME}" python="${PYTHON_VERSION}" -y
 
     elif [[ "$UPDATE_MODE" == true ]]; then
         MISSING_PKGS=$(check_packages_installed)
@@ -257,7 +260,7 @@ if ${PKG_MGR} env list | grep -q "^${ENV_NAME} "; then
             if [[ "$DRY_RUN" == true ]]; then
                 echo "[DRY RUN] Would execute: ${PKG_MGR} update -n ${ENV_NAME} ${CHANNELS} --all -y"
             else
-                ${PKG_MGR} update -n "${ENV_NAME}" ${CHANNELS} --all -y
+                "${PKG_MGR}" update -n "${ENV_NAME}" ${CHANNELS} --all -y
             fi
             log_info "Update complete."
             exit 0
@@ -265,7 +268,7 @@ if ${PKG_MGR} env list | grep -q "^${ENV_NAME} "; then
     fi
 else
     log_info "Creating new environment '${ENV_NAME}'..."
-    run_cmd ${PKG_MGR} create -n "${ENV_NAME}" python="${PYTHON_VERSION}" -y
+    run_cmd "${PKG_MGR}" create -n "${ENV_NAME}" python="${PYTHON_VERSION}" -y
 fi
 
 #===============================================================================
@@ -276,7 +279,7 @@ log_info "Installing packages into '${ENV_NAME}'..."
 if [[ "$DRY_RUN" == true ]]; then
     echo "[DRY RUN] Would execute: ${PKG_MGR} install -n ${ENV_NAME} ${CHANNELS} ${ALL_PACKAGES[*]} -y"
 else
-    ${PKG_MGR} install -n "${ENV_NAME}" ${CHANNELS} -y "${ALL_PACKAGES[@]}" || {
+    "${PKG_MGR}" install -n "${ENV_NAME}" ${CHANNELS} -y "${ALL_PACKAGES[@]}" || {
         log_warn "${PKG_MGR} installation failed, falling back to conda..."
         conda install -n "${ENV_NAME}" ${CHANNELS} -y "${ALL_PACKAGES[@]}"
     }
@@ -378,5 +381,5 @@ log_info "Activate    : conda activate $ENV_NAME"
 log_info "Deactivate  : conda deactivate"
 log_info ""
 log_info "Run post-processing with:"
-log_info "  cd $SCRIPT_DIR && bash run_all_post_processing.sh"
+log_info "  cd $SCRIPT_DIR && bash run_post_processing.sh"
 log_info ""
