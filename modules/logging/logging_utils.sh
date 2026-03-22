@@ -172,7 +172,7 @@ setup_logging() {
 	_init_csv_headers
 
 	# Rotate old logs to prevent unbounded growth
-	rotate_old_logs "$(dirname "$LOG_DIR")"
+	rotate_old_logs "${LOG_DIR%/*}"
 
 	# Set up output redirection (strip ANSI escape codes from log files)
 	# Use a named pipe (FIFO) instead of process substitution to avoid leaking
@@ -565,7 +565,7 @@ catalog_all_software() {
 	if command -v git >/dev/null 2>&1; then
 		# Cache repo root path — avoids 3 redundant dirname subshell forks
 		local _repo_root
-		_repo_root="$(dirname "${BASH_SOURCE[0]}")/../.."
+		_repo_root="${BASH_SOURCE[0]%/*}/../.."
 		local git_sha
 		git_sha=$(git -C "$_repo_root" rev-parse --short HEAD 2>/dev/null || echo "not_a_git_repo")
 		local git_branch
@@ -644,7 +644,7 @@ catalog_all_software() {
 	if command -v Rscript >/dev/null 2>&1; then
 		log_info "Cataloging R package versions..."
 		local session_info_file
-		session_info_file="$(dirname "$SOFTWARE_FILE")/R_sessionInfo_${RUN_ID}.txt"
+		session_info_file="${SOFTWARE_FILE%/*}/R_sessionInfo_${RUN_ID}.txt"
 		Rscript --vanilla -e "
 pkgs <- c('DESeq2','tximport','tximeta','WGCNA','clusterProfiler','ComplexHeatmap',
           'ballgown','AnnotationDbi','enrichplot','DOSE','fgsea',
@@ -672,7 +672,7 @@ rotate_old_logs() {
 	# Remove logs older than MAX_LOG_AGE_DAYS (default 30) to prevent unbounded growth.
 	# Usage: rotate_old_logs [base_log_dir]
 	# Called automatically by setup_logging; can also be called manually.
-	local base_dir="${1:-$(dirname "$LOG_DIR")}"
+	local base_dir="${1:-${LOG_DIR%/*}}"
 	local max_age="${MAX_LOG_AGE_DAYS:-30}"
 
 	[[ ! -d "$base_dir" ]] && return 0
