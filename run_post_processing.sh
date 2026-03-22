@@ -11,9 +11,17 @@ set -o pipefail   # -e/-u omitted intentionally (sourced functions use boolean r
 
 # Respect pre-set THREADS from environment; only probe nproc if unset
 THREADS="${THREADS:-$(nproc 2>/dev/null || echo 12)}"
-ENABLE_GPU="FALSE"
+ENABLE_GPU="TRUE"
 ENABLE_GNU_PARALLEL="TRUE"
 DESIRED_CPU_PER_JOB=1
+
+# Number of pipeline configs to process concurrently.
+# "auto" = RAM-aware auto-detection (recommended for HPC); 1 = sequential (safest).
+# TRADE-OFF: parallel configs don't share SRR CSV cache (~1ms overhead per config),
+# but reduce total wall-clock by up to Nx for independent method/reference configs.
+# Big O: reduces O(C × T_per_config) to O(ceil(C/P) × T_per_config)
+# where C=configs, P=PARALLEL_CONFIGS, T_per_config=time per config.
+PARALLEL_CONFIGS="${PARALLEL_CONFIGS:-auto}"
 
 # Auto-detect available RAM (fallback: 24 GB)
 if [[ -f /proc/meminfo ]]; then
@@ -43,6 +51,26 @@ CLEAR_OUTPUT_FOLDER="TRUE"
 # Figure resolution in DPI (300–600)
 FIGURE_DPI="${FIGURE_DPI:-300}"
 
+# Single-config child mode: when invoked by parallel dispatch, process only one config.
+# The parent sets __PP_SINGLE_CONFIG to the config path and re-invokes this script.
+if [[ -n "${__PP_SINGLE_CONFIG:-}" ]]; then
+    PIPELINE_CONFIGS=("$__PP_SINGLE_CONFIG")
+    CLEAR_LOGS="FALSE"      # Don't clear shared logs from parent
+    PARALLEL_CONFIGS=1       # Don't recurse into parallel dispatch
+    # Unique RUN_ID per child to avoid log file contention
+    _cfg_basename="${__PP_SINGLE_CONFIG##*/}"
+    _cfg_basename="${_cfg_basename%.toml}"
+    printf -v RUN_ID '%(%Y%m%d_%H%M%S)T' -1 2>/dev/null || RUN_ID=$(date +%Y%m%d_%H%M%S)
+    RUN_ID="${RUN_ID}_${_cfg_basename}"
+    unset _cfg_basename
+    # Clear exported sentinel variables inherited from parent so modules re-source
+    # their function definitions in this new bash process. (The parent exports these
+    # sentinels for GNU Parallel subshells, but child processes started via
+    # `bash "$0"` need to re-source the files since function definitions don't
+    # survive across process boundaries.)
+    unset PIPELINE_UTILS_SOURCED LOGGING_UTILS_SOURCED _TOML_PARSER_SOURCED
+else
+
 PIPELINE_CONFIGS=(
     # ── Full — Eggplant_V4.1 ──
     "config/3_post_proc_configs/HPC_full_M1_Eggplant_V4.1.toml"    # M1 HISAT2 RefGuided   Eggplant_V4.1 genome
@@ -58,6 +86,8 @@ PIPELINE_CONFIGS=(
     "config/3_post_proc_configs/HPC_full_M4_GPE001970.toml"         # M4 Salmon SAF         GPE001970 transcript
     "config/3_post_proc_configs/HPC_full_M5_GPE001970.toml"         # M5 RSEM Bowtie2       GPE001970 transcript
 )
+
+fi  # end of single-config child mode check
 
 #===============================================================================
 # PATHS AND UTILITIES
@@ -132,7 +162,7 @@ else
 	log_info "Software catalog already exists, skipping: $SOFTWARE_FILE"
 fi
 
-log_step "Starting Post-Processing Pipeline (${#PIPELINE_CONFIGS[@]} config(s) enabled)"
+log_step "Starting Post-Processing Pipeline (${#PIPELINE_CONFIGS[@]} config(s), parallel=$PARALLEL_CONFIGS)"
 
 # Cache parallel availability once (avoids 3 PATH lookups per dataset iteration)
 _HAS_PARALLEL=false
@@ -156,6 +186,88 @@ if [[ "$ENABLE_GNU_PARALLEL" == "TRUE" ]]; then
     unset _R_MEM_MB _MAX_JOBS_BY_RAM
 fi
 
+# Auto-detect parallel config count based on available RAM and CPU.
+# Each config's R session uses ~2GB (ComplexHeatmap + ggplot2 + data).
+if [[ "$PARALLEL_CONFIGS" == "auto" ]]; then
+    _CFG_MEM_MB=2048
+    PARALLEL_CONFIGS=$(( AVAILABLE_RAM_GB * 1024 * 60 / 100 / _CFG_MEM_MB ))
+    (( PARALLEL_CONFIGS < 1 )) && PARALLEL_CONFIGS=1
+    # Cap at number of configs
+    (( PARALLEL_CONFIGS > ${#PIPELINE_CONFIGS[@]} )) && PARALLEL_CONFIGS=${#PIPELINE_CONFIGS[@]}
+    # Cap at half of CPU threads (each config runs its own R jobs)
+    _max_by_cpu=$(( THREADS / 2 ))
+    (( _max_by_cpu < 1 )) && _max_by_cpu=1
+    (( PARALLEL_CONFIGS > _max_by_cpu )) && PARALLEL_CONFIGS=$_max_by_cpu
+    unset _CFG_MEM_MB _max_by_cpu
+fi
+# Ensure numeric
+[[ "$PARALLEL_CONFIGS" =~ ^[0-9]+$ ]] || PARALLEL_CONFIGS=1
+
+#===============================================================================
+# PARALLEL CONFIG DISPATCH
+#===============================================================================
+# When PARALLEL_CONFIGS > 1 and multiple configs exist, dispatch each config
+# as a child process for concurrent execution. Each child re-invokes this script
+# with __PP_SINGLE_CONFIG set to process exactly one config.
+# All functions and environment are inherited via the child bash process.
+# Big O: O(ceil(C/P) × T_config) wall-clock instead of O(C × T_config).
+
+if [[ "$PARALLEL_CONFIGS" -gt 1 && ${#PIPELINE_CONFIGS[@]} -gt 1 ]]; then
+    log_step "Parallel Config Dispatch (${#PIPELINE_CONFIGS[@]} configs, max $PARALLEL_CONFIGS concurrent)"
+
+    declare -a _cfg_pids=() _cfg_logs=()
+    _cfg_active=0
+
+    for _cfg_file in "${PIPELINE_CONFIGS[@]}"; do
+        # Throttle: wait for a slot when at concurrency limit
+        while (( _cfg_active >= PARALLEL_CONFIGS )); do
+            if wait -n 2>/dev/null; then
+                (( _cfg_active-- ))
+            else
+                # Fallback for bash < 4.3: wait for all and reset counter
+                wait; _cfg_active=0
+            fi
+        done
+
+        _cfg_tag="${_cfg_file##*/}"
+        _cfg_tag="${_cfg_tag%.toml}"
+        _cfg_log="${LOG_DIR}/parallel_config_${_cfg_tag}_${RUN_ID}.log"
+        _cfg_logs+=("$_cfg_log")
+
+        log_info "  Dispatching: ${_cfg_file##*/}"
+        __PP_SINGLE_CONFIG="$_cfg_file" bash "$0" > "$_cfg_log" 2>&1 &
+        _cfg_pids+=($!)
+        (( _cfg_active++ ))
+    done
+
+    # Wait for all configs and collect exit statuses
+    _cfg_failures=0
+    for _ci in "${!_cfg_pids[@]}"; do
+        if ! wait "${_cfg_pids[$_ci]}"; then
+            log_warn "Config ${PIPELINE_CONFIGS[$_ci]##*/} failed (pid=${_cfg_pids[$_ci]})"
+            (( _cfg_failures++ )) || true
+        fi
+    done
+
+    # Aggregate per-config logs into main log file (single I/O operation)
+    _existing_logs=()
+    for _cl in "${_cfg_logs[@]}"; do
+        [[ -f "$_cl" ]] && _existing_logs+=("$_cl")
+    done
+    if [[ ${#_existing_logs[@]} -gt 0 ]]; then
+        cat "${_existing_logs[@]}" >> "$LOG_FILE"
+        rm -f "${_existing_logs[@]}"
+    fi
+
+    if [[ $_cfg_failures -gt 0 ]]; then
+        log_warn "$_cfg_failures of ${#PIPELINE_CONFIGS[@]} configs had failures"
+    fi
+    log_step "Parallel dispatch complete"
+
+    # Skip the sequential config loop below (all configs already processed)
+    PIPELINE_CONFIGS=()
+fi
+
 #===============================================================================
 # CONFIG LOOP
 #===============================================================================
@@ -163,6 +275,11 @@ fi
 # Global CSV cache persists across configs — avoids re-parsing the same SRR CSV
 # when multiple configs reference the same datasets. O(datasets) instead of O(configs × datasets).
 declare -A _GLOBAL_SRR_CACHE=()
+
+# Export static variables once before the config loop — these never change between configs.
+# Per-config variables (MASTER_REFERENCE, GENE_GROUPS_STR, etc.) are exported inside the loop.
+export BASE_DIR THREADS ENABLE_GPU ANALYSIS_MODULES_DIR GENE_GROUPS_DIR UTILITIES_DIR SRR_CSV_DIR
+export AVAILABLE_RAM_GB GPU_VRAM_GB FIGURE_DPI
 
 for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
 
@@ -178,10 +295,10 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
     log_step "Config: ${CONFIG_FILE##*/}"
 
     # Snapshot error/warning line count so we can report per-config delta.
-    # Bash read loop avoids wc subshell fork (called once per config iteration).
+    # Single wc -l fork: O(1) C-level counting vs O(L) bash read loop.
     _err_baseline=0
     if [[ -f "$ERROR_WARN_FILE" && -s "$ERROR_WARN_FILE" ]]; then
-        while IFS= read -r _; do ((_err_baseline++)); done < "$ERROR_WARN_FILE"
+        _err_baseline=$(wc -l < "$ERROR_WARN_FILE")
     fi
 
     MASTER_REFERENCE="${MASTER_REFERENCES[0]}"
@@ -190,7 +307,7 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
         log_warn "Use separate per-reference configs to process multiple references."
     fi
     [[ "$CLEAR_OUTPUT_FOLDER" == "TRUE" ]] && OVERWRITE_EXISTING="TRUE" || OVERWRITE_EXISTING="FALSE"
-    export AVAILABLE_RAM_GB GPU_VRAM_GB OVERWRITE_EXISTING FIGURE_DPI
+    export OVERWRITE_EXISTING
 
     # Build combined SRR list using global cache — avoids re-parsing CSVs across configs
     SRR_COMBINED_LIST=()
@@ -250,8 +367,9 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
         fi
     fi
 
-    # Export for R scripts and subprocesses
-    export BASE_DIR THREADS ENABLE_GPU ANALYSIS_MODULES_DIR GENE_GROUPS_DIR UTILITIES_DIR SRR_CSV_DIR MASTER_REFERENCE
+    # Export per-config variables for R scripts and subprocesses
+    # (static vars like BASE_DIR, THREADS, etc. are exported once before the loop)
+    export MASTER_REFERENCE
     export GENE_GROUPS_STR="${GENE_GROUPS[*]}" ANALYSES_STR="${ANALYSES[*]}" SRR_DATASETS_STR="${SRR_DATASETS[*]}"
 
     # Run summary
@@ -406,9 +524,10 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
     # Config summary
     log_step "Config Complete: ${CONFIG_FILE##*/}"
     log_info "Datasets: ${SRR_DATASETS[*]} | Methods: ${#METHODS[@]} per dataset"
+    # Single wc -l fork: O(1) C-level counting vs O(L) bash read loop.
     _err_total=0
     if [[ -f "$ERROR_WARN_FILE" && -s "$ERROR_WARN_FILE" ]]; then
-        while IFS= read -r _; do ((_err_total++)); done < "$ERROR_WARN_FILE"
+        _err_total=$(wc -l < "$ERROR_WARN_FILE")
     fi
     _err_delta=$(( _err_total - _err_baseline ))
     if [[ $_err_delta -gt 0 ]]; then
