@@ -1,5 +1,5 @@
 # ==============================================================================
-# CROSS: GENES VS GENES
+# CROSS: WITHIN GENE GROUP VS WITHIN GENE GROUP
 # ==============================================================================
 # Cross-gene-group concordance: for a fixed method+genome, compare expression
 # profiles across different gene groups. Produces a gene-group-vs-gene-group

@@ -27,7 +27,7 @@ CONCORDANCE_CONFIG_CROSSES="defaults,cross_methods_vs_methods" bash run_concorda
 - `defaults.toml`: baseline defaults (single-run behavior)
 - `cross_genomes_vs_genomes.toml`: iterate across `MASTER_REFERENCES`
 - `cross_methods_vs_methods.toml`: iterate across `METHOD_COMBINATIONS`
-- `cross_genes_vs_genes.toml`: iterate across `GENE_GROUP_COMBINATIONS`
+- `cross_within_gene_group_vs_within_gene_group.toml`: iterate across `GENE_GROUP_COMBINATIONS`
 - `cross_full_factorial_example.toml`: nested combinations (genomes x methods x genes)
 
 ## Combination Flags

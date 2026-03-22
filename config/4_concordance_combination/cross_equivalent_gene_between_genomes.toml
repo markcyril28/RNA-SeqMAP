@@ -1,22 +1,28 @@
 # ==============================================================================
-# CROSS: GENOMES VS GENOMES
+# CROSS: EQUIVALENT GENE BETWEEN GENOMES
 # ==============================================================================
-# Cross-genome concordance: for a fixed method, compare TPM across different
-# reference genomes. Produces a genome-vs-genome correlation heatmap showing
-# how expression estimates agree across references.
+# Per-gene concordance: for a fixed method, compare expression of positionally-
+# equivalent genes across two reference genomes. For each gene, correlates its
+# expression vector across samples between genomes.
+#
+# Produces:
+#   - Per-gene Spearman correlation table (how consistently each gene is
+#     quantified across assemblies)
+#   - Expression heatmap showing genes x samples side-by-side for both genomes
+#   - Per-gene scatter plots of expression values
 
-concordance_mode = "cross_genome"
+concordance_mode = "cross_equivalent_gene"
 
-# Method to use for the cross-genome comparison
+# Method to use for the cross-genome gene-level comparison
 fixed_method = "M1_HISAT2_RefGuided"
 
-# Genomes to compare (the comparison axis)
+# Genomes to compare
 concordance_genomes = [
     "GPE001970_genome",
     "Eggplant_V4.1",
 ]
 
-# Keep default target gene groups unless overridden
+# Gene groups for ranking stability and per-gene analysis
 gene_groups = "SmelDMPs_v5_with_18s_and_HAP2,Selected_SmelGRF-GIF_with_two_GIF"
 
 # Per-genome gene group CSV names for positional orthology mapping.
