@@ -98,7 +98,11 @@ _init_csv_headers() {
 	[[ ! -f "$SPACE_TIME_FILE" ]] && echo "Timestamp,Command,Elapsed_Time_sec,CPU_Percent,Max_RSS_KB,User_Time_sec,System_Time_sec,Input_Size_MB,Output_Size_MB,Exit_Status" > "$SPACE_TIME_FILE"
 	[[ ! -f "$ERROR_WARN_FILE" ]] && touch "$ERROR_WARN_FILE"
 	[[ ! -f "$SOFTWARE_FILE" ]] && echo "Software/Tool,Version" > "$SOFTWARE_FILE"
-	[[ ! -f "$GPU_LOG_FILE" ]] && echo "=== GPU Log Started: $(timestamp) ===" > "$GPU_LOG_FILE"
+	# Inline printf -v avoids $(timestamp) subshell fork
+	if [[ ! -f "$GPU_LOG_FILE" ]]; then
+		local _gpu_ts; printf -v _gpu_ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _gpu_ts=$(date '+%Y-%m-%d %H:%M:%S')
+		printf '=== GPU Log Started: %s ===\n' "$_gpu_ts" > "$GPU_LOG_FILE"
+	fi
 }
 
 # ==============================================================================
@@ -117,8 +121,13 @@ _logging_cleanup_bg() {
 }
 
 _logging_setup_redirect() {
-	# Kill previous background tee/strip_ansi_stream processes before creating new ones
-	_logging_cleanup_bg
+	# Redirect stdout to /dev/tty (or /dev/null) BEFORE killing the old tee process.
+	# Without this, fd 1 still points to the dead pipe after the kill, and any
+	# subsequent write (including the exec setup) triggers SIGPIPE → silent exit.
+	if [[ ${#_LOGGING_BG_PIDS[@]} -gt 0 ]]; then
+		exec > /dev/tty 2>&1 2>/dev/null || exec > /dev/null 2>&1
+		_logging_cleanup_bg
+	fi
 
 	if [[ "$log_choice" == "2" ]]; then
 		exec > >(strip_ansi_stream >> "$LOG_FILE") 2>&1
@@ -205,7 +214,7 @@ switch_log_stage() {
 
 	# Convert to absolute path if relative
 	if [[ "$stage_base" != /* ]]; then
-		stage_base="${PROJECT_ROOT:-$(pwd)}/$stage_base"
+		stage_base="${PROJECT_ROOT:-$PWD}/$stage_base"
 	fi
 
 	# Update directory paths
@@ -248,15 +257,7 @@ switch_log_stage() {
 # ERROR HANDLING
 # ==============================================================================
 
-# Error handling trap (can be enabled/disabled by caller)
-enable_error_trap() {
-	trap 'log_error "Command failed (rc=$?) at line $LINENO: ${BASH_COMMAND:-unknown}"; exit 1' ERR
-}
-
-# Cleanup trap
-enable_exit_trap() {
-	trap 'log_info "Script finished. See log: $LOG_FILE"; log_info "Time metrics: $TIME_FILE"; log_info "Errors & Warnings: $ERROR_WARN_FILE"' EXIT
-}
+# enable_error_trap(), enable_exit_trap() — removed (dead code; callers set traps directly)
 
 # Log pipeline configuration settings
 log_configuration() {
@@ -391,17 +392,19 @@ run_with_space_time_log() {
 			_sz_bytes=$(stat -c%s "$input_path" 2>/dev/null || stat -f%z "$input_path" 2>/dev/null || echo 0)
 			# Scaled integer: (bytes * 100 / 1048576) then insert decimal point
 			local _scaled=$(( _sz_bytes * 100 / 1048576 ))
-			input_size_mb="$(( _scaled / 100 )).$(printf '%02d' $(( _scaled % 100 )))"
+			local _frac; printf -v _frac '%02d' $(( _scaled % 100 ))
+			input_size_mb="$(( _scaled / 100 )).$_frac"
 		elif [[ -d "$input_path" ]]; then
 			local _du_kb
-			# read -r avoids cut subprocess (du outputs "SIZE\tPATH")
-			read -r _du_kb _ <<< "$(du -sk "$input_path" 2>/dev/null)"
+			# Process substitution avoids herestring buffering for large du output
+			read -r _du_kb _ < <(du -sk "$input_path" 2>/dev/null)
 			_du_kb="${_du_kb:-0}"
 			local _scaled=$(( _du_kb * 100 / 1024 ))
-			input_size_mb="$(( _scaled / 100 )).$(printf '%02d' $(( _scaled % 100 )))"
+			local _frac; printf -v _frac '%02d' $(( _scaled % 100 ))
+			input_size_mb="$(( _scaled / 100 )).$_frac"
 		fi
 	fi
-	
+
 	mkdir -p "$TIME_DIR" || { log_error "Failed to create TIME_DIR: $TIME_DIR"; return 1; }
 	
 	local exit_code=0
@@ -471,14 +474,16 @@ run_with_space_time_log() {
 			local _sz_bytes
 			_sz_bytes=$(stat -c%s "$output_path" 2>/dev/null || stat -f%z "$output_path" 2>/dev/null || echo 0)
 			local _scaled=$(( _sz_bytes * 100 / 1048576 ))
-			output_size_mb="$(( _scaled / 100 )).$(printf '%02d' $(( _scaled % 100 )))"
+			local _frac; printf -v _frac '%02d' $(( _scaled % 100 ))
+			output_size_mb="$(( _scaled / 100 )).$_frac"
 		elif [[ -d "$output_path" ]]; then
 			local _du_kb
-			# read -r avoids cut subprocess (du outputs "SIZE\tPATH")
-			read -r _du_kb _ <<< "$(du -sk "$output_path" 2>/dev/null)"
+			# Process substitution avoids herestring buffering for large du output
+			read -r _du_kb _ < <(du -sk "$output_path" 2>/dev/null)
 			_du_kb="${_du_kb:-0}"
 			local _scaled=$(( _du_kb * 100 / 1024 ))
-			output_size_mb="$(( _scaled / 100 )).$(printf '%02d' $(( _scaled % 100 )))"
+			local _frac; printf -v _frac '%02d' $(( _scaled % 100 ))
+			output_size_mb="$(( _scaled / 100 )).$_frac"
 		fi
 	fi
 
@@ -516,14 +521,16 @@ log_file_size() {
 		_sz_bytes=$(stat -c%s "$file_path" 2>/dev/null || stat -f%z "$file_path" 2>/dev/null || echo 0)
 		size_kb=$(( (_sz_bytes + 1023) / 1024 ))
 	elif [[ -d "$file_path" ]]; then
-		read -r size_kb _ <<< "$(du -sk "$file_path" 2>/dev/null)"
+		read -r size_kb _ < <(du -sk "$file_path" 2>/dev/null)
 		size_kb="${size_kb:-0}"
 	fi
 	# Bash integer math with 2-decimal precision (avoids awk subprocess)
 	local _mb_scaled=$(( size_kb * 100 / 1024 ))
-	size_mb="$(( _mb_scaled / 100 )).$(printf '%02d' $(( _mb_scaled % 100 )))"
+	local _mb_frac; printf -v _mb_frac '%02d' $(( _mb_scaled % 100 ))
+	size_mb="$(( _mb_scaled / 100 )).$_mb_frac"
 	local _gb_scaled=$(( size_kb * 100 / 1048576 ))
-	size_gb="$(( _gb_scaled / 100 )).$(printf '%02d' $(( _gb_scaled % 100 )))"
+	local _gb_frac; printf -v _gb_frac '%02d' $(( _gb_scaled % 100 ))
+	size_gb="$(( _gb_scaled / 100 )).$_gb_frac"
 
 	local file_count="-"
 	# Use find -printf x | wc -c (faster than -print | wc -l, avoids newline overhead)
@@ -534,28 +541,13 @@ log_file_size() {
 	log_info "Space logged: $file_path = ${size_mb}MB"
 }
 
-log_input_output_size() {
-	# Log sizes of input and output files/directories
-	local input_path="$1"
-	local output_path="$2"
-	local step_description="${3:-}"
-	
-	[[ -e "$input_path" ]] && log_file_size "$input_path" "Input: $step_description"
-	[[ -e "$output_path" ]] && log_file_size "$output_path" "Output: $step_description"
-}
+# log_input_output_size() — removed (dead code; run_with_space_time_log calls log_file_size directly)
 
 # ==============================================================================
 # SOFTWARE CATALOG FUNCTIONS
 # ==============================================================================
 
-log_software_version() {
-	# Log software version to catalog
-	local software="$1"
-	local version="$2"
-	
-	echo "${software},${version}" >> "$SOFTWARE_FILE"
-	log_info "Recorded software: $software v$version"
-}
+# log_software_version() — removed (dead code; catalog_all_software writes directly)
 
 catalog_all_software() {
 	# Catalog versions of all bioinformatics tools, R packages, and provenance metadata
@@ -617,7 +609,8 @@ catalog_all_software() {
 		local cmd="${tool_cmd#*:}"
 
 		if command -v "${cmd%% *}" >/dev/null 2>&1; then
-			( eval "$cmd" 2>&1 | head -n1 | awk -v t="$tool" '{print t","$NF}' > "$_ver_tmpdir/$tool" ) &
+			# Single awk replaces head -n1 | awk (2 processes → 1 per tool)
+			( eval "$cmd" 2>&1 | awk -v t="$tool" 'NR==1{print t","$NF; exit}' > "$_ver_tmpdir/$tool" ) &
 			_ver_pids+=($!)
 		else
 			echo "${tool},not_installed" >> "$SOFTWARE_FILE"

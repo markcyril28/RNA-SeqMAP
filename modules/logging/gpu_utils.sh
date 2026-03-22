@@ -27,7 +27,7 @@ DISTRO_VERSION=""
 # LOGGING CONFIGURATION
 # ==============================================================================
 
-GPU_LOG_DIR="${GPU_LOG_DIR:-${SCRIPT_DIR:-$(pwd)}/logs}"
+GPU_LOG_DIR="${GPU_LOG_DIR:-${SCRIPT_DIR:-$PWD}/logs}"
 # Prefer printf builtin over date subprocess for log filename
 if [[ -z "${GPU_LOG_FILE:-}" ]]; then
 	printf -v _gpu_ts_id '%(%Y%m%d_%H%M%S)T' -1 2>/dev/null || _gpu_ts_id=$(date +%Y%m%d_%H%M%S)
@@ -93,8 +93,8 @@ fi
 _log_system_info() {
 	_write_log "INFO" "========================================"
 	_write_log "INFO" "GPU Utils initialized"
-	_write_log "INFO" "Host: ${HOSTNAME:-$(hostname 2>/dev/null || echo unknown)}"
-	_write_log "INFO" "User: ${USER:-$(whoami 2>/dev/null || echo unknown)}"
+	_write_log "INFO" "Host: ${HOSTNAME:-unknown}"
+	_write_log "INFO" "User: ${USER:-unknown}"
 	_write_log "INFO" "Kernel: $(uname -r 2>/dev/null || echo unknown)"
 	_write_log "INFO" "WSL: $(is_wsl && echo 'yes' || echo 'no')"
 	_write_log "INFO" "========================================"
@@ -105,7 +105,8 @@ _log_system_info() {
 # ==============================================================================
 # Cache command -v results at module load time (O(1) per subsequent check).
 # Eliminates repeated PATH lookups: was 4x nvidia-smi, 2x nvcc, 5x pkg-mgr.
-_HAS_NVIDIA_SMI=false; command -v nvidia-smi &>/dev/null && _HAS_NVIDIA_SMI=true
+# Reuse _HAS_NVIDIA_SMI from logging_utils.sh if already cached (avoids duplicate PATH lookup).
+[[ -z "${_HAS_NVIDIA_SMI+x}" ]] && { _HAS_NVIDIA_SMI=false; command -v nvidia-smi &>/dev/null && _HAS_NVIDIA_SMI=true; }
 _HAS_NVCC=false;       command -v nvcc &>/dev/null       && _HAS_NVCC=true
 _HAS_LSPCI=false;      command -v lspci &>/dev/null      && _HAS_LSPCI=true
 # Package manager detection (cached once, used by setup_cuda)
@@ -239,8 +240,9 @@ detect_gpu() {
 
 			# Fallback: if gawk capture groups failed (mawk/nawk), recover CUDA version
 			# from the already-captured nvidia-smi output without an extra call.
+			# Fallback: mawk/nawk lack capture groups — extract CUDA version with gsub
 			if [[ -z "$CUDA_VERSION" ]]; then
-				CUDA_VERSION=$(awk '/CUDA Version:/ {for(i=1;i<=NF;i++) if($i=="Version:") print $(i+1)}' <<< "$_smi_full" | tr -d '[:space:]')
+				CUDA_VERSION=$(awk '/CUDA Version:/ {for(i=1;i<=NF;i++) if($i=="Version:") {gsub(/[[:space:]]/,"",$((i+1))); print $(i+1); exit}}' <<< "$_smi_full")
 			fi
 
 			# Fallback: if GPU count/memory parsing failed, use query-gpu (one extra call)
@@ -248,7 +250,9 @@ detect_gpu() {
 				local _query_info
 				_query_info=$(nvidia-smi --query-gpu=count,memory.total,name,driver_version --format=csv,noheader,nounits 2>/dev/null)
 				if [[ -n "$_query_info" ]]; then
-					GPU_COUNT=$(grep -c '' <<< "$_query_info")
+					# Bash builtin line count avoids grep subprocess
+				local -a _gpu_lines; mapfile -t _gpu_lines <<< "$_query_info"
+				GPU_COUNT="${#_gpu_lines[@]}"
 					# Single awk replaces head|cut|tr 3-process pipe
 					GPU_MEMORY_MB=$(awk -F',' 'NR==1 {gsub(/[[:space:]]/,"",$2); print $2}' <<< "$_query_info")
 				fi
@@ -474,7 +478,10 @@ install_nvidia_driver() {
 		ubuntu|debian)
 			# Add NVIDIA repository
 				local ubuntu_ver
-			ubuntu_ver=$(lsb_release -rs 2>/dev/null | sed 's/\.//')
+			# Bash parameter expansion replaces sed subprocess
+			local _lsb_ver
+			_lsb_ver=$(lsb_release -rs 2>/dev/null)
+			ubuntu_ver="${_lsb_ver:+${_lsb_ver/./}}"
 			ubuntu_ver="${ubuntu_ver:-2204}"
 			local keyring_url="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${ubuntu_ver}/x86_64/cuda-keyring_1.1-1_all.deb"
 			
@@ -614,13 +621,19 @@ verify_installation() {
 			fi
 
 			if $_HAS_NVCC; then
-				log_info "CUDA compiler: OK ($(nvcc --version | awk '/release/{gsub(/,/,"",$5); print $5}'))"
+				local _nvcc_ver
+				_nvcc_ver=$(nvcc --version 2>/dev/null | awk '/release/{gsub(/,/,"",$5); print $5}')
+				log_info "CUDA compiler: OK (${_nvcc_ver:-unknown})"
 			else
 				log_warn "CUDA compiler (nvcc): NOT FOUND - reboot may be required"
 			fi
 			;;
 		amd)
-			if command -v rocm-smi &>/dev/null; then
+			# Cache rocm-smi availability (consistent with _HAS_NVIDIA_SMI pattern)
+			if [[ -z "${_HAS_ROCM_SMI+x}" ]]; then
+				_HAS_ROCM_SMI=false; command -v rocm-smi &>/dev/null && _HAS_ROCM_SMI=true
+			fi
+			if $_HAS_ROCM_SMI; then
 				log_info "rocm-smi: OK"
 			else
 				log_warn "rocm-smi: NOT FOUND"
@@ -628,7 +641,11 @@ verify_installation() {
 			fi
 			;;
 		intel)
-			if command -v intel_gpu_top &>/dev/null; then
+			# Cache intel_gpu_top availability
+			if [[ -z "${_HAS_INTEL_GPU_TOP+x}" ]]; then
+				_HAS_INTEL_GPU_TOP=false; command -v intel_gpu_top &>/dev/null && _HAS_INTEL_GPU_TOP=true
+			fi
+			if $_HAS_INTEL_GPU_TOP; then
 				log_info "intel_gpu_top: OK"
 			else
 				log_warn "intel_gpu_top: NOT FOUND"
@@ -639,7 +656,13 @@ verify_installation() {
 	
 	# Check if reboot needed
 	if [[ "$GPU_VENDOR" == "nvidia" ]]; then
-		if ! lsmod | grep -q nvidia; then
+		# Cache lsmod probe — avoids repeated kernel module listing (lsmod is a slow syscall)
+		if [[ -z "${_LSMOD_HAS_NVIDIA+x}" ]]; then
+			_LSMOD_HAS_NVIDIA=false
+			local _lsmod_out; _lsmod_out=$(lsmod 2>/dev/null)
+			[[ "$_lsmod_out" == *nvidia* ]] && _LSMOD_HAS_NVIDIA=true
+		fi
+		if ! $_LSMOD_HAS_NVIDIA; then
 			log_warn "NVIDIA kernel module not loaded - REBOOT REQUIRED"
 			success=false
 		fi
@@ -648,111 +671,9 @@ verify_installation() {
 	[[ "$success" == "true" ]]
 }
 
-# ==============================================================================
-# GPU-ACCELERATED TOOL DETECTION
-# ==============================================================================
-
-# Check if GPU is available for STAR (STAR itself has no GPU binary;
-# GPU acceleration is used for auxiliary steps like sorting)
-has_gpu_star() {
-	has_gpu && command -v STAR &>/dev/null
-}
-
-# Check for GPU-accelerated tools
-check_gpu_tools() {
-	log_step "Checking GPU-accelerated tools"
-	
-	local tools_found=0
-	
-	# RAPIDS cuML for ML acceleration
-	if python3 -c "import cuml" 2>/dev/null; then
-		log_info "[GPU-TOOL] RAPIDS cuML available"
-		((tools_found++))
-	fi
-
-	# GPU-accelerated compression
-	if command -v nvcomp &>/dev/null; then
-		log_info "[GPU-TOOL] nvcomp (GPU compression) available"
-		((tools_found++))
-	fi
-
-	# NVIDIA DALI for data loading
-	if python3 -c "import nvidia.dali" 2>/dev/null; then
-		log_info "[GPU-TOOL] NVIDIA DALI available"
-		((tools_found++))
-	fi
-	
-	if [[ $tools_found -eq 0 ]]; then
-		log_info "[GPU-TOOL] No GPU-accelerated bioinformatics tools detected"
-	fi
-}
-
-# ==============================================================================
-# GPU-AWARE CONFIGURATION
-# ==============================================================================
-
-# Get optimal STAR genome load mode based on GPU/memory
-get_star_genome_load() {
-	if has_gpu && [[ $GPU_MEMORY_MB -gt 8000 ]]; then
-		echo "LoadAndKeep"
-	else
-		echo "NoSharedMemory"
-	fi
-}
-
-# Get optimal thread count considering GPU
-get_optimal_threads() {
-	local base_threads="${1:-$THREADS}"
-	if has_gpu; then
-		echo $((base_threads + 2))
-	else
-		echo "$base_threads"
-	fi
-}
-
-# ==============================================================================
-# MAIN FUNCTION FOR GPU PREPARATION
-# ==============================================================================
-
-gpu_prep_main() {
-	log_step "GPU Preparation Script"
-	log_info "Log file: $GPU_LOG_FILE"
-	
-	check_root
-	detect_distro
-	log_info "Detected: $DISTRO $DISTRO_VERSION"
-	
-	detect_gpu_type
-	
-	if [[ -z "$GPU_VENDOR" ]]; then
-		log_warn "No dedicated GPU detected"
-		log_info "Installing basic monitoring tools only..."
-		install_base_packages
-		return 0
-	fi
-	
-	install_base_packages
-	
-	case "$GPU_VENDOR" in
-		nvidia) setup_nvidia ;;
-		amd)    setup_amd ;;
-		intel)  setup_intel ;;
-	esac
-	
-	log_info ""
-	verify_installation
-
-	log_info ""
-	log_step "Setup Complete"
-	log_info "To monitor GPU: nvidia-smi/rocm-smi"
-	log_info "To use GPU in pipeline: source modules/logging/gpu_utils.sh"
-	log_info "Log saved to: $GPU_LOG_FILE"
-	
-	if [[ "$GPU_VENDOR" == "nvidia" ]] && ! lsmod | grep -q nvidia; then
-		log_info ""
-		log_warn ">>> REBOOT REQUIRED for GPU drivers to load <<<"
-	fi
-}
+# Dead GPU functions removed (has_gpu_star, check_gpu_tools, get_star_genome_load,
+# get_optimal_threads, gpu_prep_main) — none called by active pipeline code.
+# Previously used by z_archive/prep_gpu.sh which is archived.
 
 # ==============================================================================
 # LAZY GPU DETECTION
