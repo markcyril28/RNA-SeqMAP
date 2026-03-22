@@ -76,7 +76,8 @@ CONFIG_CROSS_DIR="${CONCORDANCE_CONFIG_CROSS_DIR:-${BASE_DIR}/config/4_concordan
 # Analysis steps to run (comment out entries to skip)
 # ─────────────────────────────────────────────────────
 # Guard: only set defaults if ANALYSES is not already defined as an array
-if [[ "$(declare -p ANALYSES 2>/dev/null)" != "declare -a"* ]]; then
+# O(1) builtin attribute check — avoids $(declare -p) subshell fork
+if ! [[ -v ANALYSES && "${ANALYSES@a}" == *a* ]]; then
     ANALYSES=(
         "Load_Matrices"                 # Step 1: Load & harmonize matrices (required by all others)
         "Quantification_Concordance"    # Step 2: Compare quantification across methods
@@ -147,7 +148,7 @@ load_config_entry() {
 # In single-config child mode, load only the specified config; otherwise load all.
 if [[ -n "${__CONCORDANCE_OVERRIDE_SINGLE_CONFIG:-}" ]]; then
     load_config_entry "${__CONCORDANCE_OVERRIDE_SINGLE_CONFIG}"
-elif [[ "$(declare -p CONCORDANCE_CONFIGS 2>/dev/null)" == "declare -a"* && ${#CONCORDANCE_CONFIGS[@]} -gt 0 ]]; then
+elif [[ -v CONCORDANCE_CONFIGS && "${CONCORDANCE_CONFIGS@a}" == *a* && ${#CONCORDANCE_CONFIGS[@]} -gt 0 ]]; then
     for _cfg_entry in "${CONCORDANCE_CONFIGS[@]}"; do
         load_config_entry "$_cfg_entry"
     done
@@ -165,7 +166,7 @@ if [[ -n "$CONFIG_INPUT" ]]; then
             [[ -f "$_cfg" ]] && _cfg_files+=("$_cfg")
         done
         # Sort for deterministic order (globs are locale-sorted but toml/sh interleave)
-        IFS=$'\n' _cfg_files=($(printf '%s\n' "${_cfg_files[@]}" | sort)); unset IFS
+        mapfile -t _cfg_files < <(printf '%s\n' "${_cfg_files[@]}" | sort)
         for _cfg in "${_cfg_files[@]}"; do
             source_config_file "$_cfg"
         done
@@ -232,8 +233,8 @@ if [[ "${CLEAR_LOGS:-FALSE}" == "TRUE" && -d "${CONCORDANCE_LOG_BASE}" ]]; then
     rm -rf "${CONCORDANCE_LOG_BASE}"
 fi
 
-mkdir -p "${OUTPUT_DIR}/figures" "${OUTPUT_DIR}/tables" || {
-    log_error "Failed to create output directories under ${OUTPUT_DIR}"
+mkdir -p "${OUTPUT_DIR}" || {
+    log_error "Failed to create output directory: ${OUTPUT_DIR}"
     exit 1
 }
 
@@ -291,7 +292,7 @@ _throttle_pids() {
 # When multiple CONCORDANCE_CONFIGS are active and we're not already in single-config
 # child mode, dispatch a separate child process per config with an isolated output folder.
 if [[ -z "${__CONCORDANCE_OVERRIDE_SINGLE_CONFIG:-}" ]] && \
-   [[ "$(declare -p CONCORDANCE_CONFIGS 2>/dev/null)" == "declare -a"* ]] && \
+   [[ -v CONCORDANCE_CONFIGS && "${CONCORDANCE_CONFIGS@a}" == *a* ]] && \
    [[ ${#CONCORDANCE_CONFIGS[@]} -gt 1 ]]; then
     _parent_report_base="${REPORT_BASE}"
     _overall_rc=0
@@ -334,7 +335,7 @@ fi
 # - Default FALSE: run only one reference (MASTER_REFERENCE or first MASTER_REFERENCES entry)
 RUN_ALL_MASTER_REFERENCES="${RUN_ALL_MASTER_REFERENCES:-FALSE}"
 if [[ "${RUN_ALL_MASTER_REFERENCES^^}" == "TRUE" ]]; then
-    if [[ "$(declare -p MASTER_REFERENCES 2>/dev/null)" == "declare -a"* && ${#MASTER_REFERENCES[@]} -gt 0 ]]; then
+    if [[ -v MASTER_REFERENCES && "${MASTER_REFERENCES@a}" == *a* && ${#MASTER_REFERENCES[@]} -gt 0 ]]; then
         _parent_report_base="${REPORT_BASE:-${BASE_DIR}/4_CONCORDANCE_ANALYSIS}"
         _overall_rc=0
 
@@ -380,7 +381,7 @@ fi
 #   e.g., "M1_HISAT2_RefGuided,M3_STAR_Align"
 RUN_ALL_METHOD_COMBINATIONS="${RUN_ALL_METHOD_COMBINATIONS:-FALSE}"
 if [[ "${RUN_ALL_METHOD_COMBINATIONS^^}" == "TRUE" ]]; then
-    if [[ "$(declare -p METHOD_COMBINATIONS 2>/dev/null)" == "declare -a"* && ${#METHOD_COMBINATIONS[@]} -gt 0 ]]; then
+    if [[ -v METHOD_COMBINATIONS && "${METHOD_COMBINATIONS@a}" == *a* && ${#METHOD_COMBINATIONS[@]} -gt 0 ]]; then
         _parent_report_base="${REPORT_BASE:-${BASE_DIR}/4_CONCORDANCE_ANALYSIS}"
         _overall_rc=0
 
@@ -430,7 +431,7 @@ fi
 #   e.g., "SmelDMPs_v5_with_18s_and_HAP2,Selected_SmelGRF-GIF_with_two_GIF"
 RUN_ALL_GENE_GROUP_COMBINATIONS="${RUN_ALL_GENE_GROUP_COMBINATIONS:-FALSE}"
 if [[ "${RUN_ALL_GENE_GROUP_COMBINATIONS^^}" == "TRUE" ]]; then
-    if [[ "$(declare -p GENE_GROUP_COMBINATIONS 2>/dev/null)" == "declare -a"* && ${#GENE_GROUP_COMBINATIONS[@]} -gt 0 ]]; then
+    if [[ -v GENE_GROUP_COMBINATIONS && "${GENE_GROUP_COMBINATIONS@a}" == *a* && ${#GENE_GROUP_COMBINATIONS[@]} -gt 0 ]]; then
         _parent_report_base="${REPORT_BASE:-${BASE_DIR}/4_CONCORDANCE_ANALYSIS}"
         _overall_rc=0
 
@@ -477,7 +478,7 @@ fi
 # If MASTER_REFERENCE was not explicitly provided, and a sourced config set
 # MASTER_REFERENCES as an array, take the first element
 # (matches run_post_processing.sh behaviour).
-if [[ -z "${MASTER_REFERENCE:-}" ]] && [[ "$(declare -p MASTER_REFERENCES 2>/dev/null)" == "declare -a"* ]]; then
+if [[ -z "${MASTER_REFERENCE:-}" ]] && [[ -v MASTER_REFERENCES && "${MASTER_REFERENCES@a}" == *a* ]]; then
     MASTER_REFERENCE="${MASTER_REFERENCES[0]}"
 fi
 # Default must match 0_concordance_config.R and 0_shared_config.R ("Eggplant_V4.1")
@@ -486,7 +487,7 @@ MASTER_REFERENCE="${MASTER_REFERENCE:-Eggplant_V4.1}"
 # Methods to compare (space-separated string).
 # If a sourced config set METHODS as an array, flatten it to a string.
 # Must unset array before reassignment — bash arrays cannot be exported to child processes.
-if [[ "$(declare -p METHODS 2>/dev/null)" == "declare -a"* ]]; then
+if [[ -v METHODS && "${METHODS@a}" == *a* ]]; then
     _methods_str="${METHODS[*]}"
     unset METHODS
     METHODS="$_methods_str"
@@ -554,12 +555,23 @@ fi
 # M1/M3 align to genome; M2/M4/M5 align to transcriptome
 # Derive defaults from MASTER_REFERENCE instead of hardcoding GPE001970,
 # so that sourcing a non-GPE001970 config produces correct paths.
-_genome_ref="${MASTER_REFERENCE}"
-# Build transcript reference by swapping _genome → _transcripts (or appending _transcripts)
-if [[ "$_genome_ref" == *_genome ]]; then
-    _transcript_ref="${_genome_ref%_genome}_transcripts"
+#
+# Supports three MASTER_REFERENCE forms:
+#   "GPE001970_genome"       → genome=GPE001970_genome,      transcript=GPE001970_transcripts
+#   "GPE001970_transcripts"  → genome=GPE001970_genome,      transcript=GPE001970_transcripts
+#   "GPE001970"              → genome=GPE001970_genome,      transcript=GPE001970_transcripts
+# The bare-accession form makes cross-method concordance reference-agnostic:
+# each method resolves to its appropriate reference type automatically.
+if [[ "${MASTER_REFERENCE}" == *_genome ]]; then
+    _genome_ref="${MASTER_REFERENCE}"
+    _transcript_ref="${MASTER_REFERENCE%_genome}_transcripts"
+elif [[ "${MASTER_REFERENCE}" == *transcript* ]]; then
+    _transcript_ref="${MASTER_REFERENCE}"
+    _genome_ref="${MASTER_REFERENCE%%_transcript*}_genome"
 else
-    _transcript_ref="${_genome_ref}_transcripts"
+    # Bare accession (e.g., "GPE001970"): derive both suffixed forms
+    _genome_ref="${MASTER_REFERENCE}_genome"
+    _transcript_ref="${MASTER_REFERENCE}_transcripts"
 fi
 # Auto-detect transcript reference by checking multiple method directories.
 # Handles non-standard naming like Eggplant_V4.1_transcripts.function.
@@ -597,14 +609,12 @@ unset _genome_ref _transcript_ref
 # Gene groups for ranking stability (comma-separated basenames without .csv)
 # If a sourced config set GENE_GROUPS as a bash array, join with commas
 # (the R concordance config expects comma-separated, not space-separated).
-if [[ "$(declare -p GENE_GROUPS 2>/dev/null)" == "declare -a"* ]]; then
-    _gg_joined=""
-    for _gg in "${GENE_GROUPS[@]}"; do
-        _gg_joined="${_gg_joined:+${_gg_joined},}${_gg}"
-    done
+# O(G) array join via IFS — avoids O(G²) string concatenation in a loop
+if [[ -v GENE_GROUPS && "${GENE_GROUPS@a}" == *a* ]]; then
+    _gg_joined="$(IFS=','; printf '%s' "${GENE_GROUPS[*]}")"
     unset GENE_GROUPS
     GENE_GROUPS="$_gg_joined"
-    unset _gg_joined _gg
+    unset _gg_joined
 fi
 GENE_GROUPS="${GENE_GROUPS:-SmelDMPs_v5_with_18s_and_HAP2,Selected_SmelGRF-GIF_with_two_GIF}"
 
@@ -653,13 +663,14 @@ GPU_VRAM_GB="${GPU_VRAM_GB:-8}"
 
 # Build METHOD_REF_DIRS_STR from associative array for R consumption
 # Format: "M1_HISAT2_RefGuided=GPE001970_genome;M2_HISAT2_DeNovo=GPE001970_transcripts;..."
-METHOD_REF_DIRS_STR=""
+# O(M) array build + single join — avoids O(M²) string concatenation
+declare -a _mrd_parts=()
 for method in ${METHODS}; do
     ref_dir="${METHOD_REF_DIRS[$method]:-}"
-    if [[ -n "$ref_dir" ]]; then
-        METHOD_REF_DIRS_STR="${METHOD_REF_DIRS_STR:+${METHOD_REF_DIRS_STR};}${method}=${ref_dir}"
-    fi
+    [[ -n "$ref_dir" ]] && _mrd_parts+=("${method}=${ref_dir}")
 done
+METHOD_REF_DIRS_STR="$(IFS=';'; printf '%s' "${_mrd_parts[*]}")"
+unset _mrd_parts
 
 # Concordance mode: cross_method (default), cross_genome, cross_gene_group
 CONCORDANCE_MODE="${CONCORDANCE_MODE:-cross_method}"
@@ -667,12 +678,11 @@ FIXED_METHOD="${FIXED_METHOD:-}"
 
 # Build CONCORDANCE_GENOMES_STR from array for R (semicolon-separated)
 # Must unset array before reassignment — bash arrays cannot be exported to child processes.
+# O(G) array join via IFS — avoids O(G²) string concatenation
 CONCORDANCE_GENOMES_STR=""
-if [[ "$(declare -p CONCORDANCE_GENOMES 2>/dev/null)" == "declare -a"* ]]; then
-    for _g in "${CONCORDANCE_GENOMES[@]}"; do
-        CONCORDANCE_GENOMES_STR="${CONCORDANCE_GENOMES_STR:+${CONCORDANCE_GENOMES_STR};}${_g}"
-    done
-    unset _g CONCORDANCE_GENOMES
+if [[ -v CONCORDANCE_GENOMES && "${CONCORDANCE_GENOMES@a}" == *a* ]]; then
+    CONCORDANCE_GENOMES_STR="$(IFS=';'; printf '%s' "${CONCORDANCE_GENOMES[*]}")"
+    unset CONCORDANCE_GENOMES
 fi
 
 export BASE_DIR MASTER_REFERENCE METHODS METHOD_REF_DIRS_STR
@@ -724,7 +734,12 @@ case "${CONCORDANCE_MODE}" in
         STEP1_SCRIPT="1_load_matrices_cross_gene_group.R"
         STEP2_SCRIPT="2_gene_group_concordance.R"
         ;;
+    cross_method)
+        STEP1_SCRIPT="1_load_matrices.R"
+        STEP2_SCRIPT="2_quantification_concordance.R"
+        ;;
     *)
+        log_warn "Unknown CONCORDANCE_MODE '${CONCORDANCE_MODE}'; defaulting to cross_method"
         STEP1_SCRIPT="1_load_matrices.R"
         STEP2_SCRIPT="2_quantification_concordance.R"
         ;;
@@ -823,8 +838,8 @@ log_step "CONCORDANCE ANALYSIS COMPLETE (mode: ${CONCORDANCE_MODE})"
 # Report filename matches R prefix: cross_method, cross_genome, or cross_gene_group
 _report_prefix="${CONCORDANCE_MODE:-cross_method}"
 log_info "Report:  ${REPORT_BASE}/${_report_prefix}_concordance_report.md"
-log_info "Figures: ${OUTPUT_DIR}/figures/"
-log_info "Tables:  ${OUTPUT_DIR}/tables/"
+[[ -d "${OUTPUT_DIR}/figures" ]] && log_info "Figures: ${OUTPUT_DIR}/figures/"
+[[ -d "${OUTPUT_DIR}/tables"  ]] && log_info "Tables:  ${OUTPUT_DIR}/tables/"
 
 # Copy logs into the output folder for self-contained results.
 # In multi-config child mode, only copy this child's own log files (by RUN_ID prefix)
