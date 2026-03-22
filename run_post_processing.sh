@@ -9,7 +9,8 @@ set -o pipefail   # -e/-u omitted intentionally (sourced functions use boolean r
 # SYSTEM RESOURCES
 # ==============================================================================
 
-THREADS=$(nproc 2>/dev/null || echo 12)
+# Respect pre-set THREADS from environment; only probe nproc if unset
+THREADS="${THREADS:-$(nproc 2>/dev/null || echo 12)}"
 ENABLE_GPU="FALSE"
 ENABLE_GNU_PARALLEL="TRUE"
 DESIRED_CPU_PER_JOB=1
@@ -62,7 +63,10 @@ PIPELINE_CONFIGS=(
 # PATHS AND UTILITIES
 #===============================================================================
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve script directory: parameter expansion avoids nested $(dirname) subshell
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
 BASE_DIR="$SCRIPT_DIR"
 ANALYSIS_MODULES_DIR="$BASE_DIR/modules/c_post_processing/analysis_modules"
 GENE_GROUPS_DIR="$BASE_DIR/inputs/3_post_proc_inputs/gene_groups_csv"
@@ -173,9 +177,12 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
     load_toml "$CONFIG_FILE"
     log_step "Config: ${CONFIG_FILE##*/}"
 
-    # Snapshot error/warning line count so we can report per-config delta
+    # Snapshot error/warning line count so we can report per-config delta.
+    # Bash read loop avoids wc subshell fork (called once per config iteration).
     _err_baseline=0
-    [[ -f "$ERROR_WARN_FILE" && -s "$ERROR_WARN_FILE" ]] && _err_baseline=$(wc -l < "$ERROR_WARN_FILE")
+    if [[ -f "$ERROR_WARN_FILE" && -s "$ERROR_WARN_FILE" ]]; then
+        while IFS= read -r _; do ((_err_baseline++)); done < "$ERROR_WARN_FILE"
+    fi
 
     MASTER_REFERENCE="${MASTER_REFERENCES[0]}"
     if [[ ${#MASTER_REFERENCES[@]} -gt 1 ]]; then
@@ -400,7 +407,9 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
     log_step "Config Complete: ${CONFIG_FILE##*/}"
     log_info "Datasets: ${SRR_DATASETS[*]} | Methods: ${#METHODS[@]} per dataset"
     _err_total=0
-    [[ -f "$ERROR_WARN_FILE" && -s "$ERROR_WARN_FILE" ]] && _err_total=$(wc -l < "$ERROR_WARN_FILE")
+    if [[ -f "$ERROR_WARN_FILE" && -s "$ERROR_WARN_FILE" ]]; then
+        while IFS= read -r _; do ((_err_total++)); done < "$ERROR_WARN_FILE"
+    fi
     _err_delta=$(( _err_total - _err_baseline ))
     if [[ $_err_delta -gt 0 ]]; then
         log_info "Errors/Warnings this config: $_err_delta (total: $_err_total, see $ERROR_WARN_FILE)"

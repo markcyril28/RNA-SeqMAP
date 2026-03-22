@@ -7,7 +7,9 @@ set -euo pipefail
 # 3) Extract transcript nucleotide FASTA from genome FASTA.
 # 4) Create a small test gene-group CSV for downstream post-processing.
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
 DISCOVER_PY="$SCRIPT_DIR/modules/c_post_processing/utilities/discover_alt_splice_from_gtf.py"
 
 GTF_PATH=""
