@@ -7,7 +7,10 @@
 
 set -o pipefail   # -e/-u omitted intentionally (sourced functions use boolean returns)
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve project root without subshell forks (parameter expansion only)
+PROJECT_ROOT="${BASH_SOURCE[0]%/*}"
+[[ "$PROJECT_ROOT" == "${BASH_SOURCE[0]}" ]] && PROJECT_ROOT="."
+PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"  # one cd to resolve symlinks + relative paths
 cd "$PROJECT_ROOT" || exit 1
 
 # ==============================================================================
@@ -96,7 +99,8 @@ run_all() {
 	done
 
 	local start_time end_time elapsed
-	start_time=$(date +%s)
+	# O(1) bash builtin — avoids $(date +%s) subprocess fork
+	printf -v start_time '%(%s)T' -1 2>/dev/null || start_time=$(date +%s)
 
 	local fasta_base fasta_tag
 	fasta_base="${fasta##*/}"
@@ -111,7 +115,9 @@ run_all() {
 		_SOFTWARE_CATALOGED="true"
 	fi
 	log_configuration
-	log_step "Script started at: $(date -d "@$start_time")"
+	# Use printf builtin for formatted date — avoids subshell
+	local _start_fmt; printf -v _start_fmt '%(%Y-%m-%d %H:%M:%S)T' "$start_time" 2>/dev/null || _start_fmt=$(date -d "@$start_time" '+%Y-%m-%d %H:%M:%S')
+	log_step "Script started at: $_start_fmt"
 
 	log_info "SRR samples to process:"
 	for srr in "${rnaseq_list[@]}"; do log_info "$srr"; done
@@ -256,10 +262,12 @@ run_all() {
 
 	compare_methods_summary "$fasta_tag"
 
-	end_time=$(date +%s)
+	# O(1) bash builtin — avoids $(date +%s) subprocess fork
+	printf -v end_time '%(%s)T' -1 2>/dev/null || end_time=$(date +%s)
 	elapsed=$((end_time - start_time))
 	log_step "Final timing"
-	log_info "Script ended at: $(date -d "@$end_time")"
+	local _end_fmt; printf -v _end_fmt '%(%Y-%m-%d %H:%M:%S)T' "$end_time" 2>/dev/null || _end_fmt=$(date -d "@$end_time" '+%Y-%m-%d %H:%M:%S')
+	log_info "Script ended at: $_end_fmt"
 	# Pure bash arithmetic (avoids date subshell spawn)
 	log_info "Elapsed time: $(printf '%02d:%02d:%02d' $((elapsed/3600)) $(((elapsed%3600)/60)) $((elapsed%60)))"
 
@@ -309,6 +317,9 @@ trap _pipeline_cleanup EXIT
 # Methods run in parallel when PARALLEL_METHODS=TRUE, reducing M dimension to O(1) wall-clock.
 # Per-method inner loops are parallelized via GNU Parallel (S/JOBS threads).
 total_failures=0
+# SRR dataset TOML parse cache — avoids re-parsing across multiple config files
+_SRR_DATASETS_CACHED=()
+_SRR_DATASETS_CACHED_FILE=""
 
 for config_file in "${CONFIG_FILES[@]}"; do
 	log_step "LOADING CONFIGURATION: $config_file"
@@ -324,9 +335,18 @@ for config_file in "${CONFIG_FILES[@]}"; do
 	[[ -n "${STAR_READ_LENGTH:-}" ]] && export STAR_READ_LENGTH
 
 	# Load SRR datasets: test configs define SRR_COMBINED_LIST inline;
-	# full configs load from shared srr_datasets.toml
+	# full configs load from shared srr_datasets.toml.
+	# Cache result — avoids re-parsing the same TOML across multiple configs.
+	# O(L) TOML parse on first call; O(1) array copy on subsequent calls.
 	if [[ ${#SRR_COMBINED_LIST[@]} -eq 0 ]]; then
-		load_toml_srr_datasets "${PROJECT_ROOT}/config/shared/srr_datasets.toml"
+		_srr_toml="${PROJECT_ROOT}/config/shared/srr_datasets.toml"
+		if [[ "${_SRR_DATASETS_CACHED_FILE:-}" == "$_srr_toml" && ${#_SRR_DATASETS_CACHED[@]} -gt 0 ]]; then
+			SRR_COMBINED_LIST=("${_SRR_DATASETS_CACHED[@]}")
+		else
+			load_toml_srr_datasets "$_srr_toml"
+			_SRR_DATASETS_CACHED=("${SRR_COMBINED_LIST[@]}")
+			_SRR_DATASETS_CACHED_FILE="$_srr_toml"
+		fi
 	fi
 
 	# Map TOML uppercase keys to lowercase aliases used by method modules
