@@ -156,7 +156,12 @@ save_matrix_csv <- function(mat, count_type, gene_type, out_dir, mr, level) {
   df <- as.data.frame(mat, check.names = FALSE)
   df <- cbind(GeneID = rownames(mat), df)
   rownames(df) <- NULL
-  write.table(df, fpath, sep = ",", quote = FALSE, row.names = FALSE)
+  # Use data.table::fwrite when available — 5-10x faster for large matrices
+  if (requireNamespace("data.table", quietly = TRUE)) {
+    data.table::fwrite(df, fpath, sep = ",", quote = FALSE)
+  } else {
+    write.table(df, fpath, sep = ",", quote = FALSE, row.names = FALSE)
+  }
   cat("Saved:", fname, "\n")
 }
 

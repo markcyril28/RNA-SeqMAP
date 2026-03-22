@@ -10,7 +10,8 @@
 # Called by: prepde_matrix_linker.sh (as part of M1 preprocessing)
 # ===============================================
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
 
 export STRINGTIE_METHOD="M1"
 exec bash "$SCRIPT_DIR/stringtie_matrix_builder.sh"

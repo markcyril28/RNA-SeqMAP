@@ -23,7 +23,8 @@ BASE_DIR="${BASE_DIR:-$PWD}"
 MASTER_REFERENCE="${MASTER_REFERENCE:-All_Smel_Genes}"
 
 # Source logging utilities for consistent pipeline logging
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
 source "${BASE_DIR}/modules/logging/logging_utils.sh" 2>/dev/null || {
     log_info()  { echo "[INFO] $*"; }
     log_warn()  { echo "[WARN] $*" >&2; }
@@ -126,7 +127,7 @@ log_info "M1 DESeq2 matrices ready at: $TARGET_DESEQ2_DIR"
 # values needed by heatmap visualization modules.
 # Invoke the dedicated M1 matrix builder (separate from M2's stringtie_matrix_builder.sh).
 
-M1_MATRIX_BUILDER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/m1_ref_guided_matrix_builder.sh"
+M1_MATRIX_BUILDER="${BASH_SOURCE[0]%/*}/m1_ref_guided_matrix_builder.sh"
 if [[ ! -f "$M1_MATRIX_BUILDER" ]]; then
     log_warn "m1_ref_guided_matrix_builder.sh not found at: $M1_MATRIX_BUILDER"
     log_warn "Heatmap matrices will not be built for M1."

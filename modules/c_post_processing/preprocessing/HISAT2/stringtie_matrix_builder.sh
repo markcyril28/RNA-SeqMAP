@@ -82,7 +82,9 @@ MASTER_SUFFIX="_from_${MASTER_REFERENCE}"
 BASE_DIR="${BASE_DIR:-$PWD}"
 INPUTS_DIR="${INPUTS_DIR:-${BASE_DIR}/2_ALIGNMENT_RESULTs/${_DEFAULT_INPUTS_SUBDIR}}"
 OUT_DIR="${OUT_DIR:-${BASE_DIR}/3_POST_PROC/${_DEFAULT_OUT_SUBDIR}}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve SCRIPT_DIR without nested dirname subshell
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
 
 # Abundance filename suffix
 ABUNDANCE_SUFFIX="${ABUNDANCE_SUFFIX:-$_DEFAULT_ABUNDANCE_SUFFIX}"
@@ -491,7 +493,8 @@ for gene_group in "${GENE_GROUPS[@]}"; do
         continue
     fi
 
-    log_info "Found reference CSV with $(awk 'END{print NR-1}' "$REF_CSV") genes"
+    # wc -l is faster than awk for pure line counting (no field splitting overhead)
+    log_info "Found reference CSV with $(( $(wc -l < "$REF_CSV") - 1 )) genes"
 
     if merge_group_counts "$gene_group" "$REF_CSV"; then
         log_info "Successfully processed $gene_group"
