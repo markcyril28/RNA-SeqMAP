@@ -21,14 +21,16 @@
 
 # Guard against double-sourcing
 [[ "${LOGGING_UTILS_SOURCED:-}" == "true" ]] && return 0
-export LOGGING_UTILS_SOURCED="true"
+LOGGING_UTILS_SOURCED="true"
 
 # ==============================================================================
 # LOGGING CONFIGURATION - IMPORTANT PARAMETERS AT TOP
 # ==============================================================================
 
-# Run ID for unique log file naming
-RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
+# Run ID for unique log file naming (prefer printf builtin over date subprocess)
+if [[ -z "${RUN_ID:-}" ]]; then
+	printf -v RUN_ID '%(%Y%m%d_%H%M%S)T' -1 2>/dev/null || RUN_ID=$(date +%Y%m%d_%H%M%S)
+fi
 
 # Log directory structure
 LOG_DIR="${LOG_DIR:-logs/log_files}"
@@ -381,15 +383,22 @@ run_with_space_time_log() {
 	
 	# Measure input size before running command
 	# O(1) stat for single files (avoids du|awk 2-process pipeline); du for directories
+	# O(1) bash arithmetic — replaces awk subprocess for simple division
 	local input_size_mb="0"
 	if [[ -n "$input_path" ]]; then
 		if [[ -f "$input_path" ]]; then
 			local _sz_bytes
 			_sz_bytes=$(stat -c%s "$input_path" 2>/dev/null || stat -f%z "$input_path" 2>/dev/null || echo 0)
-			input_size_mb=$(awk "BEGIN {printf \"%.2f\", $_sz_bytes / 1048576}")
+			# Scaled integer: (bytes * 100 / 1048576) then insert decimal point
+			local _scaled=$(( _sz_bytes * 100 / 1048576 ))
+			input_size_mb="$(( _scaled / 100 )).$(printf '%02d' $(( _scaled % 100 )))"
 		elif [[ -d "$input_path" ]]; then
-			input_size_mb=$(du -sk "$input_path" 2>/dev/null | awk '{printf "%.2f", $1/1024}')
-			input_size_mb="${input_size_mb:-0}"
+			local _du_kb
+			# read -r avoids cut subprocess (du outputs "SIZE\tPATH")
+			read -r _du_kb _ <<< "$(du -sk "$input_path" 2>/dev/null)"
+			_du_kb="${_du_kb:-0}"
+			local _scaled=$(( _du_kb * 100 / 1024 ))
+			input_size_mb="$(( _scaled / 100 )).$(printf '%02d' $(( _scaled % 100 )))"
 		fi
 	fi
 	
@@ -455,18 +464,24 @@ run_with_space_time_log() {
 	
 	# Measure output size after running command
 	# O(1) stat for single files; du for directories
+	# O(1) bash arithmetic — replaces awk subprocess for simple division
 	local output_size_mb="0"
 	if [[ -n "$output_path" ]]; then
 		if [[ -f "$output_path" ]]; then
 			local _sz_bytes
 			_sz_bytes=$(stat -c%s "$output_path" 2>/dev/null || stat -f%z "$output_path" 2>/dev/null || echo 0)
-			output_size_mb=$(awk "BEGIN {printf \"%.2f\", $_sz_bytes / 1048576}")
+			local _scaled=$(( _sz_bytes * 100 / 1048576 ))
+			output_size_mb="$(( _scaled / 100 )).$(printf '%02d' $(( _scaled % 100 )))"
 		elif [[ -d "$output_path" ]]; then
-			output_size_mb=$(du -sk "$output_path" 2>/dev/null | awk '{printf "%.2f", $1/1024}')
-			output_size_mb="${output_size_mb:-0}"
+			local _du_kb
+			# read -r avoids cut subprocess (du outputs "SIZE\tPATH")
+			read -r _du_kb _ <<< "$(du -sk "$output_path" 2>/dev/null)"
+			_du_kb="${_du_kb:-0}"
+			local _scaled=$(( _du_kb * 100 / 1024 ))
+			output_size_mb="$(( _scaled / 100 )).$(printf '%02d' $(( _scaled % 100 )))"
 		fi
 	fi
-	
+
 	# Append to both CSV files in a single write (reduces 2 file opens to 1 process)
 	# O(1) — single printf with two redirect targets via tee replacement
 	local csv_cmd="${cmd_string//\"/\"\"}"
@@ -493,11 +508,23 @@ log_file_size() {
 	
 	[[ -d "$file_path" ]] && type="DIR"
 	
-	# Single du|awk pipeline for KB, MB, and GB (replaces du + 2 awk spawns)
-	local size_kb size_mb size_gb
-	read -r size_kb size_mb size_gb <<< "$(du -sk "$file_path" 2>/dev/null | awk '{printf "%d %.2f %.2f", $1, $1/1024, $1/1048576}')"
-	size_kb="${size_kb:-0}"; size_mb="${size_mb:-0.00}"; size_gb="${size_gb:-0.00}"
-	
+	# O(1) for files via stat (avoids du fork); O(F) for directories via du.
+	# Bash arithmetic computes MB/GB without awk subprocess.
+	local size_kb=0 size_mb="0.00" size_gb="0.00"
+	if [[ -f "$file_path" ]]; then
+		local _sz_bytes
+		_sz_bytes=$(stat -c%s "$file_path" 2>/dev/null || stat -f%z "$file_path" 2>/dev/null || echo 0)
+		size_kb=$(( (_sz_bytes + 1023) / 1024 ))
+	elif [[ -d "$file_path" ]]; then
+		read -r size_kb _ <<< "$(du -sk "$file_path" 2>/dev/null)"
+		size_kb="${size_kb:-0}"
+	fi
+	# Bash integer math with 2-decimal precision (avoids awk subprocess)
+	local _mb_scaled=$(( size_kb * 100 / 1024 ))
+	size_mb="$(( _mb_scaled / 100 )).$(printf '%02d' $(( _mb_scaled % 100 )))"
+	local _gb_scaled=$(( size_kb * 100 / 1048576 ))
+	size_gb="$(( _gb_scaled / 100 )).$(printf '%02d' $(( _gb_scaled % 100 )))"
+
 	local file_count="-"
 	# Use find -printf x | wc -c (faster than -print | wc -l, avoids newline overhead)
 	[[ -d "$file_path" ]] && file_count=$(find "$file_path" -type f -printf x 2>/dev/null | wc -c)

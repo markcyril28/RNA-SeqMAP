@@ -28,7 +28,12 @@ DISTRO_VERSION=""
 # ==============================================================================
 
 GPU_LOG_DIR="${GPU_LOG_DIR:-${SCRIPT_DIR:-$(pwd)}/logs}"
-GPU_LOG_FILE="${GPU_LOG_FILE:-$GPU_LOG_DIR/gpu_prep_$(date +%Y%m%d_%H%M%S).log}"
+# Prefer printf builtin over date subprocess for log filename
+if [[ -z "${GPU_LOG_FILE:-}" ]]; then
+	printf -v _gpu_ts_id '%(%Y%m%d_%H%M%S)T' -1 2>/dev/null || _gpu_ts_id=$(date +%Y%m%d_%H%M%S)
+	GPU_LOG_FILE="$GPU_LOG_DIR/gpu_prep_${_gpu_ts_id}.log"
+	unset _gpu_ts_id
+fi
 GPU_LOG_ENABLED="${GPU_LOG_ENABLED:-true}"
 GPU_LOG_LEVEL="${GPU_LOG_LEVEL:-INFO}"  # DEBUG, INFO, WARN, ERROR
 
