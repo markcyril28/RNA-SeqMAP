@@ -14,7 +14,7 @@ export TRIMMING_SOURCED="true"
 # Source dependencies
 # Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
 SCRIPT_DIR="${MODULES_DIR:+${MODULES_DIR}/a_preprocessing}"
-SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+if [[ -z "$SCRIPT_DIR" ]]; then SCRIPT_DIR="${BASH_SOURCE[0]%/*}"; [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."; fi
 _TRIMMING_SCRIPT_DIR="$SCRIPT_DIR"
 source "$SCRIPT_DIR/shared_utils_preproc.sh"
 
