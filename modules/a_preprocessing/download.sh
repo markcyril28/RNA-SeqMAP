@@ -91,7 +91,7 @@ download_srrs_parallel() {
 		
 		# Activate conda environment in subshell (uses cached path to avoid dirname subshell)
 		if [[ -n "$CONDA_PREFIX" ]]; then
-			source "${_CONDA_PROFILE_SCRIPT:-$(dirname "$CONDA_EXE")/../etc/profile.d/conda.sh}" 2>/dev/null || true
+			source "${_CONDA_PROFILE_SCRIPT:-${CONDA_EXE%/*}/../etc/profile.d/conda.sh}" 2>/dev/null || true
 			conda activate "$CONDA_DEFAULT_ENV" 2>/dev/null || true
 		fi
 		

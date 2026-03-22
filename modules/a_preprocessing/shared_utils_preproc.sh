@@ -178,8 +178,9 @@ detect_read_length() {
 
 	# Sample 100 reads (400 lines) instead of 1000 — statistically equivalent for
 	# read length detection but 10x fewer lines decompressed. O(400) vs O(4000).
-	local avg_length=$($decompress_cmd "$fastq" 2>/dev/null | head -n 400 | \
-		awk 'NR%4==2 {sum+=length($0); count++} END {if (count>0) print int(sum/count)}')
+	# head merged into awk (NR>400{exit}) — eliminates 1 subprocess per cache miss.
+	local avg_length=$($decompress_cmd "$fastq" 2>/dev/null | \
+		awk 'NR>400{exit} NR%4==2 {sum+=length($0); count++} END {if (count>0) print int(sum/count)}')
 
 	if [[ -z "$avg_length" || $avg_length -lt 50 || $avg_length -gt 300 ]]; then
 		echo "$default_length"
@@ -219,13 +220,9 @@ should_use_parallel() {
 # ==============================================================================
 
 gzip_trimmed_fastq_files() {
-	# Early exit: skip find+xargs pipeline when no .fq files exist (common on resume runs)
-	local _fq_count
-	_fq_count=$(find "$TRIM_DIR_ROOT" -type f -name "*.fq" -print -quit 2>/dev/null)
-	if [[ -z "$_fq_count" ]]; then
-		log_info "No uncompressed .fq files found in $TRIM_DIR_ROOT — skipping compression"
-		return 0
-	fi
+	# Single find pass: early exit if no .fq files exist (xargs -r / --no-run-if-empty).
+	# Eliminates previous double-find pattern (one for check, one for compression).
+	# O(tree) single traversal vs O(2 × tree).
 	log_info "Compressing trimmed FASTQ files in $TRIM_DIR_ROOT..."
 	local _compress_cmd="gzip" _parallel_jobs
 	# Use cached pigz detection (set at module load) instead of per-call command -v
@@ -239,9 +236,10 @@ gzip_trimmed_fastq_files() {
 		log_info "Using gzip with ${_parallel_jobs} parallel jobs"
 	fi
 	local _compress_rc=0
+	# -r (--no-run-if-empty): xargs exits 0 without spawning compress if find yields nothing.
 	# No -I {}: lets xargs batch multiple files per invocation (fewer process spawns)
 	find "$TRIM_DIR_ROOT" -type f -name "*.fq" -print0 | \
-		xargs -0 -P "$_parallel_jobs" $_compress_cmd 2>/dev/null || _compress_rc=$?
+		xargs -0 -r -P "$_parallel_jobs" $_compress_cmd 2>/dev/null || _compress_rc=$?
 	if [[ $_compress_rc -ne 0 ]]; then
 		log_warn "Compression finished with errors (exit code: $_compress_rc) — some .fq files may not have been compressed."
 	else

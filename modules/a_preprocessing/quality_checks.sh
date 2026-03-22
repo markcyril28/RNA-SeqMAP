@@ -144,7 +144,7 @@ run_quality_control_parallel() {
 
 		# Activate conda environment in subshell (uses cached path to avoid dirname subshell)
 		if [[ -n "$CONDA_PREFIX" ]]; then
-			source "${_CONDA_PROFILE_SCRIPT:-$(dirname "$CONDA_EXE")/../etc/profile.d/conda.sh}" 2>/dev/null || true
+			source "${_CONDA_PROFILE_SCRIPT:-${CONDA_EXE%/*}/../etc/profile.d/conda.sh}" 2>/dev/null || true
 			conda activate "$CONDA_DEFAULT_ENV" 2>/dev/null || true
 		fi
 
@@ -202,17 +202,14 @@ generate_qc_summary() {
 		echo "=========================================="
 		echo ""
 		
-		# Find all fastqc_data.txt files and extract key metrics
-		# O(S) — one read per summary file; avoids cat subprocess per sample
-		for summary_file in "$FASTQC_ROOT"/*/*_fastqc/summary.txt; do
-			if [[ -f "$summary_file" ]]; then
-				local sample_dir="${summary_file%/*}"
-				local sample_name="${sample_dir##*/}"; sample_name="${sample_name%_fastqc}"
-				echo "Sample: $sample_name"
-				cat "$summary_file"
-				echo ""
-			fi
-		done
+		# Single awk pass over all summary files — replaces S cat + S echo subprocesses
+		# with 1 awk process. O(S × lines) total, O(1) process spawns.
+		shopt -s nullglob
+		local _summary_files=("$FASTQC_ROOT"/*/*_fastqc/summary.txt)
+		shopt -u nullglob
+		if [[ ${#_summary_files[@]} -gt 0 ]]; then
+			awk 'FNR==1 { if (NR>1) print ""; f=FILENAME; sub(/.*\//, "", f); sub(/_fastqc\/summary\.txt$/, "", f); print "Sample: " f } {print}' "${_summary_files[@]}"
+		fi
 	} > "$output_file"
 	
 	log_info "QC summary saved to: $output_file"

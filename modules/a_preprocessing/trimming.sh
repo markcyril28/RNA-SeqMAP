@@ -275,7 +275,7 @@ download_and_trim_srrs_parallel() {
 		
 		# Activate conda environment in subshell
 		if [[ -n "$CONDA_PREFIX" ]]; then
-			source "${_CONDA_PROFILE_SCRIPT:-$(dirname "$CONDA_EXE")/../etc/profile.d/conda.sh}" 2>/dev/null || true
+			source "${_CONDA_PROFILE_SCRIPT:-${CONDA_EXE%/*}/../etc/profile.d/conda.sh}" 2>/dev/null || true
 			conda activate "$CONDA_DEFAULT_ENV" 2>/dev/null || true
 		fi
 		
@@ -402,7 +402,7 @@ trim_srrs_trimmomatic_parallel() {
 		
 		# Activate conda environment in subshell
 		if [[ -n "$CONDA_PREFIX" ]]; then
-			source "${_CONDA_PROFILE_SCRIPT:-$(dirname "$CONDA_EXE")/../etc/profile.d/conda.sh}" 2>/dev/null || true
+			source "${_CONDA_PROFILE_SCRIPT:-${CONDA_EXE%/*}/../etc/profile.d/conda.sh}" 2>/dev/null || true
 			conda activate "$CONDA_DEFAULT_ENV" 2>/dev/null || true
 		fi
 		
