@@ -133,7 +133,11 @@ run_quality_control_parallel() {
 	# Export required variables and functions for parallel execution
 	export PATH CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_EXE
 	export RAW_DIR_ROOT TRIM_DIR_ROOT FASTQC_ROOT THREADS_PER_JOB
-	export -f timestamp log log_info log_warn log_error log_step rename_fastqc_outputs 2>/dev/null || true
+	# Export cached paths and error log for parallel worker logging
+	export _CONDA_PROFILE_SCRIPT ERROR_WARN_FILE
+	# Export _log_impl (core logger) alongside its callers — without it, log_info/log_warn/log_error
+	# fail silently in GNU Parallel subshells because they delegate to _log_impl.
+	export -f _log_impl timestamp log log_info log_warn log_error log_step rename_fastqc_outputs 2>/dev/null || true
 
 	_qc_worker() {
 		local SRR="$1"
@@ -193,11 +197,13 @@ generate_qc_summary() {
 	{
 		echo "=========================================="
 		echo "FastQC Summary Report"
-		echo "Generated: $(date)"
+		local _qc_ts; printf -v _qc_ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _qc_ts=$(date '+%Y-%m-%d %H:%M:%S')
+		echo "Generated: $_qc_ts"
 		echo "=========================================="
 		echo ""
 		
 		# Find all fastqc_data.txt files and extract key metrics
+		# O(S) — one read per summary file; avoids cat subprocess per sample
 		for summary_file in "$FASTQC_ROOT"/*/*_fastqc/summary.txt; do
 			if [[ -f "$summary_file" ]]; then
 				local sample_dir="${summary_file%/*}"

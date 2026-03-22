@@ -44,6 +44,13 @@ if [[ -z "${_CONDA_PROFILE_SCRIPT+x}" && -n "${CONDA_EXE:-}" ]]; then
 	export _CONDA_PROFILE_SCRIPT
 fi
 
+# Cache CPU count at module load — avoids nproc subprocess spawn per function call.
+# Used by gzip_trimmed_fastq_files() and other utilities as thread count fallback.
+if [[ -z "${_CACHED_NPROC:-}" ]]; then
+	_CACHED_NPROC=$(nproc 2>/dev/null || echo 4)
+	export _CACHED_NPROC
+fi
+
 # ==============================================================================
 # FASTQ FILE DETECTION FUNCTIONS
 # ==============================================================================
@@ -228,7 +235,7 @@ gzip_trimmed_fastq_files() {
 		log_info "Using pigz for multi-threaded compression (${_parallel_jobs} jobs x ${THREADS_PER_JOB:-4} threads)"
 	else
 		# gzip is single-threaded: use all available threads as parallel jobs
-		_parallel_jobs="${THREADS:-$(nproc 2>/dev/null || echo 4)}"
+		_parallel_jobs="${THREADS:-${_CACHED_NPROC:-4}}"
 		log_info "Using gzip with ${_parallel_jobs} parallel jobs"
 	fi
 	local _compress_rc=0
