@@ -4,10 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
 SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
-ARCHIVE_DIR="${SCRIPT_DIR}/HPC"
+# Resolve project root (this script lives in modules/other_tools/)
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+ARCHIVE_DIR="${PROJECT_ROOT}/HPC"
 
 # Source logging utilities for consistent output
-source "${SCRIPT_DIR}/modules/logging/logging_utils.sh" 2>/dev/null || {
+source "${PROJECT_ROOT}/modules/logging/logging_utils.sh" 2>/dev/null || {
     log_info()  { echo "[INFO]  $*"; }
     log_warn()  { echo "[WARN]  $*"; }
     log_error() { echo "[ERROR] $*" >&2; }
@@ -18,7 +20,12 @@ source "${SCRIPT_DIR}/modules/logging/logging_utils.sh" 2>/dev/null || {
 if [[ -n "${1:-}" && -f "$1" ]]; then
 	ARCHIVE="$1"
 elif [[ -d "$ARCHIVE_DIR" ]]; then
-	ARCHIVE="$(find "$ARCHIVE_DIR" -maxdepth 1 -name 'HeatSeq_archive_*.7z' -type f | sort -r | head -n1)"
+	# Bash glob + loop replaces find|sort|head pipeline (3 subshells → 0)
+	# O(N) single pass over glob results; lexicographic sort by shell is sufficient
+	ARCHIVE=""
+	for _f in "$ARCHIVE_DIR"/HeatSeq_archive_*.7z; do
+		[[ -f "$_f" ]] && [[ "$_f" > "${ARCHIVE:-}" ]] && ARCHIVE="$_f"
+	done
 else
 	ARCHIVE=""
 fi
@@ -31,7 +38,7 @@ fi
 
 THREADS="${THREADS:-12}"
 log_info "Extracting: $ARCHIVE (threads=$THREADS)"
-if ! 7z x "$ARCHIVE" -o"${SCRIPT_DIR}" -aoa -mmt="${THREADS}"; then
+if ! 7z x "$ARCHIVE" -o"${PROJECT_ROOT}" -aoa -mmt="${THREADS}"; then
 	log_error "Archive extraction failed"
 	exit 1
 fi

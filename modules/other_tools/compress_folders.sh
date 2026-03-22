@@ -5,11 +5,15 @@ set -euo pipefail
 SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
 SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
-cd "$SCRIPT_DIR"
+# Resolve project root (this script lives in modules/other_tools/)
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$PROJECT_ROOT"
 
-THREADS=64
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-OUTPUT="HeatSeq_archive_${TIMESTAMP}.7z"
+# Use available cores (nproc), fallback to 64 for systems without nproc
+THREADS=$(nproc 2>/dev/null || echo 64)
+printf -v TIMESTAMP '%(%Y%m%d_%H%M%S)T' -1 2>/dev/null || TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+mkdir -p HPC
+OUTPUT="HPC/HeatSeq_archive_${TIMESTAMP}.7z"
 
 FOLDERS=(
     "1_SRRs/3_FastQC_v2"
@@ -33,11 +37,13 @@ echo "    Compression: LZMA2, ultra (mx=9), threads=$THREADS"
 echo "    Folders: ${FOLDERS[*]}"
 echo ""
 
-# Show total size before compression
-du -sh "${FOLDERS[@]}" 2>/dev/null
+# Show total size before compression — single du pass instead of two O(tree) traversals
+mapfile -t _du_lines < <(du -shc "${FOLDERS[@]}" 2>/dev/null)
+# Print per-folder lines (all but last "total" line)
+printf '%s\n' "${_du_lines[@]::${#_du_lines[@]}-1}"
 echo ""
-TOTAL=$(du -sc "${FOLDERS[@]}" 2>/dev/null | tail -1 | cut -f1)
-echo "Total size: $(numfmt --to=iec --from-unit=1024 "$TOTAL" 2>/dev/null || echo "${TOTAL}K")"
+TOTAL="${_du_lines[-1]%%$'\t'*}"
+echo "Total size: $TOTAL"
 echo ""
 
 time 7z a -t7z -m0=lzma2 -mx=9 -mfb=273 -md=64m -ms=on -mmt="$THREADS" \
