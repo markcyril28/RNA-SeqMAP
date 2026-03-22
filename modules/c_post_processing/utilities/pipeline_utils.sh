@@ -318,12 +318,13 @@ export_utils_for_parallel() {
     # Guard: skip if already exported this session (saves ~20 export -f calls per dataset iteration)
     [[ "${_PARALLEL_UTILS_EXPORTED:-}" == "true" ]] && return 0
     # Export logging functions (from logging_utils.sh)
-    export -f log log_info log_warn log_error log_step timestamp
+    export -f _log_impl log log_info log_warn log_error log_step timestamp
     # Export error capture (from logging_utils.sh)
     export -f run_with_error_capture capture_stderr_errors strip_ansi_stream 2>/dev/null || true
     # Export error/warning regex patterns used by capture_stderr_errors
     export _ERROR_PATTERN _WARN_PATTERN 2>/dev/null || true
     # Export pipeline functions
+    export _PIPELINE_UTIL_DIR _PIPELINE_MODS_DIR
     export -f _rebuild_exported_arrays
     export -f run_method_analysis run_single_analysis setup_method_env run_method_preprocessing
     export -f is_figure_analysis get_analysis_script get_matrix_creation_script get_preprocessing_script parse_srr_csv
