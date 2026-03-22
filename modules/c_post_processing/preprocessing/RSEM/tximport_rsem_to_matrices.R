@@ -285,29 +285,28 @@ for (level_name in names(processing_levels)) {
   # ===============================================
   
   cat("Step 7: Processing gene groups...\n")
-  
-  gene_group_files <- list.files(GENE_GROUPS_DIR, pattern = "\\.(csv|txt|tsv)$", recursive = TRUE, full.names = TRUE)
 
-  # Deduplicate by basename — recursive search may find the same gene group in multiple
-  # subdirectories (e.g. gene_sets/ and experimental/Eggplant_V4.1/); keep the first match.
-  # Pre-compute basenames once — reused for deduplication and filtering. O(N) instead of O(2N).
-  gg_base_names <- tools::file_path_sans_ext(basename(gene_group_files))
-  if (length(gene_group_files) > 1) {
-    dup_idx <- duplicated(gg_base_names)
-    if (any(dup_idx)) {
-      cat("  Note: removing", sum(dup_idx), "duplicate gene group file(s) by basename\n")
-      gene_group_files <- gene_group_files[!dup_idx]
-      gg_base_names <- gg_base_names[!dup_idx]
+  # Reuse pre-computed gene group file list (hoisted above level loop to avoid
+  # repeated list.files() filesystem traversals — same result across levels)
+  if (!exists(".gg_files_cached")) {
+    .gg_files_cached <- list.files(GENE_GROUPS_DIR, pattern = "\\.(csv|txt|tsv)$", recursive = TRUE, full.names = TRUE)
+    .gg_base_cached <- tools::file_path_sans_ext(basename(.gg_files_cached))
+    if (length(.gg_files_cached) > 1) {
+      dup_idx <- duplicated(.gg_base_cached)
+      if (any(dup_idx)) {
+        cat("  Note: removing", sum(dup_idx), "duplicate gene group file(s) by basename\n")
+        .gg_files_cached <- .gg_files_cached[!dup_idx]
+        .gg_base_cached <- .gg_base_cached[!dup_idx]
+      }
+    }
+    gene_groups_str <- Sys.getenv("GENE_GROUPS_STR", unset = "")
+    if (nzchar(gene_groups_str)) {
+      enabled_groups <- trimws(strsplit(gene_groups_str, " ")[[1]])
+      .gg_files_cached <- .gg_files_cached[.gg_base_cached %in% enabled_groups]
+      cat("Filtering to configured gene groups:", paste(enabled_groups, collapse = ", "), "\n")
     }
   }
-
-  # Filter to only process gene groups specified in GENE_GROUPS_STR (from bash config)
-  gene_groups_str <- Sys.getenv("GENE_GROUPS_STR", unset = "")
-  if (nzchar(gene_groups_str)) {
-    enabled_groups <- trimws(strsplit(gene_groups_str, " ")[[1]])
-    gene_group_files <- gene_group_files[gg_base_names %in% enabled_groups]
-    cat("Filtering to configured gene groups:", paste(enabled_groups, collapse = ", "), "\n")
-  }
+  gene_group_files <- .gg_files_cached
   
   if (length(gene_group_files) == 0) {
     cat("No gene group files found in", GENE_GROUPS_DIR, "\n")

@@ -81,8 +81,14 @@ cat("Found", length(files), "quant.sf files\n")
 # Detect column order: tximport needs c(TXNAME, GENEID)
 # star_alignment_pipeline writes: transcript_id TAB gene_id  (col1=TX, col2=GENE)
 # gene_trans_map fallback writes: gene_id TAB transcript_id  (col1=GENE, col2=TX)
-raw_tx2gene <- read.delim(tx2gene_file, header = FALSE, stringsAsFactors = FALSE,
-                          colClasses = "character")
+# O(N) where N = tx2gene rows; fread is 10-50x faster for large transcriptomes
+raw_tx2gene <- if (.use_dt_star_helper) {
+  data.table::fread(tx2gene_file, header = FALSE, colClasses = "character",
+                    data.table = FALSE)
+} else {
+  read.delim(tx2gene_file, header = FALSE, stringsAsFactors = FALSE,
+             colClasses = "character")
+}
 if (nrow(raw_tx2gene) == 0) {
   stop("tx2gene file is empty (0 rows): ", tx2gene_file)
 }

@@ -74,6 +74,9 @@ MATRICES_OUTPUT_DIR <- if (nzchar(BASE_DIR)) {
 GENERATE_GENE_LEVEL <- isTRUE(as.logical(Sys.getenv("SALMON_GENERATE_GENE_LEVEL", unset = "TRUE")))
 GENERATE_ISOFORM_LEVEL <- isTRUE(as.logical(Sys.getenv("SALMON_GENERATE_ISOFORM_LEVEL", unset = "TRUE")))
 
+# Cache data.table availability once (used for fast tx2gene and gene list reading)
+.use_dt <- requireNamespace("data.table", quietly = TRUE)
+
 # Use SAMPLE_IDS from shared config (0_shared_config.R)
 # Override here if needed for method-specific samples
 if (length(SAMPLE_IDS) == 0) {
@@ -216,8 +219,8 @@ for (level_name in names(processing_levels)) {
     # Read tx2gene mapping (columns: GENEID, TXNAME → reorder to TXNAME, GENEID for tximport)
     # fread fast path: 5-10x faster for large tx2gene files (50K+ transcripts)
     tx2gene <- if (.use_dt) {
-      as.data.frame(data.table::fread(tx2gene_file, header = FALSE, sep = "\t",
-                                       strip.white = TRUE, showProgress = FALSE))
+      data.table::fread(tx2gene_file, header = FALSE, sep = "\t",
+                        strip.white = TRUE, showProgress = FALSE, data.table = FALSE)
     } else {
       read.table(tx2gene_file, header = FALSE, sep = "\t", stringsAsFactors = FALSE,
                  strip.white = TRUE)
@@ -396,29 +399,27 @@ for (level_name in names(processing_levels)) {
     cat("WARNING: Gene groups directory does not exist:", GENE_GROUPS_DIR, "\n")
     cat("  Set GENE_GROUPS_DIR env var or check BASE_DIR.\n")
   }
-  gene_group_files <- list.files(GENE_GROUPS_DIR, pattern = "\\.(csv|txt|tsv)$", recursive = TRUE, full.names = TRUE)
-
-  # Deduplicate by basename (sans extension) — recursive search may find the same gene group
-  # in multiple subdirectories (e.g. gene_sets/ and experimental/Eggplant_V4.1/) or formats
-  # (e.g. SmelDMPs.csv and SmelDMPs.txt); keep the first match.
-  # Pre-compute basenames once — reused for deduplication and filtering. O(N) instead of O(2N).
-  gg_base_names <- tools::file_path_sans_ext(basename(gene_group_files))
-  if (length(gene_group_files) > 1) {
-    dup_idx <- duplicated(gg_base_names)
-    if (any(dup_idx)) {
-      cat("  Note: removing", sum(dup_idx), "duplicate gene group file(s) by basename\n")
-      gene_group_files <- gene_group_files[!dup_idx]
-      gg_base_names <- gg_base_names[!dup_idx]
+  # Reuse pre-computed gene group file list (hoisted above level loop to avoid
+  # repeated list.files() filesystem traversals — same result across levels)
+  if (!exists(".gg_files_cached")) {
+    .gg_files_cached <- list.files(GENE_GROUPS_DIR, pattern = "\\.(csv|txt|tsv)$", recursive = TRUE, full.names = TRUE)
+    .gg_base_cached <- tools::file_path_sans_ext(basename(.gg_files_cached))
+    if (length(.gg_files_cached) > 1) {
+      dup_idx <- duplicated(.gg_base_cached)
+      if (any(dup_idx)) {
+        cat("  Note: removing", sum(dup_idx), "duplicate gene group file(s) by basename\n")
+        .gg_files_cached <- .gg_files_cached[!dup_idx]
+        .gg_base_cached <- .gg_base_cached[!dup_idx]
+      }
+    }
+    gene_groups_str <- Sys.getenv("GENE_GROUPS_STR", unset = "")
+    if (nzchar(gene_groups_str)) {
+      enabled_groups <- trimws(strsplit(gene_groups_str, " ")[[1]])
+      .gg_files_cached <- .gg_files_cached[.gg_base_cached %in% enabled_groups]
+      cat("Filtering to configured gene groups:", paste(enabled_groups, collapse = ", "), "\n")
     }
   }
-
-  # Filter to only process gene groups specified in GENE_GROUPS_STR (from bash config)
-  gene_groups_str <- Sys.getenv("GENE_GROUPS_STR", unset = "")
-  if (nzchar(gene_groups_str)) {
-    enabled_groups <- trimws(strsplit(gene_groups_str, " ")[[1]])
-    gene_group_files <- gene_group_files[gg_base_names %in% enabled_groups]
-    cat("Filtering to configured gene groups:", paste(enabled_groups, collapse = ", "), "\n")
-  }
+  gene_group_files <- .gg_files_cached
 
   if (length(gene_group_files) == 0) {
     cat("No gene group files found in", GENE_GROUPS_DIR, "\n")
@@ -426,8 +427,7 @@ for (level_name in names(processing_levels)) {
     cat("Found", length(gene_group_files), "gene group files\n\n")
 
     successful_groups <- 0
-    # Cache requireNamespace probe once before loop (avoids per-iteration PATH scan)
-    .use_dt <- requireNamespace("data.table", quietly = TRUE)
+    # .use_dt already cached at top of script (avoids per-iteration PATH scan)
 
     for (gene_group_file in gene_group_files) {
       gene_group_name <- tools::file_path_sans_ext(basename(gene_group_file))

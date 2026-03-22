@@ -262,9 +262,9 @@ merge_group_counts() {
     # Single awk pass replaces tail|cut pipeline (1 process instead of 2)
     awk -F',' 'NR>1 && NF>0 {print $1}' "${ref_csv}" > "$tmpdir/gene_names.txt" \
         || { log_error "Failed to extract gene names from $ref_csv"; rm -rf "$tmpdir"; return 1; }
-    # Inline line count avoids wc subshell (called once per gene group)
-    local gene_name_count=0
-    while IFS= read -r _; do ((gene_name_count++)); done < "$tmpdir/gene_names.txt"
+    # O(1) fork via wc vs O(L) bash read loop
+    local gene_name_count
+    gene_name_count=$(wc -l < "$tmpdir/gene_names.txt")
     if [[ "$gene_name_count" -eq 0 ]]; then
         log_error "No genes found in reference CSV: $ref_csv"
         rm -rf "$tmpdir"
@@ -438,17 +438,18 @@ build_full_transcriptome_matrix() {
         log_warn "Full-transcriptome: $missing/${#SAMPLE_IDS[@]} samples missing abundance files"
     fi
 
-    # De-duplicate the collected gene IDs — single awk pass (replaces head/tail|sort -u pipeline)
-    local tmp_dedup
+    # De-duplicate gene IDs AND count in single awk pass — eliminates separate wc -l fork.
+    # awk writes dedup output to tmp_dedup, prints only the count to stdout.
+    local tmp_dedup gene_count
     tmp_dedup=$(mktemp --suffix=.csv)
-    awk 'NR==1{print; next} !seen[$0]++' "$tmp_csv" > "$tmp_dedup" \
+    gene_count=$(awk -v out="$tmp_dedup" '
+        NR==1 { print > out; next }
+        !seen[$0]++ { n++; print > out }
+        END { print n+0 }
+    ' "$tmp_csv") \
         || { log_error "awk dedup failed"; rm -f "$tmp_csv" "$tmp_dedup"; return 1; }
     mv "$tmp_dedup" "$tmp_csv" \
         || { log_error "mv dedup failed"; rm -f "$tmp_csv" "$tmp_dedup"; return 1; }
-
-    local gene_count=0
-    while IFS= read -r _; do ((gene_count++)); done < "$tmp_csv"
-    ((gene_count--)) || true
     log_info "Full transcriptome: $gene_count genes (union from $files_found samples)"
 
     # Reuse merge_group_counts with MASTER_REFERENCE as the gene group name
@@ -496,9 +497,9 @@ for gene_group in "${GENE_GROUPS[@]}"; do
         continue
     fi
 
-    # Inline line count avoids wc subshell per gene group iteration
-    local _ref_lines=0
-    while IFS= read -r _; do ((_ref_lines++)); done < "$REF_CSV"
+    # O(1) fork via wc vs O(L) bash read loop
+    # NOTE: no 'local' here — this runs at top-level (outside any function)
+    _ref_lines=$(wc -l < "$REF_CSV")
     log_info "Found reference CSV with $((_ref_lines - 1)) genes"
 
     if merge_group_counts "$gene_group" "$REF_CSV"; then
