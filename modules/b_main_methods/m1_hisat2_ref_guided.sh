@@ -180,18 +180,17 @@ _m1_validate_fasta_gtf_chromosomes() {
 			}
 		' "$fasta_source" "$gtf" 2>/dev/null)
 	else
-		# Two-pass approach with early exit: each awk process exits after collecting
-		# 20 unique names, avoiding full scan of multi-GB FASTA files.
-		# O(header_positions) instead of O(file_size) for FASTA.
-		# Trade-off: 3 awk processes but with early exit beats 1 awk scanning full FASTA
-		# without gawk-only `nextfile`.
-		local _fasta_chroms _gtf_chroms
+		# Two-step approach: (1) awk on FASTA with early exit after 20 unique headers
+		# (avoids full scan of multi-GB files), (2) single awk on GTF that also computes
+		# overlap using FASTA chroms passed via variable. 2 processes instead of 3.
+		# O(header_positions) for FASTA; O(GTF_lines_until_20_unique) for GTF.
+		local _fasta_chroms
 		_fasta_chroms=$(awk '/^>/ { sub(/^>/, ""); sub(/[[:space:]].*/, ""); if (!seen[$0]++) { print; if (++n >= 20) exit } }' "$fasta" 2>/dev/null)
-		_gtf_chroms=$(awk '!/^#/ { if (!seen[$1]++) { print $1; if (++n >= 20) exit } }' "$gtf" 2>/dev/null)
 
+		# Single awk: load FASTA chroms from stdin (NR==FNR), then scan GTF and compute overlap
 		result=$(awk '
 			NR == FNR { if ($0 != "") { fasta_seen[$0]=1; fasta_n++ }; next }
-			$0 != "" { gtf_seen[$0]=1; gtf_n++ }
+			!/^#/ && gtf_n < 20 { if (!($1 in gtf_seen)) { gtf_seen[$1]=1; gtf_n++ } }
 			END {
 				overlap = 0
 				for (c in gtf_seen) if (c in fasta_seen) overlap++
@@ -200,7 +199,7 @@ _m1_validate_fasta_gtf_chromosomes() {
 				printf "| "
 				n=0; for (c in gtf_seen) { if (n<5) printf "%s ", c; n++ }
 			}
-		' <(printf '%s\n' "$_fasta_chroms") <(printf '%s\n' "$_gtf_chroms") 2>/dev/null)
+		' <(printf '%s\n' "$_fasta_chroms") "$gtf" 2>/dev/null)
 	fi
 
 	if [[ -z "$result" ]]; then
@@ -409,7 +408,8 @@ hisat2_ref_guided_pipeline() {
 
 		# Build options based on available annotation data
 		if [[ -s "$splice_sites" ]]; then
-			local _ss_n=0; while IFS= read -r _; do ((_ss_n++)); done < "$splice_sites"
+			# O(1) fork vs O(N) bash loop — wc -l is a single C-level scan
+			local _ss_n; _ss_n=$(wc -l < "$splice_sites")
 			log_info "[INDEX] Extracted $_ss_n splice sites"
 			build_opts="$build_opts --ss $splice_sites"
 		else
@@ -417,7 +417,8 @@ hisat2_ref_guided_pipeline() {
 		fi
 
 		if [[ -s "$exons" ]]; then
-			local _ex_n=0; while IFS= read -r _; do ((_ex_n++)); done < "$exons"
+			# O(1) fork vs O(N) bash loop — wc -l is a single C-level scan
+			local _ex_n; _ex_n=$(wc -l < "$exons")
 			log_info "[INDEX] Extracted $_ex_n exons"
 			build_opts="$build_opts --exon $exons"
 		else
@@ -673,17 +674,19 @@ hisat2_ref_guided_pipeline() {
 	local transcript_count_matrix="$deseq2_dir/transcript_count_matrix.csv"
 	mkdir -p "$deseq2_dir"
 
-	local prepde_list_content="" samples_found=0
+	# Use array + printf to avoid O(n²) string reallocation from repeated += on large sample sets.
+	# O(S) array appends, then single O(total_chars) printf write.
+	local prepde_lines=() samples_found=0
 	for SRR in "${rnaseq_list[@]}"; do
 		local assembled_gtf="$STRINGTIE_HISAT2_REF_GUIDED_ROOT/$SRR/${SRR}_${fasta_tag}_ref_guided_stringtie_assembled.gtf"
 		if [[ -f "$assembled_gtf" ]]; then
-			prepde_list_content+="$SRR $assembled_gtf"$'\n'
+			prepde_lines+=("$SRR $assembled_gtf")
 			(( samples_found++ )) || true
 		fi
 	done
 
 	[[ $samples_found -lt 2 ]] && { log_error "Insufficient samples: $samples_found (need ≥2)"; return 1; }
-	printf '%s' "$prepde_list_content" > "$prepde_sample_list"
+	printf '%s\n' "${prepde_lines[@]}" > "$prepde_sample_list"
 
 	if [[ ! -f "$gene_count_matrix" || "${OVERWRITE_MODE:-skip}" == "overwrite" ]]; then
 		# Auto-detect read length from first available trimmed FASTQ
@@ -753,14 +756,22 @@ _m1_infer_strandness() {
 	# Atomic lock — only the first concurrent caller proceeds
 	( set -o noclobber; : > "$sentinel" ) 2>/dev/null || return 0
 
-	if ! command -v infer_experiment.py >/dev/null 2>&1; then
+	# Cache availability probes (avoid per-worker PATH scan in parallel mode)
+	if [[ -z "${_M1_HAS_INFER_EXP:-}" ]]; then
+		_M1_HAS_INFER_EXP=false; command -v infer_experiment.py >/dev/null 2>&1 && _M1_HAS_INFER_EXP=true
+	fi
+	if [[ "$_M1_HAS_INFER_EXP" != "true" ]]; then
 		_parallel_log "$method" "$srr" WARN "infer_experiment.py not found — skipping strandness check"
 		return 0
 	fi
 
 	# Build BED12 from GTF (cached in index dir, rebuilt if GTF is newer)
 	if [[ ! -s "$bed12" || "$gtf" -nt "$bed12" ]]; then
-		if command -v gtfToGenePred >/dev/null 2>&1 && command -v genePredToBed >/dev/null 2>&1; then
+		if [[ -z "${_M1_HAS_GTF2BED:-}" ]]; then
+			_M1_HAS_GTF2BED=false
+			command -v gtfToGenePred >/dev/null 2>&1 && command -v genePredToBed >/dev/null 2>&1 && _M1_HAS_GTF2BED=true
+		fi
+		if [[ "$_M1_HAS_GTF2BED" == "true" ]]; then
 			gtfToGenePred "$gtf" /dev/stdout 2>/dev/null | genePredToBed /dev/stdin "$bed12" 2>/dev/null
 		else
 			_parallel_log "$method" "$srr" WARN "gtfToGenePred not found — cannot build BED12 for strandness check"

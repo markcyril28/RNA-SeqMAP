@@ -1016,9 +1016,9 @@ star_alignment_pipeline() {
 			}
 			if (tid != "" && gid != "") { row = tid "\t" gid; if (!seen[row]++) print row }
 		}' "$STAR_GTF_FILE" > "$tx2gene_file"
-		# O(n) awk dedup vs O(n log n) sort -u; inline count avoids wc -l subprocess
-		local tx2gene_count=0
-		while IFS= read -r _; do ((tx2gene_count++)); done < "$tx2gene_file"
+		# O(n) awk dedup vs O(n log n) sort -u; wc -l: O(1) fork vs O(L) bash loop
+		local tx2gene_count
+		tx2gene_count=$(wc -l < "$tx2gene_file")
 		if [[ "$tx2gene_count" -eq 0 ]]; then
 			log_error "[TXIMPORT] tx2gene mapping is empty - check GTF has 'transcript' features with transcript_id/gene_id attributes"
 			return 1
@@ -1071,24 +1071,7 @@ star_alignment_pipeline() {
 
 # Run tximport for STAR+Salmon using external R helper
 # Usage: run_tximport_star <quant_dir> <metadata_file> <tx2gene_file> [output_dir] [master_ref]
-run_tximport_star() {
-	local quant_dir="$1"
-	local metadata_file="$2"
-	local tx2gene_file="$3"
-	# NOTE: ${var%/*} differs from dirname when var has no '/'; safe here because
-	# metadata_file is always an absolute path constructed by the pipeline.
-	local output_dir="${4:-${metadata_file%/*}}"
-	local master_ref="${5:-${output_dir##*/}}"
-	local helper_script="$_M3_SCRIPT_DIR/../c_post_processing/preprocessing/STAR/tximport_star_helper.R"
-
-	if [[ ! -f "$helper_script" ]]; then
-		log_error "tximport_star_helper.R not found: $helper_script"
-		return 1
-	fi
-
-	log_info "[TXIMPORT] Running STAR+Salmon import..."
-	Rscript "$helper_script" "$quant_dir" "$metadata_file" "$tx2gene_file" "$output_dir" "$master_ref"
-}
+# run_tximport_star() — removed (dead code; pipeline uses generate_tximport_star_script instead)
 
 # Generate tximport script (copies helper to output location)
 # Usage: generate_tximport_star_script <output_script>

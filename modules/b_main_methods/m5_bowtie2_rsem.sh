@@ -132,27 +132,26 @@ _rsem_detect_strandedness() {
 
 	# Subsample reads for faster strandedness detection (~200k reads is sufficient)
 	# This avoids mapping the entire FASTQ just to detect library type
-	local _sub1="$tmp_dir/sub_R1.fq.gz" _sub2=""
+	# Write uncompressed temp FASTQs — eliminates decompress→head→recompress→decompress cycle
+	# (Salmon accepts uncompressed FASTQ, saves 2 compression rounds per read file)
+	local _sub1="$tmp_dir/sub_R1.fq" _sub2=""
 	local _subsample_lines=800000  # 200k reads × 4 lines per FASTQ record
-	# Use pigz for recompression if available (multi-threaded, ~2-4x faster than gzip)
-	local _recompress="${_SHARED_GZIP_C:-gzip} -1"
-	[[ "${_SHARED_GZIP_C:-gzip}" == "pigz" ]] && _recompress="pigz -1 -p ${_detect_threads:-2}"
 
 	# Launch R1 subsampling (always needed)
 	if [[ "$trimmed1" == *.gz ]]; then
-		${_SHARED_GZIP_DC:-gzip -dc} "$trimmed1" | head -n $_subsample_lines | $_recompress > "$_sub1" &
+		${_SHARED_GZIP_DC:-gzip -dc} "$trimmed1" | head -n $_subsample_lines > "$_sub1" &
 	else
-		head -n $_subsample_lines "$trimmed1" | $_recompress > "$_sub1" &
+		head -n $_subsample_lines "$trimmed1" > "$_sub1" &
 	fi
 	local _sub1_pid=$!
 
 	# Launch R2 subsampling in parallel (paired-end only) — 2x speedup vs sequential
 	if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
-		_sub2="$tmp_dir/sub_R2.fq.gz"
+		_sub2="$tmp_dir/sub_R2.fq"
 		if [[ "$trimmed2" == *.gz ]]; then
-			${_SHARED_GZIP_DC:-gzip -dc} "$trimmed2" | head -n $_subsample_lines | $_recompress > "$_sub2" &
+			${_SHARED_GZIP_DC:-gzip -dc} "$trimmed2" | head -n $_subsample_lines > "$_sub2" &
 		else
-			head -n $_subsample_lines "$trimmed2" | $_recompress > "$_sub2" &
+			head -n $_subsample_lines "$trimmed2" > "$_sub2" &
 		fi
 		local _sub2_pid=$!
 	fi
@@ -193,16 +192,20 @@ _rsem_detect_strandedness() {
 		return 0
 	fi
 
-	# Extract library type and fragment stats with awk (avoids Python interpreter startup ~0.3s)
-	local inferred_type num_compat
-	inferred_type=$(awk -F'"' '/"expected_format"/ {print $4}' "$lib_format")
-	[[ -z "$inferred_type" ]] && inferred_type="U"
-	num_compat=$(awk -F'[":, ]+' '
-		/compatible_fragment_ratio|num_compatible_fragments|num_assigned_fragments|strand|^.*"read/ {
-			gsub(/[{}]/, ""); gsub(/^[ \t]+|[ \t]+$/, "")
-			if (NF >= 2) print "  " $2 ": " $3
+	# Single-pass awk: extract both expected_format and fragment stats (saves 1 awk fork)
+	local inferred_type num_compat _awk_out
+	_awk_out=$(awk '
+		/"expected_format"/ { split($0, a, "\""); fmt = a[4] }
+		/compatible_fragment_ratio|num_compatible_fragments|num_assigned_fragments|strand|"read/ {
+			gsub(/[{}":,]/, " "); gsub(/^[ \t]+|[ \t]+$/, "")
+			n = split($0, f, /[ \t]+/)
+			if (n >= 2) stats = stats "  " f[1] ": " f[2] "\n"
 		}
+		END { printf "%s\n---\n%s", (fmt ? fmt : "U"), stats }
 	' "$lib_format" 2>/dev/null)
+	inferred_type="${_awk_out%%$'\n'*}"
+	num_compat="${_awk_out#*---$'\n'}"
+	[[ "$num_compat" == "$_awk_out" ]] && num_compat=""
 
 	# Map Salmon library type codes to RSEM strandedness
 	# Salmon paired-end: IU=unstranded, ISF=forward(sense), ISR=reverse(antisense)
@@ -255,8 +258,9 @@ bowtie2_rsem_pipeline() {
 	[[ ! -f "$fasta" ]] && { log_error "FASTA file not found: $fasta"; return 1; }
 	[[ ${#rnaseq_list[@]} -eq 0 ]] && rnaseq_list=("${SRR_COMBINED_LIST[@]}")
 
-	# Convert line endings only if CRLF detected (avoids modifying file timestamp on every run)
-	if [[ "$_M5_HAS_DOS2UNIX" == "true" ]] && grep -q $'\r' "$fasta" 2>/dev/null; then
+	# Convert line endings only if CRLF detected in first 100KB (avoids full-file scan
+	# on multi-GB FASTA references; CRLF is always present in the header if present at all)
+	if [[ "$_M5_HAS_DOS2UNIX" == "true" ]] && head -c 102400 "$fasta" 2>/dev/null | grep -q $'\r'; then
 		dos2unix "$fasta" 2>/dev/null || true
 	fi
 
@@ -399,7 +403,12 @@ _rsem_parallel_worker() {
 	if [[ -z "$trimmed1" ]]; then
 		local _td="$abs_trim_dir_root/$SRR"
 		_plog "ERROR" "Missing trimmed reads in: $_td"
-		_plog "ERROR" "Contents: $(ls -la "$_td" 2>&1 || echo 'Directory does not exist')"
+		# Guard ls subshell — only spawn if directory exists (avoids unconditional fork)
+		if [[ -d "$_td" ]]; then
+			_plog "ERROR" "Contents: $(ls -la "$_td" 2>&1)"
+		else
+			_plog "ERROR" "Directory does not exist: $_td"
+		fi
 		return 1
 	fi
 
@@ -443,14 +452,22 @@ _rsem_parallel_worker() {
 
 	if [[ $rsem_exit_code -ne 0 ]]; then
 		_plog "ERROR" "RSEM failed (exit code: $rsem_exit_code)"
-		[[ -f "$rsem_log" ]] && tail -20 "$rsem_log" 2>/dev/null | \
-			while IFS= read -r line; do _plog "ERROR" "  $line"; done
+		# Batch log output: capture tail once, log as single block.
+		# Avoids O(L) subshell forks from while-read pipeline (L = lines).
+		if [[ -f "$rsem_log" ]]; then
+			local _tail_buf; _tail_buf=$(tail -20 "$rsem_log" 2>/dev/null) || true
+			[[ -n "$_tail_buf" ]] && _plog "ERROR" "$_tail_buf"
+		fi
 		return $rsem_exit_code
 	fi
 
 	if [[ ! -f "$out_dir/${SRR}.genes.results" ]]; then
 		_plog "ERROR" "RSEM completed but output missing: $out_dir/${SRR}.genes.results"
-		_plog "ERROR" "  Contents: $(ls -la "$out_dir" 2>&1)"
+		if [[ -d "$out_dir" ]]; then
+			_plog "ERROR" "  Contents: $(ls -la "$out_dir" 2>&1)"
+		else
+			_plog "ERROR" "  Output directory does not exist: $out_dir"
+		fi
 		return 1
 	fi
 
@@ -580,7 +597,11 @@ _create_rsem_matrices() {
 	fi
 
 	# Generate matrices
-	if command -v abundance_estimates_to_matrix.pl >/dev/null 2>&1; then
+	# Cache availability probe (avoid per-call PATH scan, consistent with _HAS_PREPDE in m1)
+	if [[ -z "${_M5_HAS_ABUND_MATRIX:-}" ]]; then
+		_M5_HAS_ABUND_MATRIX=false; command -v abundance_estimates_to_matrix.pl >/dev/null 2>&1 && _M5_HAS_ABUND_MATRIX=true
+	fi
+	if [[ "$_M5_HAS_ABUND_MATRIX" == "true" ]]; then
 		# Build explicit file list from samples array to avoid picking up stale results from other runs
 		local rsem_result_files=()
 		for s in "${samples[@]}"; do
@@ -639,28 +660,27 @@ _create_manual_rsem_matrix() {
 		return 1
 	fi
 
-	# Count gene IDs without forking wc — O(G) bash read loop
-	local num_genes=0
-	while IFS= read -r _; do ((num_genes++)); done < "$temp_gene_ids"
+	# O(1) fork — wc -l is a single C-level scan, faster than O(G) bash read loop
+	local num_genes; num_genes=$(wc -l < "$temp_gene_ids")
 
 	for SRR in "${srr_list[@]}"; do
 		if [[ -f "$quant_root/$SRR/${SRR}.genes.results" ]]; then
-			# Single awk pass: validate gene count AND extract counts/TPM/FPKM simultaneously.
-			# Combines line counting + column extraction into one file traversal per sample
-			# (was: while-read line count + separate awk extraction = 2 passes). O(G) per sample.
+			# Single awk pass: extract counts/TPM/FPKM and zero-fill if gene count mismatches.
+			# Handles both normal case and mismatch in one process (was 2 awk invocations on mismatch).
+			# O(G) per sample, single file traversal.
 			local sample_genes
 			sample_genes=$(awk -F'\t' -v n="$num_genes" \
 				-v c="$matrix_dir/${SRR}_counts.tmp" \
 				-v t="$matrix_dir/${SRR}_tpm.tmp" \
 				-v f="$matrix_dir/${SRR}_fpkm.tmp" '
 				NR>1 { print $5 > c; print $6 > t; print $7 > f; g++ }
-				END  { print g+0 }
+				END  {
+					if (g < n) { for (i = g; i < n; i++) { print 0 > c; print 0 > t; print 0 > f } }
+					print g+0
+				}
 			' "$quant_root/$SRR/${SRR}.genes.results")
 			if [[ "$sample_genes" -ne "$num_genes" ]]; then
-				log_warn "[RSEM MATRIX] $SRR has $sample_genes genes (expected $num_genes) — filling with zeros"
-				awk -v n="$num_genes" -v c="$matrix_dir/${SRR}_counts.tmp" \
-					-v t="$matrix_dir/${SRR}_tpm.tmp" -v f="$matrix_dir/${SRR}_fpkm.tmp" \
-					'BEGIN{for(i=0;i<n;i++){print 0>c; print 0>t; print 0>f}}'
+				log_warn "[RSEM MATRIX] $SRR has $sample_genes genes (expected $num_genes) — zero-filled to match"
 			fi
 		else
 			log_warn "[RSEM MATRIX] Missing results for $SRR — filling with zeros in count matrix"
@@ -734,12 +754,39 @@ _prepare_rsem_deseq2_output() {
 	log_info "[RSEM] Found $quant_count samples with successful quantifications"
 
 	# Convert to CSV (always regenerate if source matrix is newer)
+	# All three sed conversions are independent — run concurrently as background jobs
+	# to reduce wall-clock from O(3×file_size) to O(max(file_size)) for the conversion step.
+	local _csv_pids=()
 	if [[ -f "$matrix_dir/genes.counts.matrix" ]]; then
 		if [[ ! -f "$gene_count_matrix" || "$matrix_dir/genes.counts.matrix" -nt "$gene_count_matrix" ]]; then
 			log_info "[RSEM MATRIX] Converting count matrix to CSV format..."
-			sed '1{s/^gene_id\t/Gene_ID\t/; s/^\t/Gene_ID\t/}; s/\t/,/g' "$matrix_dir/genes.counts.matrix" > "$gene_count_matrix"
+			sed '1{s/^gene_id\t/Gene_ID\t/; s/^\t/Gene_ID\t/}; s/\t/,/g' "$matrix_dir/genes.counts.matrix" > "$gene_count_matrix" &
+			_csv_pids+=($!)
 		fi
 	fi
+
+	# Create TPM and FPKM matrices (always regenerate if source is newer)
+	if [[ -f "$matrix_dir/genes.TPM.not_cross_norm" ]]; then
+		local tpm_matrix="$deseq2_dir/gene_tpm_matrix.csv"
+		if [[ ! -f "$tpm_matrix" || "$matrix_dir/genes.TPM.not_cross_norm" -nt "$tpm_matrix" ]]; then
+			sed '1{s/^gene_id\t/Gene_ID\t/; s/^\t/Gene_ID\t/}; s/\t/,/g' "$matrix_dir/genes.TPM.not_cross_norm" > "$tpm_matrix" &
+			_csv_pids+=($!)
+		fi
+	fi
+
+	if [[ -f "$matrix_dir/genes.FPKM.not_cross_norm" ]]; then
+		local fpkm_matrix="$deseq2_dir/gene_fpkm_matrix.csv"
+		if [[ ! -f "$fpkm_matrix" || "$matrix_dir/genes.FPKM.not_cross_norm" -nt "$fpkm_matrix" ]]; then
+			sed '1{s/^gene_id\t/Gene_ID\t/; s/^\t/Gene_ID\t/}; s/\t/,/g' "$matrix_dir/genes.FPKM.not_cross_norm" > "$fpkm_matrix" &
+			_csv_pids+=($!)
+		fi
+	fi
+
+	# Wait for all CSV conversions to complete before proceeding
+	local _csv_pid
+	for _csv_pid in "${_csv_pids[@]+${_csv_pids[@]}}"; do
+		wait "$_csv_pid" 2>/dev/null || true
+	done
 
 	# Create sample metadata (regenerate if missing or samples changed)
 	create_sample_metadata "$sample_metadata" "${srr_list[@]}"
@@ -748,21 +795,6 @@ _prepare_rsem_deseq2_output() {
 	local tximport_script="$deseq2_dir/run_tximport_rsem.R"
 	if [[ ! -f "$tximport_script" || "${OVERWRITE_MODE:-skip}" == "overwrite" ]]; then
 		generate_tximport_script "rsem" "$quant_root" "$tximport_script" "$sample_metadata"
-	fi
-
-	# Create TPM and FPKM matrices (always regenerate if source is newer)
-	if [[ -f "$matrix_dir/genes.TPM.not_cross_norm" ]]; then
-		local tpm_matrix="$deseq2_dir/gene_tpm_matrix.csv"
-		if [[ ! -f "$tpm_matrix" || "$matrix_dir/genes.TPM.not_cross_norm" -nt "$tpm_matrix" ]]; then
-			sed '1{s/^gene_id\t/Gene_ID\t/; s/^\t/Gene_ID\t/}; s/\t/,/g' "$matrix_dir/genes.TPM.not_cross_norm" > "$tpm_matrix"
-		fi
-	fi
-
-	if [[ -f "$matrix_dir/genes.FPKM.not_cross_norm" ]]; then
-		local fpkm_matrix="$deseq2_dir/gene_fpkm_matrix.csv"
-		if [[ ! -f "$fpkm_matrix" || "$matrix_dir/genes.FPKM.not_cross_norm" -nt "$fpkm_matrix" ]]; then
-			sed '1{s/^gene_id\t/Gene_ID\t/; s/^\t/Gene_ID\t/}; s/\t/,/g' "$matrix_dir/genes.FPKM.not_cross_norm" > "$fpkm_matrix"
-		fi
 	fi
 
 	# Create summary
@@ -891,8 +923,11 @@ _rsem_process_single_sample() {
 	find_trimmed_fastq "$SRR"
 	if [[ -z "$trimmed1" ]]; then
 		log_warn "Missing trimmed reads for $SRR in $TRIM_DIR_ROOT/$SRR"
-		# Single log call with captured ls output (avoids per-line subshell in while-read)
-		log_warn "  Contents: $(ls -la "$TRIM_DIR_ROOT/$SRR" 2>&1 || echo 'Directory does not exist')"
+		if [[ -d "$TRIM_DIR_ROOT/$SRR" ]]; then
+			log_warn "  Contents: $(ls -la "$TRIM_DIR_ROOT/$SRR" 2>&1)"
+		else
+			log_warn "  Directory does not exist: $TRIM_DIR_ROOT/$SRR"
+		fi
 		return 1
 	fi
 
@@ -938,7 +973,11 @@ _rsem_process_single_sample() {
 	# Verify output exists even when RSEM exits 0 (edge case: disk full, interrupted write)
 	if [[ ! -f "$out_dir/${SRR}.genes.results" ]]; then
 		log_error "[RSEM QUANT] RSEM completed but output missing: $out_dir/${SRR}.genes.results"
-		log_error "  Contents: $(ls -la "$out_dir" 2>&1)"
+		if [[ -d "$out_dir" ]]; then
+			log_error "  Contents: $(ls -la "$out_dir" 2>&1)"
+		else
+			log_error "  Output directory does not exist: $out_dir"
+		fi
 		return 1
 	fi
 

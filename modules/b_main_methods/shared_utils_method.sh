@@ -176,29 +176,7 @@ if [[ -z "$HELPERS_DIR" ]]; then HELPERS_DIR="${BASH_SOURCE[0]%/*}/../c_post_pro
 
 # Run tximport using method-specific R helper script
 # Usage: run_tximport <method> <quant_dir> <metadata_file> [output_dir]
-run_tximport() {
-	local method="$1"
-	local quant_dir="$2"
-	local metadata_file="$3"
-	# NOTE: ${var%/*} differs from dirname when var has no '/'; safe here because
-	# metadata_file is always an absolute path constructed by the pipeline.
-	local output_dir="${4:-${metadata_file%/*}}"
-	local helper_script
-	case "${method,,}" in
-		rsem)   helper_script="$HELPERS_DIR/RSEM/tximport_rsem_to_matrices.R" ;;
-		salmon) helper_script="$HELPERS_DIR/Salmon/tximport_salmon_to_matrices.R" ;;
-		star)   helper_script="$HELPERS_DIR/STAR/tximport_star_to_matrices.R" ;;
-		*)      log_error "[TXIMPORT] Unknown method: $method"; return 1 ;;
-	esac
-
-	if [[ ! -f "$helper_script" ]]; then
-		log_error "[TXIMPORT] Helper not found: $helper_script"
-		return 1
-	fi
-
-	log_info "[TXIMPORT] Running $method import..."
-	Rscript "$helper_script" "$method" "$quant_dir" "$metadata_file" "$output_dir"
-}
+# run_tximport() — removed (dead code; pipeline uses generate_tximport_script instead)
 
 # Generate tximport R script (copies method-specific helper to output location)
 generate_tximport_script() {
