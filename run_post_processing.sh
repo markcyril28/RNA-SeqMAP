@@ -51,6 +51,10 @@ CLEAR_OUTPUT_FOLDER="TRUE"
 # Figure resolution in DPI (300–600)
 FIGURE_DPI="${FIGURE_DPI:-300}"
 
+# HTML viewer: auto-generate an interactive results viewer in 3_POST_PROC/
+# Set to "TRUE" to generate alignment_results_viewer.html after all configs run.
+GENERATE_HTML_VIEWER="${GENERATE_HTML_VIEWER:-TRUE}"
+
 # Single-config child mode: when invoked by parallel dispatch, process only one config.
 # The parent sets __PP_SINGLE_CONFIG to the config path and re-invokes this script.
 if [[ -n "${__PP_SINGLE_CONFIG:-}" ]]; then
@@ -537,6 +541,23 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
     fi
 
 done
+
+#===============================================================================
+# HTML VIEWER GENERATION
+#===============================================================================
+
+if [[ "${GENERATE_HTML_VIEWER:-TRUE}" == "TRUE" && -z "${__PP_SINGLE_CONFIG:-}" ]]; then
+    _viewer_script="$BASE_DIR/modules/c_post_processing/utilities/generate_html_viewer.py"
+    _post_proc_dir="$BASE_DIR/3_POST_PROC"
+    if command -v python3 &>/dev/null && [[ -f "$_viewer_script" ]]; then
+        log_step "Generating HTML Results Viewer"
+        _viewer_out=$(python3 "$_viewer_script" "$_post_proc_dir" 2>"$LOG_DIR/html_viewer_gen.log") \
+            && log_info "HTML viewer: $_viewer_out" \
+            || log_warn "HTML viewer generation failed — see $LOG_DIR/html_viewer_gen.log"
+    else
+        log_warn "HTML viewer skipped: python3 not found or viewer script missing ($_viewer_script)"
+    fi
+fi
 
 #===============================================================================
 # FINAL SUMMARY
