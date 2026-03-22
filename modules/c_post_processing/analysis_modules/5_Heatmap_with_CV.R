@@ -72,10 +72,11 @@ calculate_cv <- function(data_matrix, is_log_scale = FALSE, margin = 1) {
       warning("Cannot compute column-wise CV with < 2 genes")
       return(rep(NA_real_, ncol(data_matrix)))
     }
-    # Use sweep() to avoid large temp vector from rep()
+    # Direct column-wise SD: t() + subtraction avoids sweep()'s internal margin
+    # dispatch and allocates the same O(genes × samples) temporary as sweep().
+    # O(G × S) arithmetic; single expression avoids naming the intermediate.
     cm <- colMeans(data_matrix, na.rm = TRUE)
-    centered <- sweep(data_matrix, 2, cm, "-")
-    col_sds <- sqrt(colSums(centered^2, na.rm = TRUE) / (nrow(data_matrix) - 1))
+    col_sds <- sqrt(colSums(t(t(data_matrix) - cm)^2, na.rm = TRUE) / (nrow(data_matrix) - 1))
     if (is_log_scale) {
       col_sds[!is.finite(col_sds)] <- NA
       return(col_sds)
@@ -332,10 +333,10 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
     on.exit(if (.dev_open) try(dev.off(), silent = TRUE), add = TRUE)
     png(output_path, width = img_width, height = img_height, res = FIGURE_DPI)
     .dev_open <- TRUE
-    draw(ht, heatmap_legend_side = LEGEND_POSITION)
+    suppressWarnings(draw(ht, heatmap_legend_side = LEGEND_POSITION))
     dev.off()
     .dev_open <- FALSE
-    
+
     # Export raw values with CV as CSV alongside the PNG
     if (exists("EXPORT_RAW_VALUES") && EXPORT_RAW_VALUES) {
       tryCatch({
@@ -385,7 +386,11 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
             export_df <- rbind(export_df, summary_row)
           }
         }
-        write.table(export_df, csv_path, sep = ",", row.names = FALSE, quote = FALSE)
+        if (.HAS_DATATABLE) {
+          data.table::fwrite(export_df, csv_path, sep = ",", quote = FALSE)
+        } else {
+          write.table(export_df, csv_path, sep = ",", row.names = FALSE, quote = FALSE)
+        }
         cat("      Exported values:", basename(csv_path), "\n")
       }, error = function(e) {
         cat("      Warning: CSV export failed:", e$message, "\n")

@@ -333,7 +333,12 @@ read_gene_list_from_file <- function(gene_list_file) {
   
   tryCatch({
     if (file_ext == "csv") {
-      gene_df <- read.csv(gene_list_file, stringsAsFactors = FALSE, header = TRUE)
+      # Use data.table::fread when available (5-10x faster for larger CSVs)
+      gene_df <- if (.HAS_DATATABLE) {
+        data.table::fread(gene_list_file, header = TRUE, data.table = FALSE)
+      } else {
+        read.csv(gene_list_file, stringsAsFactors = FALSE, header = TRUE)
+      }
       if ("Gene_ID" %in% colnames(gene_df)) {
         gene_list <- gene_df$Gene_ID
       } else {

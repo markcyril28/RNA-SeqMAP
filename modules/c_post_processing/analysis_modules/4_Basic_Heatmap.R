@@ -186,10 +186,10 @@ generate_heatmap_violet <- function(data_matrix, output_path, title,
     on.exit(if (.dev_open) try(dev.off(), silent = TRUE), add = TRUE)
     png(output_path, width = img_width, height = img_height, res = FIGURE_DPI)
     .dev_open <- TRUE
-    draw(ht, heatmap_legend_side = LEGEND_POSITION)
+    suppressWarnings(draw(ht, heatmap_legend_side = LEGEND_POSITION))
     dev.off()
     .dev_open <- FALSE
-    
+
     # Export raw values as CSV alongside the PNG
     if (exists("EXPORT_RAW_VALUES") && EXPORT_RAW_VALUES) {
       csv_path <- sub("\\.png$", "_values.csv", output_path)
@@ -201,7 +201,11 @@ generate_heatmap_violet <- function(data_matrix, output_path, title,
       }
       export_df <- data.frame(V1 = rownames(data_matrix), data_matrix, check.names = FALSE)
       names(export_df)[1] <- row_id_label
-      write.table(export_df, csv_path, sep = ",", row.names = FALSE, quote = FALSE)
+      if (.HAS_DATATABLE) {
+        data.table::fwrite(export_df, csv_path, sep = ",", quote = FALSE)
+      } else {
+        write.table(export_df, csv_path, sep = ",", row.names = FALSE, quote = FALSE)
+      }
       cat("      Exported values:", basename(csv_path), "\n")
     }
     

@@ -59,14 +59,17 @@ results <- list()
 if (sum(file.exists(.resolved_quant_files)) == 0 && dir.exists(quant_dir)) {
   cat("  No quant.sf in flat layout; scanning tissue subdirectories (once for both levels)...\n")
   .tissue_dirs <- list.dirs(quant_dir, recursive = FALSE, full.names = TRUE)
-  for (.sid in SAMPLE_IDS) {
-    for (.td in .tissue_dirs) {
-      .candidate <- file.path(.td, .sid, "quant.sf")
-      if (file.exists(.candidate)) {
-        .resolved_quant_files[.sid] <- .candidate
-        break
-      }
-    }
+  # Vectorized O(S*T) file.exists() — build all candidate paths at once, batch-check.
+  # Avoids S*T individual stat() syscalls via R's vectorized file.exists().
+  .all_candidates <- outer(
+    .tissue_dirs, SAMPLE_IDS,
+    function(td, sid) file.path(td, sid, "quant.sf")
+  )  # T × S matrix of paths
+  .exists_mat <- matrix(file.exists(.all_candidates), nrow = length(.tissue_dirs))
+  for (.si in seq_along(SAMPLE_IDS)) {
+    .hit <- which(.exists_mat[, .si])[1L]
+    if (!is.na(.hit))
+      .resolved_quant_files[SAMPLE_IDS[.si]] <- .all_candidates[.hit, .si]
   }
 }
 
