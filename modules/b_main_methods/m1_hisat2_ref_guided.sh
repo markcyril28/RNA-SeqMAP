@@ -787,10 +787,18 @@ _m1_infer_strandness() {
 		END { print (v1 ? v1 : ""), (v2 ? v2 : "") }
 	')
 
-	local rec
-	if   [[ -n "$val1" ]] && awk "BEGIN{exit !($val1 > 0.6)}"; then
+	# Bash integer arithmetic for float comparison (×1000): avoids 2 awk forks.
+	# Right-pad decimal to 3 digits so 0.6→600, 0.75→750, 0.123→123.
+	local rec _v1_int=0 _v2_int=0
+	if [[ -n "$val1" && "$val1" == *.* ]]; then
+		local _d1="${val1#*.}000"; _v1_int="${val1%%.*}${_d1:0:3}"
+	fi
+	if [[ -n "$val2" && "$val2" == *.* ]]; then
+		local _d2="${val2#*.}000"; _v2_int="${val2%%.*}${_d2:0:3}"
+	fi
+	if   [[ -n "$val1" ]] && (( 10#${_v1_int} > 600 )); then
 		rec="FR  → add --STRANDNESS FR to your config (ligation / forward-stranded)"
-	elif [[ -n "$val2" ]] && awk "BEGIN{exit !($val2 > 0.6)}"; then
+	elif [[ -n "$val2" ]] && (( 10#${_v2_int} > 600 )); then
 		rec="RF  → add --STRANDNESS RF to your config (dUTP / TruSeq / reverse-stranded)"
 	else
 		rec="Unstranded  → omit --STRANDNESS (already the default)"

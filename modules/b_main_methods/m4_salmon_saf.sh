@@ -307,11 +307,15 @@ _create_manual_salmon_matrix() {
 	local col_order
 	col_order="$(printf '%s' "${_col_types[@]}")"
 
-	awk -v col_order="$col_order" '
-	FNR == 1 { fidx++; next }
-	fidx == 1 { ids[FNR-1] = $1; data[FNR-1, fidx] = int($5 + 0.5); n++; next }
-	{ data[FNR-1, fidx] = int($5 + 0.5) }
-	END {
+	# Emit header + matrix body in a single pipeline — eliminates temp_matrix.txt disk I/O.
+	# printf -v avoids subshell fork for header construction.
+	local _header_str; printf -v _header_str '\t%s' "${_header_srrs[@]}"
+	{ printf 'transcript_id%s\n' "$_header_str"
+	  awk -v col_order="$col_order" '
+	  FNR == 1 { fidx++; next }
+	  fidx == 1 { ids[FNR-1] = $1; data[FNR-1, fidx] = int($5 + 0.5); n++; next }
+	  { data[FNR-1, fidx] = int($5 + 0.5) }
+	  END {
 		ncols = length(col_order)
 		for (i = 1; i <= n; i++) {
 			printf "%s", ids[i]
@@ -327,9 +331,6 @@ _create_manual_salmon_matrix() {
 			}
 			print ""
 		}
-	}' "${valid_files[@]}" > "$matrix_dir/temp_matrix.txt"
-
-	# Use _header_srrs so header columns match data columns exactly
-	{ printf 'transcript_id%s\n' "$(printf '\t%s' "${_header_srrs[@]}")"; cat "$matrix_dir/temp_matrix.txt"; } > "$matrix_dir/genes.counts.matrix"
-	rm -f "$matrix_dir/temp_matrix.txt"
+	  }' "${valid_files[@]}"
+	} > "$matrix_dir/genes.counts.matrix"
 }

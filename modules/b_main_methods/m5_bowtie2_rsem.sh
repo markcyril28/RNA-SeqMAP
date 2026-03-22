@@ -133,19 +133,29 @@ _rsem_detect_strandedness() {
 	# Use pigz for recompression if available (multi-threaded, ~2-4x faster than gzip)
 	local _recompress="${_SHARED_GZIP_C:-gzip} -1"
 	[[ "${_SHARED_GZIP_C:-gzip}" == "pigz" ]] && _recompress="pigz -1 -p ${_detect_threads:-2}"
+
+	# Launch R1 subsampling (always needed)
 	if [[ "$trimmed1" == *.gz ]]; then
-		${_SHARED_GZIP_DC:-gzip -dc} "$trimmed1" | head -n $_subsample_lines | $_recompress > "$_sub1"
+		${_SHARED_GZIP_DC:-gzip -dc} "$trimmed1" | head -n $_subsample_lines | $_recompress > "$_sub1" &
 	else
-		head -n $_subsample_lines "$trimmed1" | $_recompress > "$_sub1"
+		head -n $_subsample_lines "$trimmed1" | $_recompress > "$_sub1" &
 	fi
+	local _sub1_pid=$!
+
+	# Launch R2 subsampling in parallel (paired-end only) — 2x speedup vs sequential
 	if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
 		_sub2="$tmp_dir/sub_R2.fq.gz"
 		if [[ "$trimmed2" == *.gz ]]; then
-			${_SHARED_GZIP_DC:-gzip -dc} "$trimmed2" | head -n $_subsample_lines | $_recompress > "$_sub2"
+			${_SHARED_GZIP_DC:-gzip -dc} "$trimmed2" | head -n $_subsample_lines | $_recompress > "$_sub2" &
 		else
-			head -n $_subsample_lines "$trimmed2" | $_recompress > "$_sub2"
+			head -n $_subsample_lines "$trimmed2" | $_recompress > "$_sub2" &
 		fi
+		local _sub2_pid=$!
 	fi
+
+	# Wait for both subsampling tasks to complete
+	wait "$_sub1_pid" || true
+	[[ -n "${_sub2_pid:-}" ]] && { wait "$_sub2_pid" || true; }
 
 	# Quantify with --libType A (auto-detect) using subsampled reads + --skipQuant for speed
 	local salmon_exit
@@ -493,6 +503,7 @@ _rsem_quantify_parallel() {
 		--env CONDA_PREFIX \
 		--env CONDA_DEFAULT_ENV \
 		--env CONDA_EXE \
+		--env _CONDA_PROFILE_SCRIPT \
 		--env abs_trim_dir_root \
 		--env abs_error_warn_file \
 		--env keep_bam_global \
@@ -629,9 +640,10 @@ _create_manual_rsem_matrix() {
 
 	for SRR in "${srr_list[@]}"; do
 		if [[ -f "$quant_root/$SRR/${SRR}.genes.results" ]]; then
-			# Validate gene count matches first sample (detect truncated outputs)
+			# Validate gene count matches first sample (detect truncated outputs).
+			# wc -l + arithmetic avoids awk fork per sample — O(S) forks saved.
 			local sample_genes
-			sample_genes=$(awk -F'\t' 'END{print NR-1}' "$quant_root/$SRR/${SRR}.genes.results")
+			sample_genes=$(( $(wc -l < "$quant_root/$SRR/${SRR}.genes.results") - 1 ))
 			if [[ "$sample_genes" -ne "$num_genes" ]]; then
 				log_warn "[RSEM MATRIX] $SRR has $sample_genes genes (expected $num_genes) — filling with zeros"
 				awk -v n="$num_genes" -v c="$matrix_dir/${SRR}_counts.tmp" \
@@ -784,7 +796,9 @@ _create_rsem_summary() {
 		echo "==================================================================="
 		echo "RSEM Quantification Summary for $tag"
 		echo "==================================================================="
-		echo "Date: $(date)"
+		# O(1) bash builtin — avoids $(date) subprocess fork
+		printf -v _rsem_ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _rsem_ts=$(date '+%Y-%m-%d %H:%M:%S')
+		echo "Date: $_rsem_ts"
 		echo "Samples processed: ${#srr_list[@]}"
 		echo "Method: RSEM with Bowtie2 alignment (strandedness: ${RSEM_STRANDEDNESS:-none}, sensitivity: ${BOWTIE2_MODE:-sensitive})"
 		echo ""
@@ -806,7 +820,8 @@ _create_rsem_summary() {
 					align_rate=$(awk '/% overall alignment rate/{match($0,/[0-9]+\.[0-9]+/);r=substr($0,RSTART,RLENGTH)} END{print r}' "$rsem_log")
 					if [[ -z "$align_rate" ]]; then
 						align_rate="N/A"
-					elif awk -v rate="$align_rate" -v thr="$LOW_ALIGN_THRESHOLD" 'BEGIN{exit !(rate+0 < thr+0)}'; then
+					# Bash integer comparison avoids awk fork per sample. O(S) forks saved.
+					elif (( ${align_rate%%.*} < LOW_ALIGN_THRESHOLD )); then
 						outlier_samples+=("$SRR ($align_rate%)")
 					fi
 				fi

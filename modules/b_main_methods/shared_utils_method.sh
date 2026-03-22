@@ -264,27 +264,6 @@ create_gene_trans_map() {
 }
 
 # ==============================================================================
-# NORMALIZATION FUNCTIONS
-# ==============================================================================
-
-normalize_expression_data() {
-	local matrix_dir="$1"
-	local method="$2"
-	
-	if [[ -f "$matrix_dir/genes.counts.matrix" ]]; then
-		log_step "Applying TMM normalization for $method"
-		if command -v normalize_matrix.pl >/dev/null 2>&1; then
-			run_with_space_time_log normalize_matrix.pl "$matrix_dir/genes.counts.matrix" \
-				--est_method "$method" \
-				--out_prefix "$matrix_dir/genes.TMM" || \
-				log_warn "TMM normalization failed for $method"
-		else
-			log_warn "normalize_matrix.pl not found. Skipping TMM normalization."
-		fi
-	fi
-}
-
-# ==============================================================================
 # MEMORY DETECTION (shared by _samtools_sort_mem and _star_sort_ram)
 # ==============================================================================
 
