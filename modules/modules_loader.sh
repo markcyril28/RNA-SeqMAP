@@ -17,7 +17,10 @@
 export MODULES_LOADER_SOURCED="true"
 
 # Export MODULES_DIR so child modules can derive SCRIPT_DIR without cd+dirname+pwd subshells
-MODULES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve without nested dirname subshell — one cd instead of two forks
+MODULES_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$MODULES_DIR" == "${BASH_SOURCE[0]}" ]] && MODULES_DIR="."
+MODULES_DIR="$(cd "$MODULES_DIR" && pwd)"
 export MODULES_DIR
 
 # ==============================================================================
