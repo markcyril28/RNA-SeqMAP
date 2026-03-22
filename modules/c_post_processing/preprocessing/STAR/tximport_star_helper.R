@@ -17,6 +17,9 @@ suppressPackageStartupMessages({
   library(DESeq2)
 })
 
+# Cache data.table availability once — avoids per-call PATH scan in save_matrix_csv()
+.use_dt_star_helper <- requireNamespace("data.table", quietly = TRUE)
+
 args <- commandArgs(trailingOnly = TRUE)
 if (length(args) < 4) {
   stop("Usage: Rscript tximport_star_helper.R <quant_dir> <metadata_file> <tx2gene_file> <output_dir> [master_ref]")
@@ -157,7 +160,7 @@ save_matrix_csv <- function(mat, count_type, gene_type, out_dir, mr, level) {
   df <- cbind(GeneID = rownames(mat), df)
   rownames(df) <- NULL
   # Use data.table::fwrite when available — 5-10x faster for large matrices
-  if (requireNamespace("data.table", quietly = TRUE)) {
+  if (.use_dt_star_helper) {
     data.table::fwrite(df, fpath, sep = ",", quote = FALSE)
   } else {
     write.table(df, fpath, sep = ",", quote = FALSE, row.names = FALSE)

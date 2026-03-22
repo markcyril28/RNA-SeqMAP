@@ -100,9 +100,9 @@ find_tx2gene <- function(matrices_dir, master_ref) {
 # BANNER
 # ===============================================
 
-cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("\n", strrep("=", 70), "\n")
 cat("TXIMPORT: STAR+SALMON QUANTIFICATION TO MATRICES\n")
-cat(paste(rep("=", 70), collapse = ""), "\n\n")
+cat(strrep("=", 70), "\n\n")
 cat("Master Reference:", MASTER_REFERENCE, "\n")
 cat("Quant directory: ", QUANT_DIR, "\n")
 cat("Output directory:", MATRICES_DIR, "\n\n")
@@ -138,9 +138,9 @@ if (length(processing_levels) == 0) {
 for (level_name in names(processing_levels)) {
   level_config <- processing_levels[[level_name]]
 
-  cat(paste(rep("=", 70), collapse = ""), "\n")
+  cat(strrep("=", 70), "\n")
   cat("PROCESSING:", level_config$label, "\n")
-  cat(paste(rep("=", 70), collapse = ""), "\n\n")
+  cat(strrep("=", 70), "\n\n")
 
   # -------------------------------------------------
   # STEP 1: LOCATE QUANT.SF FILES
@@ -161,9 +161,12 @@ for (level_name in names(processing_levels)) {
       # vs O(T × S) individual calls in nested loop. Matches .resolve_quant_files().
       all_cands <- outer(tissue_dirs, SAMPLE_IDS, function(td, sid) file.path(td, sid, "quant.sf"))
       all_exist <- matrix(file.exists(all_cands), nrow = length(tissue_dirs))
-      for (j in seq_along(SAMPLE_IDS)) {
-        hit <- which(all_exist[, j])[1]
-        if (!is.na(hit)) files[SAMPLE_IDS[j]] <- all_cands[hit, j]
+      # Vectorized: max.col() finds first TRUE per column in one C-level pass
+      any_found <- colSums(all_exist) > 0
+      if (any(any_found)) {
+        hits <- max.col(t(all_exist), ties.method = "first")
+        idx <- which(any_found)
+        files[SAMPLE_IDS[idx]] <- all_cands[cbind(hits[idx], idx)]
       }
     }
   }
@@ -385,6 +388,8 @@ for (level_name in names(processing_levels)) {
     cat("Found", length(gene_group_files), "gene group file(s)\n\n")
 
     successful_groups <- 0
+    # Cache requireNamespace probe once before loop (avoids per-iteration PATH scan)
+    .use_dt <- requireNamespace("data.table", quietly = TRUE)
 
     for (gene_group_file in gene_group_files) {
       gene_group_name  <- tools::file_path_sans_ext(basename(gene_group_file))
@@ -398,7 +403,11 @@ for (level_name in names(processing_levels)) {
       # Read gene list
       gene_list <- tryCatch({
         if (grepl("\\.csv$", gene_group_file, ignore.case = TRUE)) {
-          gdf <- read.csv(gene_group_file, stringsAsFactors = FALSE, header = TRUE)
+          gdf <- if (.use_dt) {
+            data.table::fread(gene_group_file, header = TRUE, data.table = FALSE)
+          } else {
+            read.csv(gene_group_file, stringsAsFactors = FALSE, header = TRUE)
+          }
           if ("Gene_ID" %in% colnames(gdf)) gdf$Gene_ID else gdf[[1]]
         } else {
           raw_lines <- suppressWarnings(readLines(gene_group_file))
@@ -446,12 +455,12 @@ for (level_name in names(processing_levels)) {
         "gene groups processed\n")
   }
 
-  cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+  cat("\n", strrep("=", 70), "\n")
   cat(level_config$label, "COMPLETE\n")
-  cat(paste(rep("=", 70), collapse = ""), "\n\n")
+  cat(strrep("=", 70), "\n\n")
 }
 
-cat(paste(rep("=", 70), collapse = ""), "\n")
+cat(strrep("=", 70), "\n")
 cat("ALL LEVELS COMPLETE\n")
 cat("Output directory:", file.path(MATRICES_DIR, MASTER_REFERENCE), "\n")
-cat(paste(rep("=", 70), collapse = ""), "\n\n")
+cat(strrep("=", 70), "\n\n")

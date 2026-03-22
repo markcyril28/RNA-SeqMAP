@@ -65,9 +65,9 @@ GENERATE_ISOFORM_LEVEL <- isTRUE(as.logical(Sys.getenv("RSEM_GENERATE_ISOFORM_LE
 output_dir <- file.path(MATRICES_OUTPUT_DIR, MASTER_REFERENCE)
 ensure_output_dir(output_dir)
 
-cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("\n", strrep("=", 70), "\n")
 cat("TXIMPORT: RSEM QUANTIFICATION TO MATRICES\n")
-cat(paste(rep("=", 70), collapse = ""), "\n\n")
+cat(strrep("=", 70), "\n\n")
 
 cat("Configuration:\n")
 cat("  • Master Reference:", MASTER_REFERENCE, "\n")
@@ -106,9 +106,9 @@ if (length(processing_levels) == 0) {
 for (level_name in names(processing_levels)) {
   level_config <- processing_levels[[level_name]]
   
-  cat(paste(rep("=", 70), collapse = ""), "\n")
+  cat(strrep("=", 70), "\n")
   cat("PROCESSING:", level_config$label, "\n")
-  cat(paste(rep("=", 70), collapse = ""), "\n\n")
+  cat(strrep("=", 70), "\n\n")
   
   # ===============================================
   # STEP 1: LOCATE RSEM OUTPUT FILES
@@ -315,6 +315,8 @@ for (level_name in names(processing_levels)) {
     cat("Found", length(gene_group_files), "gene group files\n\n")
     
     # CURRENT_DATASET already loaded in Step 6 above
+    # Cache requireNamespace probe once before loop (avoids per-iteration PATH scan)
+    .use_dt <- requireNamespace("data.table", quietly = TRUE)
 
     for (gene_group_file in gene_group_files) {
       gene_group_name <- tools::file_path_sans_ext(basename(gene_group_file))
@@ -330,7 +332,11 @@ for (level_name in names(processing_levels)) {
       # tryCatch returns its value to the outer assignment — fixes scoping issue
       gene_list <- tryCatch({
         if (grepl("\\.csv$", gene_group_file, ignore.case = TRUE)) {
-          gene_df <- read.csv(gene_group_file, stringsAsFactors = FALSE, header = TRUE)
+          gene_df <- if (.use_dt) {
+            data.table::fread(gene_group_file, header = TRUE, data.table = FALSE)
+          } else {
+            read.csv(gene_group_file, stringsAsFactors = FALSE, header = TRUE)
+          }
           gl <- if ("Gene_ID" %in% colnames(gene_df)) gene_df$Gene_ID else gene_df[[1]]
         } else {
           gl <- suppressWarnings(readLines(gene_group_file))
@@ -374,18 +380,18 @@ for (level_name in names(processing_levels)) {
   # LEVEL SUMMARY
   # ===============================================
   
-  cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+  cat("\n", strrep("=", 70), "\n")
   cat(level_config$label, "PROCESSING COMPLETE\n")
-  cat(paste(rep("=", 70), collapse = ""), "\n\n")
+  cat(strrep("=", 70), "\n\n")
 }
 
 # ===============================================
 # FINAL SUMMARY
 # ===============================================
 
-cat(paste(rep("=", 70), collapse = ""), "\n")
+cat(strrep("=", 70), "\n")
 cat("ALL PROCESSING COMPLETE\n")
-cat(paste(rep("=", 70), collapse = ""), "\n\n")
+cat(strrep("=", 70), "\n\n")
 
 cat("Generated matrices for", length(processing_levels), "level(s)\n")
 cat("Output directory:", output_dir, "\n")

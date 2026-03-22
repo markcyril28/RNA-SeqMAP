@@ -84,9 +84,9 @@ if (length(SAMPLE_IDS) == 0) {
 output_dir <- file.path(MATRICES_OUTPUT_DIR, MASTER_REFERENCE)
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
-cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("\n", strrep("=", 70), "\n")
 cat("TXIMPORT: SALMON QUANTIFICATION TO MATRICES\n")
-cat(paste(rep("=", 70), collapse = ""), "\n\n")
+cat(strrep("=", 70), "\n\n")
 
 cat("Configuration:\n")
 cat("  • Master Reference:", MASTER_REFERENCE, "\n")
@@ -121,9 +121,9 @@ if (length(processing_levels) == 0) {
 for (level_name in names(processing_levels)) {
   level_config <- processing_levels[[level_name]]
 
-  cat(paste(rep("=", 70), collapse = ""), "\n")
+  cat(strrep("=", 70), "\n")
   cat("PROCESSING:", level_config$label, "\n")
-  cat(paste(rep("=", 70), collapse = ""), "\n\n")
+  cat(strrep("=", 70), "\n\n")
 
   # ===============================================
   # STEP 1: LOCATE SALMON OUTPUT FILES
@@ -214,8 +214,14 @@ for (level_name in names(processing_levels)) {
     }
 
     # Read tx2gene mapping (columns: GENEID, TXNAME → reorder to TXNAME, GENEID for tximport)
-    tx2gene <- read.table(tx2gene_file, header = FALSE, sep = "\t", stringsAsFactors = FALSE,
-                         strip.white = TRUE)
+    # fread fast path: 5-10x faster for large tx2gene files (50K+ transcripts)
+    tx2gene <- if (.use_dt) {
+      as.data.frame(data.table::fread(tx2gene_file, header = FALSE, sep = "\t",
+                                       strip.white = TRUE, showProgress = FALSE))
+    } else {
+      read.table(tx2gene_file, header = FALSE, sep = "\t", stringsAsFactors = FALSE,
+                 strip.white = TRUE)
+    }
     if (nrow(tx2gene) == 0) {
       cat("ERROR: tx2gene file is empty (0 rows):", tx2gene_file, "\n")
       cat("Skipping gene-level processing...\n\n")
@@ -420,6 +426,8 @@ for (level_name in names(processing_levels)) {
     cat("Found", length(gene_group_files), "gene group files\n\n")
 
     successful_groups <- 0
+    # Cache requireNamespace probe once before loop (avoids per-iteration PATH scan)
+    .use_dt <- requireNamespace("data.table", quietly = TRUE)
 
     for (gene_group_file in gene_group_files) {
       gene_group_name <- tools::file_path_sans_ext(basename(gene_group_file))
@@ -435,7 +443,11 @@ for (level_name in names(processing_levels)) {
       # Use tryCatch return value so the assignment is visible in this scope
       gene_list <- tryCatch({
         if (grepl("\\.csv$", gene_group_file, ignore.case = TRUE)) {
-          gene_df <- read.csv(gene_group_file, stringsAsFactors = FALSE, header = TRUE)
+          gene_df <- if (.use_dt) {
+            data.table::fread(gene_group_file, header = TRUE, data.table = FALSE)
+          } else {
+            read.csv(gene_group_file, stringsAsFactors = FALSE, header = TRUE)
+          }
           gl <- if ("Gene_ID" %in% colnames(gene_df)) gene_df$Gene_ID else gene_df[[1]]
         } else {
           gl <- suppressWarnings(readLines(gene_group_file))
@@ -486,18 +498,18 @@ for (level_name in names(processing_levels)) {
   # LEVEL SUMMARY
   # ===============================================
 
-  cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+  cat("\n", strrep("=", 70), "\n")
   cat(level_config$label, "PROCESSING COMPLETE\n")
-  cat(paste(rep("=", 70), collapse = ""), "\n\n")
+  cat(strrep("=", 70), "\n\n")
 }
 
 # ===============================================
 # FINAL SUMMARY
 # ===============================================
 
-cat(paste(rep("=", 70), collapse = ""), "\n")
+cat(strrep("=", 70), "\n")
 cat("ALL PROCESSING COMPLETE\n")
-cat(paste(rep("=", 70), collapse = ""), "\n\n")
+cat(strrep("=", 70), "\n\n")
 
 cat("Generated matrices for", length(processing_levels), "level(s)\n")
 cat("Output directory:", output_dir, "\n")

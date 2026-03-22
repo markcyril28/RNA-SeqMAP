@@ -262,8 +262,9 @@ merge_group_counts() {
     # Single awk pass replaces tail|cut pipeline (1 process instead of 2)
     awk -F',' 'NR>1 && NF>0 {print $1}' "${ref_csv}" > "$tmpdir/gene_names.txt" \
         || { log_error "Failed to extract gene names from $ref_csv"; rm -rf "$tmpdir"; return 1; }
-    local gene_name_count
-    gene_name_count=$(wc -l < "$tmpdir/gene_names.txt")
+    # Inline line count avoids wc subshell (called once per gene group)
+    local gene_name_count=0
+    while IFS= read -r _; do ((gene_name_count++)); done < "$tmpdir/gene_names.txt"
     if [[ "$gene_name_count" -eq 0 ]]; then
         log_error "No genes found in reference CSV: $ref_csv"
         rm -rf "$tmpdir"
@@ -361,23 +362,24 @@ merge_group_counts() {
             > "$matrix_body" \
             || { log_error "matrix_builder.py failed for $group_name"; rm -rf "$tmpdir"; return 1; }
 
+        # Read matrix body once into variable, write to both CSVs (avoids 2 cat forks).
+        local _body
+        _body=$(<"$matrix_body")
+        rm -f "$matrix_body"
+
         # SRR header + body (use matched_srrs to align with matrix body columns)
         {
             printf "GeneName"
             for srr in "${matched_srrs[@]}"; do printf ",%s" "$srr"; done
-            printf "\n"
-            cat "$matrix_body"
+            printf "\n%s\n" "$_body"
         } > "$output_geneName_SRR_csv"
 
         # Organ header + body
         {
             printf "GeneName"
             for srr in "${matched_srrs[@]}"; do printf ",%s" "${SRR_TO_ORGAN[$srr]:-Unknown}"; done
-            printf "\n"
-            cat "$matrix_body"
+            printf "\n%s\n" "$_body"
         } > "$output_geneName_Organ_csv"
-
-        rm -f "$matrix_body"
         # sample_files are in $tmpdir; cleaned by rm -rf "$tmpdir" at function exit
         log_info "Completed $count_type matrix generation"
     done
@@ -444,8 +446,9 @@ build_full_transcriptome_matrix() {
     mv "$tmp_dedup" "$tmp_csv" \
         || { log_error "mv dedup failed"; rm -f "$tmp_csv" "$tmp_dedup"; return 1; }
 
-    local gene_count
-    gene_count=$(( $(wc -l < "$tmp_csv") - 1 ))
+    local gene_count=0
+    while IFS= read -r _; do ((gene_count++)); done < "$tmp_csv"
+    ((gene_count--)) || true
     log_info "Full transcriptome: $gene_count genes (union from $files_found samples)"
 
     # Reuse merge_group_counts with MASTER_REFERENCE as the gene group name
@@ -493,8 +496,10 @@ for gene_group in "${GENE_GROUPS[@]}"; do
         continue
     fi
 
-    # wc -l is faster than awk for pure line counting (no field splitting overhead)
-    log_info "Found reference CSV with $(( $(wc -l < "$REF_CSV") - 1 )) genes"
+    # Inline line count avoids wc subshell per gene group iteration
+    local _ref_lines=0
+    while IFS= read -r _; do ((_ref_lines++)); done < "$REF_CSV"
+    log_info "Found reference CSV with $((_ref_lines - 1)) genes"
 
     if merge_group_counts "$gene_group" "$REF_CSV"; then
         log_info "Successfully processed $gene_group"
