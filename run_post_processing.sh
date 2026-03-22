@@ -219,17 +219,23 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
     # Clear output folders if requested (rm -rf + mkdir is faster than find -delete on deep trees)
     if [[ "$CLEAR_OUTPUT_FOLDER" == "TRUE" ]]; then
         log_info "Clearing output folders for $MASTER_REFERENCE..."
-        # Collect all target directories first, then batch rm + mkdir
+        # Pre-compute folder names once to avoid O(M×A) subshell forks from get_output_folder_name
+        declare -A _folder_cache=()
+        for analysis in "${ANALYSES[@]}"; do
+            _folder_cache["$analysis"]="$(get_output_folder_name "$analysis")"
+        done
+        # Collect all target directories, then batch rm + mkdir
         _clear_targets=()
         for method in "${METHODS[@]}"; do
             output_base="$BASE_DIR/3_POST_PROC/$method/Figure_Outputs"
             [[ -d "$output_base" ]] || continue
             for analysis in "${ANALYSES[@]}"; do
-                folder_name="$(get_output_folder_name "$analysis")"
+                folder_name="${_folder_cache[$analysis]}"
                 target="$output_base/$folder_name/$MASTER_REFERENCE"
                 [[ -n "$folder_name" && -d "$target" ]] && _clear_targets+=("$target")
             done
         done
+        unset _folder_cache
         if [[ ${#_clear_targets[@]} -gt 0 ]]; then
             rm -rf "${_clear_targets[@]}"
             mkdir -p "${_clear_targets[@]}"
