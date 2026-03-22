@@ -72,11 +72,14 @@ calculate_cv <- function(data_matrix, is_log_scale = FALSE, margin = 1) {
       warning("Cannot compute column-wise CV with < 2 genes")
       return(rep(NA_real_, ncol(data_matrix)))
     }
-    # Direct column-wise SD: t() + subtraction avoids sweep()'s internal margin
-    # dispatch and allocates the same O(genes × samples) temporary as sweep().
-    # O(G × S) arithmetic; single expression avoids naming the intermediate.
+    # Column-wise SD: use matrixStats::colSds when available (single C-level pass,
+    # zero R-level allocation) vs t(t(x)-cm)^2 which allocates 2 O(G×S) temporaries.
     cm <- colMeans(data_matrix, na.rm = TRUE)
-    col_sds <- sqrt(colSums(t(t(data_matrix) - cm)^2, na.rm = TRUE) / (nrow(data_matrix) - 1))
+    col_sds <- if (.HAS_MATRIXSTATS) {
+      matrixStats::colSds(data_matrix, na.rm = TRUE)
+    } else {
+      sqrt(colSums(t(t(data_matrix) - cm)^2, na.rm = TRUE) / (nrow(data_matrix) - 1))
+    }
     if (is_log_scale) {
       col_sds[!is.finite(col_sds)] <- NA
       return(col_sds)

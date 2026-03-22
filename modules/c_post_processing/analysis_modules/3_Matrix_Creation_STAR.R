@@ -23,9 +23,9 @@ source(file.path(SCRIPT_DIR, "3_Matrix_Creation_utils.R"))
 # MAIN
 # ===============================================
 
-cat("\n", paste(rep("=", 60), collapse = ""), "\n")
+cat("\n", strrep("=", 60), "\n")
 cat("MATRIX CREATION - M3 STAR + Salmon\n")
-cat(paste(rep("=", 60), collapse = ""), "\n\n")
+cat(strrep("=", 60), "\n\n")
 cat("Master Reference:", MASTER_REFERENCE, "\n")
 cat("Samples:         ", length(SAMPLE_IDS), "\n\n")
 
@@ -66,10 +66,12 @@ if (sum(file.exists(.resolved_quant_files)) == 0 && dir.exists(quant_dir)) {
     function(td, sid) file.path(td, sid, "quant.sf")
   )  # T × S matrix of paths
   .exists_mat <- matrix(file.exists(.all_candidates), nrow = length(.tissue_dirs))
-  for (.si in seq_along(SAMPLE_IDS)) {
-    .hit <- which(.exists_mat[, .si])[1L]
-    if (!is.na(.hit))
-      .resolved_quant_files[SAMPLE_IDS[.si]] <- .all_candidates[.hit, .si]
+  # Vectorized: max.col() finds first TRUE per column in one C-level pass
+  .any_found <- colSums(.exists_mat) > 0
+  if (any(.any_found)) {
+    .hits <- max.col(t(.exists_mat), ties.method = "first")
+    .idx <- which(.any_found)
+    .resolved_quant_files[SAMPLE_IDS[.idx]] <- .all_candidates[cbind(.hits[.idx], .idx)]
   }
 }
 
@@ -115,10 +117,20 @@ if (GENERATE_GENE_LEVEL) {
   }
 
   if (length(tx2gene_files) > 0) {
-    # Read without col.names to detect actual column count (col.names would force 2 columns,
-    # masking single-column files). Matches tximport_star_to_matrices.R approach.
-    raw_tx2gene <- read.delim(tx2gene_files[1], header = FALSE,
-                              stringsAsFactors = FALSE, colClasses = "character")
+    # .rds sidecar cache: 5-10x faster reload vs TSV re-parsing across Rscript invocations.
+    # Matches the caching pattern in read_count_matrix() from 1_utility_functions.R.
+    .tx2gene_rds <- paste0(tx2gene_files[1], ".tx2gene.rds")
+    .tx2gene_src_mtime <- file.mtime(tx2gene_files[1])
+    if (file.exists(.tx2gene_rds) && file.mtime(.tx2gene_rds) >= .tx2gene_src_mtime) {
+      raw_tx2gene <- readRDS(.tx2gene_rds)
+      cat("  Loaded tx2gene from .rds cache:", .tx2gene_rds, "\n")
+    } else {
+      # Read without col.names to detect actual column count (col.names would force 2 columns,
+      # masking single-column files). Matches tximport_star_to_matrices.R approach.
+      raw_tx2gene <- read.delim(tx2gene_files[1], header = FALSE,
+                                stringsAsFactors = FALSE, colClasses = "character")
+      tryCatch(saveRDS(raw_tx2gene, .tx2gene_rds), error = function(e) NULL)
+    }
     if (nrow(raw_tx2gene) == 0 || ncol(raw_tx2gene) < 2) {
       cat("  Error: tx2gene file is empty or malformed (", ncol(raw_tx2gene),
           "column(s)):", tx2gene_files[1], "\n")

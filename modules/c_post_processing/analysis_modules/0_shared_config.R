@@ -573,7 +573,7 @@ load_runtime_config <- function(method_modules_dir = ".") {
 # -----------------------------------------------
 
 print_separator <- function(char = "=", width = 60) {
-  cat("\n", paste(rep(char, width), collapse = ""), "\n")
+  cat("\n", strrep(char, width), "\n")
 }
 
 print_config_summary <- function(title, config) {

@@ -33,8 +33,9 @@ save_count_matrices <- function(counts, output_dir, prefix, master_ref, level,
   save_matrix <- function(matrix_data, count_type, gene_type) {
     output_file <- file.path(output_dir,
       paste0(prefix, "_", count_type, "_", gene_type, "_from_", master_ref, "_", level, ".csv"))
-    matrix_df <- as.data.frame(matrix_data, check.names = FALSE)
-    matrix_df <- cbind(GeneID = rownames(matrix_data), matrix_df)
+    # Single data.frame() call avoids intermediate O(G×S) copy from as.data.frame + cbind
+    matrix_df <- data.frame(GeneID = rownames(matrix_data), matrix_data,
+                            check.names = FALSE, stringsAsFactors = FALSE)
     rownames(matrix_df) <- NULL
     if (.HAS_DATATABLE) {
       data.table::fwrite(matrix_df, output_file, sep = ",", quote = FALSE)

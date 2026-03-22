@@ -382,10 +382,9 @@ match_gene_ids <- function(gene_list, data_rownames) {
   # Use environment as hash map for O(1) lookups
   base_to_rows <- new.env(hash = TRUE, parent = emptyenv(), size = length(data_rownames))
   # split() + seq_along avoids O(n²) c() concatenation that occurs with incremental appends
+  # list2env is a single C-level call vs O(n) R-level loop
   idx_groups <- split(seq_along(data_rownames), base_ids)
-  for (nm in names(idx_groups)) {
-    base_to_rows[[nm]] <- idx_groups[[nm]]
-  }
+  list2env(idx_groups, envir = base_to_rows)
   # Resolve indices to row names (deferred to avoid repeated string concatenation)
   .resolve_rows <- function(key) {
     idx <- base_to_rows[[key]]

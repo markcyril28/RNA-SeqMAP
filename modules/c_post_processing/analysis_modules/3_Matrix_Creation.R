@@ -73,9 +73,13 @@ import_stringtie <- function(ballgown_dir, sample_ids) {
     if (length(tissue_dirs) > 0) {
       all_cands <- outer(tissue_dirs, sample_ids, function(td, sid) file.path(td, sid, "quant.sf"))
       all_exist <- matrix(file.exists(all_cands), nrow = length(tissue_dirs))
-      for (j in seq_along(sample_ids)) {
-        hit <- which(all_exist[, j])[1]
-        if (!is.na(hit)) files[sample_ids[j]] <- all_cands[hit, j]
+      # Vectorized: max.col() finds first TRUE per column in one C-level pass
+      # O(T×S) single pass vs O(S) which() calls
+      any_found <- colSums(all_exist) > 0
+      if (any(any_found)) {
+        hits <- max.col(t(all_exist), ties.method = "first")
+        idx <- which(any_found)
+        files[sample_ids[idx]] <- all_cands[cbind(hits[idx], idx)]
       }
     }
   }
@@ -88,9 +92,9 @@ import_stringtie <- function(ballgown_dir, sample_ids) {
 
 run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
                                  sample_ids, gene_groups_dir = NULL) {
-  cat("\n", paste(rep("=", 60), collapse = ""), "\n")
+  cat("\n", strrep("=", 60), "\n")
   cat("MATRIX CREATION -", method, "\n")
-  cat(paste(rep("=", 60), collapse = ""), "\n\n")
+  cat(strrep("=", 60), "\n\n")
 
   results     <- list()
   # Salmon/STAR use "NumReads"; RSEM uses "expected_count"; StringTie/prepDE uses "counts"
@@ -298,8 +302,16 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
         # O(C) where C = candidate paths (≤5); breaks on first valid file
         for (.c in .cands) {
           if (nzchar(.c) && file.exists(.c)) {
-            .raw <- read.table(.c, header = FALSE, sep = "\t", stringsAsFactors = FALSE,
-                               strip.white = TRUE)
+            # .rds sidecar cache: 5-10x faster reload vs TSV re-parsing
+            .m4_rds <- paste0(.c, ".tx2gene.rds")
+            if (file.exists(.m4_rds) && file.mtime(.m4_rds) >= file.mtime(.c)) {
+              .raw <- readRDS(.m4_rds)
+              cat("  Loaded tx2gene from .rds cache:", basename(.m4_rds), "\n")
+            } else {
+              .raw <- read.table(.c, header = FALSE, sep = "\t", stringsAsFactors = FALSE,
+                                 strip.white = TRUE)
+              tryCatch(saveRDS(.raw, .m4_rds), error = function(e) NULL)
+            }
             .raw <- .raw[, 1:2, drop = FALSE]
             colnames(.raw) <- c("GENEID", "TXNAME")
             .tx2gene_m4 <- .raw[, c("TXNAME", "GENEID")]
@@ -393,9 +405,9 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
 # ===============================================
 
 if (!interactive() && identical(environment(), globalenv())) {
-  cat("\n", paste(rep("=", 60), collapse = ""), "\n")
+  cat("\n", strrep("=", 60), "\n")
   cat("MATRIX CREATION MODULE\n")
-  cat(paste(rep("=", 60), collapse = ""), "\n\n")
+  cat(strrep("=", 60), "\n\n")
   cat("Method:           ", CURRENT_METHOD, "\n")
   cat("Master Reference: ", MASTER_REFERENCE, "\n")
   cat("Samples:          ", length(SAMPLE_IDS), "\n\n")

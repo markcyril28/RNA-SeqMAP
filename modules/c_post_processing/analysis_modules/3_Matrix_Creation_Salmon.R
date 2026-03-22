@@ -19,6 +19,9 @@ source(file.path(SCRIPT_DIR, "0_shared_config.R"))
 source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
 source(file.path(SCRIPT_DIR, "3_Matrix_Creation_utils.R"))
 
+# Cache data.table availability for fread fast paths below
+.use_dt_salmon <- requireNamespace("data.table", quietly = TRUE)
+
 # ===============================================
 # SALMON IMPORT
 # ===============================================
@@ -84,8 +87,13 @@ if (is.null(.tx2gene_file) && nzchar(.input_fastas_dir)) {
 
 .tx2gene <- if (!is.null(.tx2gene_file)) {
   tryCatch({
-    .t2g <- read.table(.tx2gene_file, header = FALSE, sep = "\t", stringsAsFactors = FALSE,
-                       strip.white = TRUE)
+    .t2g <- if (.use_dt_salmon) {
+      as.data.frame(data.table::fread(.tx2gene_file, header = FALSE, sep = "\t",
+                                       strip.white = TRUE, showProgress = FALSE))
+    } else {
+      read.table(.tx2gene_file, header = FALSE, sep = "\t", stringsAsFactors = FALSE,
+                 strip.white = TRUE)
+    }
     .t2g <- .t2g[, 1:2, drop = FALSE]
     colnames(.t2g) <- c("GENEID", "TXNAME")
     .t2g[, c("TXNAME", "GENEID")]
@@ -106,9 +114,9 @@ rm(list = intersect(c(".base_dir", ".input_fastas_dir", ".candidates",
 # MAIN
 # ===============================================
 
-cat("\n", paste(rep("=", 60), collapse = ""), "\n")
+cat("\n", strrep("=", 60), "\n")
 cat("MATRIX CREATION - M4 Salmon\n")
-cat(paste(rep("=", 60), collapse = ""), "\n\n")
+cat(strrep("=", 60), "\n\n")
 cat("Master Reference:", MASTER_REFERENCE, "\n")
 cat("Samples:         ", length(SAMPLE_IDS), "\n\n")
 

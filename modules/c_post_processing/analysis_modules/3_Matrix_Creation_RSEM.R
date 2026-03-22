@@ -72,9 +72,9 @@ import_rsem <- function(quant_dir, sample_ids, level = "gene") {
 # MAIN
 # ===============================================
 
-cat("\n", paste(rep("=", 60), collapse = ""), "\n")
+cat("\n", strrep("=", 60), "\n")
 cat("MATRIX CREATION - M5 RSEM/Bowtie2\n")
-cat(paste(rep("=", 60), collapse = ""), "\n\n")
+cat(strrep("=", 60), "\n\n")
 cat("Master Reference:", MASTER_REFERENCE, "\n")
 cat("Samples:         ", length(SAMPLE_IDS), "\n\n")
 
