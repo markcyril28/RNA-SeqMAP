@@ -15,6 +15,14 @@
 
 source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
 
+# Ranking stability compares gene rankings across alignment methods — only meaningful
+# in cross_method mode where tpm_matrices keys are method names.
+if (CONCORDANCE_MODE != "cross_method") {
+  cat("[SKIP] Ranking stability analysis only applies to cross_method mode",
+      "(current:", CONCORDANCE_MODE, ")\n")
+  quit(save = "no", status = 0)
+}
+
 suppressPackageStartupMessages({
   library(ComplexHeatmap)
   library(circlize)
@@ -57,6 +65,8 @@ all_flagged_list <- vector("list", length(CONCORDANCE_GENE_GROUPS))
 # Avoids O(G × D) repeated list.files() calls for G gene groups
 .gene_group_csv_cache <- list.files(GENE_GROUPS_DIR, pattern = "\\.csv$",
                                      recursive = TRUE, full.names = TRUE)
+# Pre-compute basenames once (O(C)) instead of per-group (O(G×C))
+.gene_group_csv_basenames <- basename(.gene_group_csv_cache)
 
 for (gene_group in CONCORDANCE_GENE_GROUPS) {
   cat("\n=== Gene group:", gene_group, "===\n")
@@ -64,9 +74,8 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
   # Find CSV file (search top-level first, then cached subdirectory listing)
   csv_file <- file.path(GENE_GROUPS_DIR, paste0(gene_group, ".csv"))
   if (!file.exists(csv_file)) {
-    # O(G) basename match on cached listing instead of O(D) filesystem rescan per group
-    # (basename comparison avoids regex pitfalls if gene_group contains +, ., etc.)
-    candidates <- .gene_group_csv_cache[basename(.gene_group_csv_cache) == paste0(gene_group, ".csv")]
+    # O(C) vectorized match on pre-computed basenames instead of per-group basename() call
+    candidates <- .gene_group_csv_cache[.gene_group_csv_basenames == paste0(gene_group, ".csv")]
     if (length(candidates) > 0) {
       csv_file <- candidates[1]
     } else {
@@ -75,7 +84,7 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
     }
   }
 
-  gene_df <- read.csv(csv_file, stringsAsFactors = FALSE, header = TRUE)
+  gene_df <- .fast_read_csv(csv_file)
   if (!"Gene_ID" %in% colnames(gene_df)) {
     cat("  [WARN] Gene group CSV lacks 'Gene_ID' column:", csv_file, "\n")
     next
@@ -137,6 +146,10 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
   # Fractional rank change: max rank shift / total genes
   frac_rank_change <- rank_range / n_genes
 
+  # Pre-compute overall mean TPM (mean-of-means across methods) — O(G×M)
+  # Reused in both the summary table and zscore table, avoiding redundant rowMeans()
+  .overall_mean_tpm <- rowMeans(mean_tpm_matrix)
+
   # Flag genes with drastic ranking changes
   flagged <- frac_rank_change > RANKING_CHANGE_THRESHOLD
 
@@ -162,15 +175,17 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
     Frac_Rank_Change = round(frac_rank_change, 3),
     Flagged = flagged,
     rank_matrix,
-    Mean_TPM = round(rowMeans(mean_tpm_matrix), 2),
+    Mean_TPM = round(.overall_mean_tpm, 2),
     check.names = FALSE,
     stringsAsFactors = FALSE
   )
   ranking_df <- ranking_df[order(ranking_df$Median_Rank), ]
 
-  write.csv(ranking_df,
-            file.path(TABLES_DIR, paste0("ranking_stability_", gene_group, ".csv")),
-            row.names = FALSE)
+  if (.conc_use_dt) {
+    data.table::fwrite(ranking_df, file.path(TABLES_DIR, paste0("ranking_stability_", gene_group, ".csv")))
+  } else {
+    write.csv(ranking_df, file.path(TABLES_DIR, paste0("ranking_stability_", gene_group, ".csv")), row.names = FALSE)
+  }
   cat("  Flagged genes (rank change >", RANKING_CHANGE_THRESHOLD * 100, "%):",
       sum(flagged), "/", n_genes, "\n")
 
@@ -237,13 +252,22 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
     )
   )
 
-  fig_height <- max(700, 200 + n_genes * 35)
+  .rank_font <- if (n_genes > 15) 9 else 11
+  .rank_body_h <- max(8, n_genes * 0.8)
+  .rank_body_w <- max(10, ncol(display_rank_mat) * 2.5)
+  .fig_layout <- calc_figure_layout(
+    row_labels = rownames(display_rank_mat),
+    col_labels = colnames(display_rank_mat),
+    col_rot = 45, hm_body_cm = c(.rank_body_w, .rank_body_h),
+    has_dendro = FALSE, has_title = TRUE,
+    legend_width_cm = 6, font_size = .rank_font
+  )
   .dev_open <- FALSE
   tryCatch({
     png(file.path(FIGURES_DIR, paste0("ranking_heatmap_", gene_group, ".png")),
-        width = 1600 / 300 * FIGURE_DPI, height = fig_height / 300 * FIGURE_DPI, res = FIGURE_DPI)
+        width = .fig_layout$width, height = .fig_layout$height, res = FIGURE_DPI)
     .dev_open <- TRUE
-    draw(ht, padding = unit(c(30, 30, 25, 40), "mm"))
+    draw(ht, padding = .fig_layout$padding)
     dev.off()
     .dev_open <- FALSE
     cat("  Saved: ranking_heatmap_", gene_group, ".png\n", sep = "")
@@ -261,7 +285,12 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
   cat("  Generating Z-score scaled heatmap...\n")
 
   log2_mean_tpm <- log2(mean_tpm_matrix + 1)
-  zscore_grp <- t(scale(t(log2_mean_tpm)))
+  # Row-wise z-score: vectorized rowMeans/rowSums avoids 3 G×M matrix allocations
+  # from t(scale(t(...))). O(G×M) arithmetic with zero transpositions.
+  .rm <- rowMeans(log2_mean_tpm, na.rm = TRUE)
+  .rsd <- sqrt(rowSums((log2_mean_tpm - .rm)^2, na.rm = TRUE) / max(ncol(log2_mean_tpm) - 1, 1))
+  .rsd[.rsd == 0] <- 1  # prevent division by zero (constant rows → z-score = 0)
+  zscore_grp <- (log2_mean_tpm - .rm) / .rsd
   zscore_grp[is.nan(zscore_grp)] <- 0
   grp_row_mins <- .rowMins(zscore_grp)
   grp_row_maxs <- .rowMaxs(zscore_grp)
@@ -315,12 +344,19 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
     )
   )
 
+  .zscore_layout <- calc_figure_layout(
+    row_labels = rownames(display_zscore_mat),
+    col_labels = colnames(display_zscore_mat),
+    col_rot = 45, hm_body_cm = c(.rank_body_w, .rank_body_h),
+    has_dendro = FALSE, has_title = TRUE,
+    legend_width_cm = 6, font_size = .rank_font
+  )
   .dev_open <- FALSE
   tryCatch({
     png(file.path(FIGURES_DIR, paste0("zscore_heatmap_", gene_group, ".png")),
-        width = 1600 / 300 * FIGURE_DPI, height = fig_height / 300 * FIGURE_DPI, res = FIGURE_DPI)
+        width = .zscore_layout$width, height = .zscore_layout$height, res = FIGURE_DPI)
     .dev_open <- TRUE
-    draw(ht_z, padding = unit(c(30, 30, 25, 40), "mm"))
+    draw(ht_z, padding = .zscore_layout$padding)
     dev.off()
     .dev_open <- FALSE
     cat("  Saved: zscore_heatmap_", gene_group, ".png\n", sep = "")
@@ -334,13 +370,15 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
     Gene_ID = matched_genes[.rank_order],
     Shortened_Name = display_names[.rank_order],
     zscore_grp_scaled[.rank_order, , drop = FALSE],
-    Mean_TPM = round(rowMeans(mean_tpm_matrix)[.rank_order], 2),
+    Mean_TPM = round(.overall_mean_tpm[.rank_order], 2),
     check.names = FALSE,
     stringsAsFactors = FALSE
   )
-  write.csv(zscore_grp_df,
-            file.path(TABLES_DIR, paste0("zscore_expression_", gene_group, ".csv")),
-            row.names = FALSE)
+  if (.conc_use_dt) {
+    data.table::fwrite(zscore_grp_df, file.path(TABLES_DIR, paste0("zscore_expression_", gene_group, ".csv")))
+  } else {
+    write.csv(zscore_grp_df, file.path(TABLES_DIR, paste0("zscore_expression_", gene_group, ".csv")), row.names = FALSE)
+  }
   cat("  Saved: zscore_expression_", gene_group, ".csv\n", sep = "")
 
   # -----------------------------------------------
@@ -357,13 +395,21 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
                                      "#CE93D8", "#2196F3", "#4CAF50",
                                      "#FF9800", "#F44336", "#795548"))(n_genes)
 
+  # Auto-calculate bump chart dimensions from content
+  .bump_max_method_chars <- max(nchar(method_labels))
+  .bump_max_gene_chars   <- max(nchar(rownames(rank_matrix)))
+  .bump_mar_bottom <- max(8, ceiling(.bump_max_method_chars * 0.7))
+  .bump_mar_right  <- max(16, ceiling(.bump_max_gene_chars * 1.2))
+  .bump_w <- max(1400, 300 * n_methods_plot + .bump_mar_right * 12) / 300 * FIGURE_DPI
+  .bump_h <- max(1050, 200 + n_genes * 40 + .bump_mar_bottom * 12) / 300 * FIGURE_DPI
+
   .dev_open <- FALSE
   tryCatch({
     png(file.path(FIGURES_DIR, paste0("ranking_bump_chart_", gene_group, ".png")),
-        width = max(1200, 260 * n_methods_plot), height = max(850, 120 + n_genes * 40), res = FIGURE_DPI)
+        width = .bump_w, height = .bump_h, res = FIGURE_DPI)
     .dev_open <- TRUE
 
-    par(mar = c(10, 10, 6, 20), xpd = TRUE)
+    par(mar = c(.bump_mar_bottom, 12, 8, .bump_mar_right), xpd = TRUE)
     plot(1, type = "n",
          xlim = c(0.5, n_methods_plot + 0.5),
          ylim = c(n_genes + 0.5, 0.5),
@@ -375,16 +421,14 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
     axis(1, at = seq_len(n_methods_plot), labels = method_labels, las = 2, cex.axis = 1.0)
     axis(2, at = seq_len(n_genes), las = 1, cex.axis = 0.9)
 
-    for (i in seq_len(n_genes)) {
-      ranks <- rank_matrix[i, ]
-      lwd_val <- if (flagged[i]) 2.5 else 1.2
-      lty_val <- if (flagged[i]) 1 else 2
-
-      lines(seq_len(n_methods_plot), ranks, col = gene_colors[i],
-            lwd = lwd_val, lty = lty_val)
-      points(seq_len(n_methods_plot), ranks, col = gene_colors[i],
-             pch = 16, cex = 1.2)
-    }
+    # Pre-compute loop constants — avoids G redundant seq_len() calls
+    # and G conditional branches for lwd/lty values. O(G) vectorized ifelse.
+    x_seq <- seq_len(n_methods_plot)
+    lwd_vals <- ifelse(flagged, 2.5, 1.2)
+    lty_vals <- ifelse(flagged, 1L, 2L)
+    # matlines/matpoints: single C-level call replaces O(G) R-level lines()/points()
+    matlines(x_seq, t(rank_matrix), col = gene_colors, lwd = lwd_vals, lty = lty_vals)
+    matpoints(x_seq, t(rank_matrix), col = gene_colors, pch = 16, cex = 1.2)
 
     # Legend outside plot
     legend("right", inset = c(-0.35, 0),
@@ -409,11 +453,18 @@ for (gene_group in CONCORDANCE_GENE_GROUPS) {
 
 # Trim unused pre-allocated slots before rbind
 all_flagged_list <- all_flagged_list[seq_len(.flagged_idx)]
-all_flagged_genes <- if (.flagged_idx > 0L) do.call(rbind, all_flagged_list) else data.frame()
+# Use rbindlist when data.table available — avoids O(R²) copy overhead of do.call(rbind).
+# Reuse .conc_use_dt from 0_concordance_config.R (avoids redundant requireNamespace probe).
+all_flagged_genes <- if (.flagged_idx > 0L) {
+  if (.conc_use_dt) data.table::setDF(data.table::rbindlist(all_flagged_list, use.names = TRUE, fill = TRUE))
+  else do.call(rbind, all_flagged_list)
+} else data.frame()
 if (nrow(all_flagged_genes) > 0) {
-  write.csv(all_flagged_genes,
-            file.path(TABLES_DIR, "ranking_instability_flagged.csv"),
-            row.names = FALSE)
+  if (.conc_use_dt) {
+    data.table::fwrite(all_flagged_genes, file.path(TABLES_DIR, "ranking_instability_flagged.csv"))
+  } else {
+    write.csv(all_flagged_genes, file.path(TABLES_DIR, "ranking_instability_flagged.csv"), row.names = FALSE)
+  }
   cat("\n  Total flagged genes across all groups:", nrow(all_flagged_genes), "\n")
 } else {
   cat("\n  No genes flagged for ranking instability\n")

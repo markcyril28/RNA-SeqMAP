@@ -20,81 +20,10 @@
 #   $method_stats  - data.frame with per-method stats (n_genes, n_samples, etc.)
 
 source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
-
-# Use data.table for fast file I/O when available
-.use_dt <- requireNamespace("data.table", quietly = TRUE)
-
-# Use parallel::mclapply for concurrent per-sample file reads when available.
-# On HPC (Linux), mclapply uses fork-based parallelism with zero serialization overhead.
-# On Windows/WSL with fork issues, falls back gracefully to sequential lapply.
-# Big O: reduces wall-clock from O(S × read_time) to O(S × read_time / ncores).
-.use_parallel <- requireNamespace("parallel", quietly = TRUE)
-.n_cores <- if (.use_parallel) {
-  # Use THREADS env var if set (consistent with pipeline config), else detectCores/2
-  .threads_env <- as.integer(Sys.getenv("THREADS", unset = "0"))
-  if (!is.na(.threads_env) && .threads_env > 1) min(.threads_env, 8L) else {
-    max(1L, parallel::detectCores(logical = FALSE) %/% 2L)
-  }
-} else 1L
-# Wrapper: mclapply with safe fallback
-.par_lapply <- function(X, FUN, ...) {
-  if (.use_parallel && .n_cores > 1L && length(X) > 1L) {
-    tryCatch(
-      parallel::mclapply(X, FUN, ..., mc.cores = .n_cores),
-      error = function(e) { message("[CONCORDANCE] mclapply failed, using sequential: ", e$message); lapply(X, FUN, ...) }
-    )
-  } else {
-    lapply(X, FUN, ...)
-  }
-}
-
-# -----------------------------------------------
-# Helper: assemble gene x sample matrix from a named list of named vectors
-# Replaces the repeated unique(unlist(lapply())) + sparse-assignment loop
-# that appeared 5 times (once per method) with a single vectorized merge.
-# -----------------------------------------------
-# Big O: data.table path: O(total_entries) via rbindlist + dcast (hash-based reshape).
-# Fallback path: O(genes × samples) sparse assignment with pre-allocated matrix.
-.assemble_tpm_matrix <- function(tpm_list, filter_genes = TRUE) {
-  if (length(tpm_list) == 0) return(NULL)
-
-  if (.use_dt) {
-    # Build long-form data.table and reshape — avoids O(genes * samples) sparse assignment
-    dt_list <- lapply(names(tpm_list), function(srr) {
-      data.table::data.table(gene = names(tpm_list[[srr]]),
-                             tpm  = as.numeric(tpm_list[[srr]]),
-                             srr  = srr)
-    })
-    long <- data.table::rbindlist(dt_list)
-    if (filter_genes) long <- long[nzchar(gene) & !is.na(gene)]
-    wide <- data.table::dcast(long, gene ~ srr, value.var = "tpm", fill = 0)
-    mat <- as.matrix(wide[, -1, with = FALSE])
-    rownames(mat) <- wide$gene
-    if (nrow(mat) == 0) { warning("Matrix assembly produced 0 rows — check input data"); return(NULL) }
-  } else {
-    # Fallback: original approach
-    all_genes <- unique(unlist(lapply(tpm_list, names)))
-    if (filter_genes) all_genes <- all_genes[nzchar(all_genes) & !is.na(all_genes)]
-    mat <- matrix(0, nrow = length(all_genes), ncol = length(tpm_list),
-                  dimnames = list(all_genes, names(tpm_list)))
-    for (srr in names(tpm_list)) {
-      genes <- intersect(names(tpm_list[[srr]]), all_genes)
-      mat[genes, srr] <- tpm_list[[srr]][genes]
-    }
-    if (nrow(mat) == 0) { warning("Matrix assembly produced 0 rows — check input data"); return(NULL) }
-  }
-  return(mat)
-}
-
-# Helper: fast file read (data.table::fread when available, else read.table)
-.fast_read_tsv <- function(path, ...) {
-  if (.use_dt) {
-    data.table::fread(path, data.table = FALSE, ...)
-  } else {
-    read.table(path, header = TRUE, sep = "\t", stringsAsFactors = FALSE,
-               check.names = FALSE, comment.char = "", quote = "")
-  }
-}
+# Source shared method loaders — provides .use_dt, .use_parallel, .n_cores,
+# .par_lapply, .fast_read_tsv, .assemble_tpm_matrix (with double-source guard).
+# Eliminates ~75 lines of duplicated helper definitions.
+source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_method_loaders.R"))
 
 cat("\n=== STEP 1: Loading Expression Matrices ===\n\n")
 
@@ -116,7 +45,7 @@ load_m1_tpm <- function() {
 
   sample_dirs <- list.dirs(stringtie_base, recursive = FALSE, full.names = TRUE)
   # Filter to SRR directories (exclude deseq2_input, etc.)
-  sample_dirs <- sample_dirs[grepl("^SRR", basename(sample_dirs))]
+  sample_dirs <- sample_dirs[startsWith(basename(sample_dirs), "SRR")]
 
   if (length(sample_dirs) == 0) {
     cat("[M1] No sample directories found\n")
@@ -160,7 +89,7 @@ load_m2_tpm <- function() {
   }
 
   sample_dirs <- list.dirs(stringtie_base, recursive = FALSE, full.names = TRUE)
-  sample_dirs <- sample_dirs[grepl("^SRR", basename(sample_dirs))]
+  sample_dirs <- sample_dirs[startsWith(basename(sample_dirs), "SRR")]
 
   if (length(sample_dirs) == 0) {
     cat("[M2] No sample directories found\n")
@@ -194,7 +123,14 @@ load_m2_tpm <- function() {
     }
     # Use MAX (not SUM) to aggregate multiple STRG.N entries mapping to the same
     # reference gene. MAX matches matrix_builder.py's visualization aggregation.
-    tapply(df$TPM[valid], gene_ids[valid], max, na.rm = TRUE)
+    # data.table group-by is faster than tapply for >10K transcripts (hash vs factor).
+    if (.use_dt) {
+      dt <- data.table::data.table(gene = gene_ids[valid], tpm = df$TPM[valid])
+      res <- dt[, .(tpm = max(tpm, na.rm = TRUE)), by = gene]
+      setNames(res$tpm, res$gene)
+    } else {
+      tapply(df$TPM[valid], gene_ids[valid], max, na.rm = TRUE)
+    }
   }), basename(sample_dirs))
   tpm_list <- Filter(Negate(is.null), tpm_list)
 
@@ -226,30 +162,24 @@ load_m3_tpm <- function() {
                             paste0("tx2gene_", ref_dir, ".tsv"))
   tx2gene <- NULL
   if (file.exists(tx2gene_file)) {
-    # Detect header: check if first line contains known column-name keywords.
-    # Use word-boundary anchors to avoid matching real transcript IDs that happen
-    # to start with "tx" (e.g., "tx_12345" or "txSMEL_001").
-    first_line <- readLines(tx2gene_file, n = 1)
-    has_header <- grepl("(^|\\t)(transcript_id|tx_id|TXNAME)(\\t|$)", first_line, ignore.case = TRUE)
-    tx2gene <- read.table(tx2gene_file, header = has_header, sep = "\t",
-                          stringsAsFactors = FALSE)
+    tx2gene <- .fast_read_tsv(tx2gene_file)
     # Keep only first 2 columns (transcript_id, gene_id)
     if (ncol(tx2gene) > 2) tx2gene <- tx2gene[, 1:2, drop = FALSE]
     colnames(tx2gene) <- c("transcript_id", "gene_id")
   }
 
   sample_dirs <- list.dirs(quant_base, recursive = FALSE, full.names = TRUE)
-  sample_dirs <- sample_dirs[grepl("^SRR", basename(sample_dirs))]
+  sample_dirs <- sample_dirs[startsWith(basename(sample_dirs), "SRR")]
 
   # Tissue-specific fallback: quant/{tissue}/{SRR}/quant.sf layout
   if (length(sample_dirs) == 0) {
     cat("[M3] No SRR directories at top level; trying tissue-specific layout...\n")
     tissue_dirs <- list.dirs(quant_base, recursive = FALSE, full.names = TRUE)
-    for (td in tissue_dirs) {
+    # unlist(lapply()) avoids O(T²) c() accumulation overhead
+    sample_dirs <- unlist(lapply(tissue_dirs, function(td) {
       sub_dirs <- list.dirs(td, recursive = FALSE, full.names = TRUE)
-      sub_dirs <- sub_dirs[grepl("^SRR", basename(sub_dirs))]
-      sample_dirs <- c(sample_dirs, sub_dirs)
-    }
+      sub_dirs[startsWith(basename(sub_dirs), "SRR")]
+    }), use.names = FALSE)
     if (length(sample_dirs) > 0) {
       cat("[M3] Found", length(sample_dirs), "samples via tissue-specific layout\n")
     }
@@ -275,6 +205,13 @@ load_m3_tpm <- function() {
     return(NULL)
   }
 
+  # Pre-build named vector for O(1) hash lookup inside parallel workers.
+  # Replaces per-worker match() which is O(G_transcripts) linear scan per sample.
+  # On fork-based mclapply (Linux), the named vector is shared copy-on-write.
+  .tx2gene_map <- if (!is.null(tx2gene)) {
+    setNames(tx2gene$gene_id, tx2gene$transcript_id)
+  } else NULL
+
   # Parallel sample loading via mclapply (matches M1/M4/M5 pattern)
   tpm_list <- setNames(.par_lapply(sample_dirs, function(sdir) {
     qsf <- file.path(sdir, "quant.sf")
@@ -282,8 +219,8 @@ load_m3_tpm <- function() {
 
     df <- .fast_read_tsv(qsf)
 
-    if (!is.null(tx2gene)) {
-      df$gene_id <- tx2gene$gene_id[match(df$Name, tx2gene$transcript_id)]
+    if (!is.null(.tx2gene_map)) {
+      df$gene_id <- .tx2gene_map[df$Name]
       unmapped <- is.na(df$gene_id)
       if (any(unmapped)) {
         # Single-pass suffix stripping for unmapped transcripts. O(n) vs 2 × O(n).
@@ -323,7 +260,7 @@ load_m4_tpm <- function() {
   }
 
   sample_dirs <- list.dirs(quant_base, recursive = FALSE, full.names = TRUE)
-  sample_dirs <- sample_dirs[grepl("^SRR", basename(sample_dirs))]
+  sample_dirs <- sample_dirs[startsWith(basename(sample_dirs), "SRR")]
 
   if (length(sample_dirs) == 0) {
     cat("[M4] No sample directories found\n")
@@ -384,7 +321,7 @@ load_m5_tpm <- function() {
 
   if (dir.exists(rsem_quant_base)) {
     sample_dirs <- list.dirs(rsem_quant_base, recursive = FALSE, full.names = TRUE)
-    sample_dirs <- sample_dirs[grepl("^SRR", basename(sample_dirs))]
+    sample_dirs <- sample_dirs[startsWith(basename(sample_dirs), "SRR")]
 
     if (length(sample_dirs) > 0) {
       # Parallel sample loading via mclapply (replaces sequential for-loop)
@@ -505,12 +442,11 @@ cat("\n--- Harmonizing gene IDs ---\n")
 for (method in names(tpm_matrices)) {
   mat <- tpm_matrices[[method]]
   rn <- rownames(mat)
-  # Only strip if IDs look like they have transcript suffixes
-  # Handles both GPE001970 (SMEL5_XXgXXXXXX.N) and Eggplant_V4.1 (Sme2.5_XXgXXXXXX.N)
-  if (any(grepl("^(SMEL|Sme)[0-9].*\\.[0-9]+$", rn))) {
-    # Single-pass suffix stripping for double-suffixed IDs
-    # (e.g., SMEL4.1_06g023900.1.01 -> SMEL4.1_06g023900). O(n) vs 2 × O(n).
-    new_rn <- sub("(\\.[0-9]+){1,2}$", "", rn)
+  # Strip transcript suffixes if present — single sub() pass replaces
+  # grepl() guard + sub() (2 × O(n) regex passes → 1 × O(n)).
+  # Handles GPE001970 (SMEL5_XXgXXXXXX.N) and Eggplant_V4.1 (Sme2.5_XXgXXXXXX.N)
+  new_rn <- sub("(\\.[0-9]+){1,2}$", "", rn)
+  if (!identical(new_rn, rn)) {
     if (any(duplicated(new_rn))) {
       # rowsum() is a base-R C routine optimized for grouped column sums on matrices
       # — faster than data.table for this use case (avoids matrix→DT→matrix round-trip)
@@ -540,7 +476,7 @@ if (length(common_genes) == 0) {
   cat("\n  [ERROR] Zero common genes across methods. Per-method gene counts:\n")
   for (m in names(gene_sets)) {
     cat("    ", get_short_name(m), ":", length(gene_sets[[m]]), "genes",
-        "(sample IDs:", paste(head(gene_sets[[m]], 3), collapse = ", "), "...)\n")
+        "(first genes:", paste(head(gene_sets[[m]], 3), collapse = ", "), "...)\n")
   }
   stop("No common genes found across methods. Check gene ID formats (suffix stripping may be too aggressive).")
 }
@@ -614,16 +550,18 @@ expressed_genes_per_method <- lapply(tpm_matrices, function(mat) {
 # Keep genes expressed in at least one method (union)
 expressed_union <- unique(unlist(expressed_genes_per_method))
 # Also track genes expressed in ALL methods (intersection) for stricter analysis
-expressed_intersect <- Reduce(intersect, expressed_genes_per_method)
+# Uses table(unlist()) pattern: O(G) peak memory vs Reduce(intersect)'s O(M×G) intermediate allocations
+.expr_counts <- table(unlist(expressed_genes_per_method, use.names = FALSE))
+expressed_intersect <- names(.expr_counts[.expr_counts == length(expressed_genes_per_method)])
+rm(.expr_counts)
 
 cat("  Genes expressed in ANY method:", length(expressed_union), "\n")
 cat("  Genes expressed in ALL methods:", length(expressed_intersect), "\n")
 
 # Use union for general concordance (more inclusive)
+# lapply avoids copy-on-modify: for-loop list assignment copies the list spine on each iteration
 filtered_genes <- intersect(common_genes, expressed_union)
-for (method in names(tpm_matrices)) {
-  tpm_matrices[[method]] <- tpm_matrices[[method]][filtered_genes, , drop = FALSE]
-}
+tpm_matrices <- lapply(tpm_matrices, function(mat) mat[filtered_genes, , drop = FALSE])
 
 cat("  Final gene count:", length(filtered_genes), "\n")
 
@@ -650,4 +588,8 @@ saveRDS(result, HARMONIZED_RDS)
 cat("\n[DONE] Harmonized data saved to:", HARMONIZED_RDS, "\n")
 
 # Also save method stats table
-write.csv(method_stats, file.path(TABLES_DIR, "method_stats.csv"), row.names = FALSE)
+if (.use_dt) {
+  data.table::fwrite(method_stats, file.path(TABLES_DIR, "method_stats.csv"))
+} else {
+  write.csv(method_stats, file.path(TABLES_DIR, "method_stats.csv"), row.names = FALSE)
+}

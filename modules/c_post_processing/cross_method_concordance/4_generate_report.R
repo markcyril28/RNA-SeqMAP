@@ -6,7 +6,7 @@
 # Generates a unified Markdown report with embedded figure references,
 # correlation matrices, gene lists, and analysis summaries.
 #
-# Output: REPORT_BASE/cross_method_concordance_report.md (or POST_PROC_BASE fallback)
+# Output: REPORT_BASE/concordance_report.md (or POST_PROC_BASE fallback)
 
 source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
 
@@ -35,7 +35,16 @@ short_names <- vapply(methods, get_short_name, character(1))
 
 # Report output path (separate from POST_PROC_BASE inputs)
 report_base <- Sys.getenv("REPORT_BASE", POST_PROC_BASE)
-report_path <- file.path(report_base, "cross_method_concordance_report.md")
+report_path <- file.path(report_base, "concordance_report.md")
+
+# Mode-aware labels for report headers
+.item_label <- switch(CONCORDANCE_MODE,
+  cross_method          = "Method",
+  cross_genome          = "Genome",
+  cross_gene_group      = "Gene Group",
+  cross_equivalent_gene = "Equivalent Gene",
+  "Item"
+)
 
 # -----------------------------------------------
 # Build report
@@ -55,12 +64,12 @@ add <- function(...) {
   lines[[.line_idx]] <<- paste0(...)
 }
 
-add("# Cross-Method Concordance Report")
+add("# Cross-", .item_label, " Concordance Report")
 add("")
 add("**Reference genome:** ", MASTER_REFERENCE)
 add("**Date generated:** ", format(Sys.time(), "%Y-%m-%d %H:%M:%S"))
-add("**Methods compared:** ", paste(short_names, collapse = ", "))
-add("**Common genes:** ", length(data$common_genes))
+add("**", .item_label, "s compared:** ", paste(short_names, collapse = ", "))
+if (length(data$common_genes) > 0) add("**Common genes:** ", length(data$common_genes))
 add("**Common samples:** ", length(data$common_samples))
 add("")
 
@@ -68,38 +77,49 @@ add("")
 # Section 1: Method Overview
 # -----------------------------------------------
 
-add("## 1. Method Overview")
+add("## 1. ", .item_label, " Overview")
 add("")
-add("| Method | Short Name | Genes (Raw) | Samples (Raw) | Genes (Harmonized) | Samples (Harmonized) |")
+add("| ", .item_label, " | Short Name | Genes (Raw) | Samples (Raw) | Genes (Harmonized) | Samples (Harmonized) |")
 add("|--------|-----------|-------------|--------------|-------------------|---------------------|")
-for (i in seq_len(nrow(data$method_stats))) {
-  row <- data$method_stats[i, ]
-  add("| ", row$method, " | ", row$short_name, " | ",
-      format(row$n_genes_raw, big.mark = ","), " | ", row$n_samples_raw, " | ",
-      format(row$n_genes_harmonized, big.mark = ","), " | ", row$n_samples_harmonized, " |")
-}
+# Vectorized row construction: O(R) paste0 + single lapply instead of per-row add()
+.ms <- data$method_stats
+.ms_rows <- paste0("| ", .ms$method, " | ", .ms$short_name, " | ",
+                   format(.ms$n_genes_raw, big.mark = ","), " | ", .ms$n_samples_raw, " | ",
+                   format(.ms$n_genes_harmonized, big.mark = ","), " | ", .ms$n_samples_harmonized, " |")
+invisible(lapply(.ms_rows, add))
 add("")
 
-# Gene set overlap summary
+# Gene set overlap summary (only when gene_sets_raw is available)
+gene_sets <- data$gene_sets_raw
+if (!is.null(gene_sets)) {
+method_names <- names(gene_sets)
 add("### Gene Set Overlaps")
 add("")
-add("| Method Pair | Shared Genes |")
+add("| ", .item_label, " Pair | Shared Genes |")
 add("|------------|-------------|")
-gene_sets <- data$gene_sets_raw
-method_names <- names(gene_sets)
-# O(M²) pairwise method comparison where M = number of methods
+# O(M²) pairwise method comparison where M = number of methods.
+# Pre-compute short name map to avoid O(M²) get_short_name() calls.
+.sn_map <- setNames(vapply(method_names, get_short_name, character(1)), method_names)
 for (i in seq_len(length(method_names) - 1)) {
   for (j in seq(i + 1, length(method_names))) {
     overlap <- length(intersect(gene_sets[[method_names[i]]], gene_sets[[method_names[j]]]))
-    add("| ", get_short_name(method_names[i]), " & ", get_short_name(method_names[j]),
+    add("| ", .sn_map[method_names[i]], " & ", .sn_map[method_names[j]],
         " | ", format(overlap, big.mark = ","), " |")
   }
 }
 add("")
+}  # end gene_sets_raw guard
 
 # -----------------------------------------------
 # Section 2: Quantification Concordance
 # -----------------------------------------------
+
+# Sections 2-4 require median_spearman from 2_quantification_concordance.R.
+# cross_gene_group mode uses 2_gene_group_concordance.R which produces
+# gene_cor_matrices instead — skip the method-pair concordance sections.
+.has_spearman <- !is.null(concordance$median_spearman)
+
+if (.has_spearman) {
 
 add("## 2. Quantification Concordance")
 add("")
@@ -112,16 +132,18 @@ add("")
 # Format correlation matrix as markdown table
 sp_mat <- concordance$median_spearman
 add("| Method |", paste(colnames(sp_mat), collapse = " | "), " |")
-add("|", paste(rep("------", ncol(sp_mat) + 1), collapse = "|"), "|")
-for (i in seq_len(nrow(sp_mat))) {
-  vals <- sprintf("%.3f", sp_mat[i, ])
-  add("| **", rownames(sp_mat)[i], "** | ", paste(vals, collapse = " | "), " |")
-}
+add("|", strrep("------|", ncol(sp_mat) + 1), "|")
+# Pre-format entire matrix at once: O(R×C) total, then vectorized row construction
+.sp_mat_str <- matrix(sprintf("%.3f", sp_mat), nrow = nrow(sp_mat), dimnames = dimnames(sp_mat))
+# Vectorized row-paste: single C-level call vs O(R) per-row paste dispatch
+.sp_rows <- paste0("| **", rownames(sp_mat), "** | ",
+                   do.call(paste, c(as.data.frame(.sp_mat_str, stringsAsFactors = FALSE), sep = " | ")), " |")
+invisible(lapply(.sp_rows, add))
 add("")
 
 add("### 2.2 Concordance Heatmap")
 add("")
-add("![Spearman Concordance](cross_method_concordance/figures/method_concordance_heatmap_spearman.png)")
+add("![Spearman Concordance](figures/method_concordance_heatmap_spearman.png)")
 add("")
 
 # ---- Data-driven interpretation of concordance heatmap ----
@@ -130,26 +152,27 @@ sp_overall <- median(sp_upper_vals, na.rm = TRUE)
 sp_min <- min(sp_upper_vals, na.rm = TRUE)
 sp_max <- max(sp_upper_vals, na.rm = TRUE)
 
-# Find best/worst pairs
-sp_full <- concordance$median_spearman
-diag(sp_full) <- NA
-sp_full[lower.tri(sp_full)] <- NA
+# Find best/worst pairs — upper-triangle mask computed once and reused in Section 4
+# (avoids redundant O(M²) copy + mask at lines ~399-401)
+.sp_upper_masked <- concordance$median_spearman
+diag(.sp_upper_masked) <- NA
+.sp_upper_masked[lower.tri(.sp_upper_masked)] <- NA
 
-sp_full_max <- max(sp_full, na.rm = TRUE)
-sp_full_min <- min(sp_full, na.rm = TRUE)
+sp_full_max <- max(.sp_upper_masked, na.rm = TRUE)
+sp_full_min <- min(.sp_upper_masked, na.rm = TRUE)
 
 sp_best_name <- "N/A"
 sp_worst_name <- "N/A"
 if (is.finite(sp_full_max)) {
-  sp_best_idx <- which(sp_full == sp_full_max, arr.ind = TRUE)
+  sp_best_idx <- which(.sp_upper_masked == sp_full_max, arr.ind = TRUE)
   if (nrow(sp_best_idx) > 0) {
-    sp_best_name <- paste0(rownames(sp_full)[sp_best_idx[1,1]], " & ", colnames(sp_full)[sp_best_idx[1,2]])
+    sp_best_name <- paste0(rownames(.sp_upper_masked)[sp_best_idx[1,1]], " & ", colnames(.sp_upper_masked)[sp_best_idx[1,2]])
   }
 }
 if (is.finite(sp_full_min)) {
-  sp_worst_idx <- which(sp_full == sp_full_min, arr.ind = TRUE)
+  sp_worst_idx <- which(.sp_upper_masked == sp_full_min, arr.ind = TRUE)
   if (nrow(sp_worst_idx) > 0) {
-    sp_worst_name <- paste0(rownames(sp_full)[sp_worst_idx[1,1]], " & ", colnames(sp_full)[sp_worst_idx[1,2]])
+    sp_worst_name <- paste0(rownames(.sp_upper_masked)[sp_worst_idx[1,1]], " & ", colnames(.sp_upper_masked)[sp_worst_idx[1,2]])
   }
 }
 
@@ -247,9 +270,10 @@ add("Genes are flagged if their fractional rank change exceeds ",
     RANKING_CHANGE_THRESHOLD * 100, "% of the group size.")
 add("")
 
-for (gene_group in names(ranking_results)) {
-  rdf <- ranking_results[[gene_group]]
-  add("### 3.", which(names(ranking_results) == gene_group)[1], " ", gene_group)
+for (.gi in seq_along(ranking_results)) {
+  gene_group <- names(ranking_results)[.gi]
+  rdf <- ranking_results[[.gi]]
+  add("### 3.", .gi, " ", gene_group)
   add("")
 
   n_total <- nrow(rdf)
@@ -263,34 +287,43 @@ for (gene_group in names(ranking_results)) {
 
   add("| Gene | Short Name | Median Rank | Range | SD | Flagged | ",
       paste(display_cols, collapse = " | "), " | Mean TPM |")
-  sep_cols <- paste(rep("---:", length(display_cols)), collapse = " | ")
+  sep_cols <- paste(rep.int("---:", length(display_cols)), collapse = " | ")
   add("|------|-----------|----------:|-----:|---:|---------| ", sep_cols, " |--------:|")
 
-  # O(R × C) where R = rows in ranking table, C = display columns
-  for (i in seq_len(nrow(rdf))) {
-    row <- rdf[i, ]
-    method_ranks <- sprintf("%.0f", as.numeric(row[display_cols]))
-    flag_str <- if (row$Flagged) "**YES**" else ""
-    add("| ", row$Gene_ID, " | ", row$Shortened_Name,
-        " | ", row$Median_Rank,
-        " | ", row$Rank_Range,
-        " | ", row$Rank_SD,
-        " | ", flag_str,
-        " | ", paste(method_ranks, collapse = " | "),
-        " | ", row$Mean_TPM, " |")
-  }
+  # Pre-extract columns as vectors: O(C + R) vs O(R × C) for rdf[i,] subsetting
+  .gene_ids <- rdf$Gene_ID
+  .short_names <- rdf$Shortened_Name
+  .med_ranks <- rdf$Median_Rank
+  .rank_ranges <- rdf$Rank_Range
+  .rank_sds <- rdf$Rank_SD
+  .flagged <- ifelse(rdf$Flagged, "**YES**", "")
+  .mean_tpms <- rdf$Mean_TPM
+  .rank_mat <- as.matrix(rdf[, display_cols, drop = FALSE])
+  # Pre-format entire matrix: vectorized row construction avoids O(G) per-row paste
+  .rank_mat_str <- matrix(sprintf("%.0f", .rank_mat), nrow = nrow(.rank_mat),
+                          dimnames = dimnames(.rank_mat))
+  # Vectorized row-paste: single C-level call vs O(G) per-row paste dispatch
+  .rank_col_str <- do.call(paste, c(as.data.frame(.rank_mat_str, stringsAsFactors = FALSE), sep = " | "))
+  .table_rows <- paste0("| ", .gene_ids, " | ", .short_names,
+                        " | ", .med_ranks,
+                        " | ", .rank_ranges,
+                        " | ", .rank_sds,
+                        " | ", .flagged,
+                        " | ", .rank_col_str,
+                        " | ", .mean_tpms, " |")
+  invisible(lapply(.table_rows, add))
   add("")
 
-  add("![Ranking Heatmap](cross_method_concordance/figures/ranking_heatmap_", gene_group, ".png)")
+  add("![Ranking Heatmap](figures/ranking_heatmap_", gene_group, ".png)")
   add("")
   add("#### Z-Score Normalized Expression (0\u201310 Scale)")
   add("")
   add("Per-gene Z-score scaled to 0\u201310 across methods. Blue (0) = method gives lowest estimate,")
   add("white (5) = average, red (10) = highest. Uniform rows indicate strong method agreement.")
   add("")
-  add("![Z-Score Heatmap](cross_method_concordance/figures/zscore_heatmap_", gene_group, ".png)")
+  add("![Z-Score Heatmap](figures/zscore_heatmap_", gene_group, ".png)")
   add("")
-  add("![Bump Chart](cross_method_concordance/figures/ranking_bump_chart_", gene_group, ".png)")
+  add("![Bump Chart](figures/ranking_bump_chart_", gene_group, ".png)")
   add("")
 
   # ---- Data-driven interpretation of ranking stability per gene group ----
@@ -335,8 +368,9 @@ for (gene_group in names(ranking_results)) {
 
     # Analyze whether instability correlates with expression level
     if ("Mean_TPM" %in% colnames(rdf)) {
-      mean_tpm_vals <- as.numeric(rdf$Mean_TPM)
-      rank_sd_vals <- as.numeric(rdf$Rank_SD)
+      # Columns are already numeric from round() in 3_ranking_stability.R — skip coercion
+      mean_tpm_vals <- rdf$Mean_TPM
+      rank_sd_vals <- rdf$Rank_SD
       if (length(mean_tpm_vals) >= 5 && sd(rank_sd_vals) > 0) {
         cor_test <- tryCatch(
           cor.test(log2(mean_tpm_vals + 1), rank_sd_vals, method = "spearman"),
@@ -395,21 +429,16 @@ if (!is.finite(overall_median)) {
 }
 add("")
 
-# Most/least concordant pairs
-sp_upper <- concordance$median_spearman
-diag(sp_upper) <- NA
-sp_upper[lower.tri(sp_upper)] <- NA
-sp_upper_max <- max(sp_upper, na.rm = TRUE)
-sp_upper_min <- min(sp_upper, na.rm = TRUE)
-if (is.finite(sp_upper_max) && is.finite(sp_upper_min)) {
-  best_pair <- which(sp_upper == sp_upper_max, arr.ind = TRUE)
-  worst_pair <- which(sp_upper == sp_upper_min, arr.ind = TRUE)
-  add("- **Most concordant pair:** ", rownames(sp_upper)[best_pair[1, 1]], " & ",
-      colnames(sp_upper)[best_pair[1, 2]],
-      " (rho = ", sprintf("%.3f", sp_upper_max), ")")
-  add("- **Least concordant pair:** ", rownames(sp_upper)[worst_pair[1, 1]], " & ",
-      colnames(sp_upper)[worst_pair[1, 2]],
-      " (rho = ", sprintf("%.3f", sp_upper_min), ")")
+# Most/least concordant pairs — reuse .sp_upper_masked computed in Section 2
+if (is.finite(sp_full_max) && is.finite(sp_full_min)) {
+  best_pair <- which(.sp_upper_masked == sp_full_max, arr.ind = TRUE)
+  worst_pair <- which(.sp_upper_masked == sp_full_min, arr.ind = TRUE)
+  add("- **Most concordant pair:** ", rownames(.sp_upper_masked)[best_pair[1, 1]], " & ",
+      colnames(.sp_upper_masked)[best_pair[1, 2]],
+      " (rho = ", sprintf("%.3f", sp_full_max), ")")
+  add("- **Least concordant pair:** ", rownames(.sp_upper_masked)[worst_pair[1, 1]], " & ",
+      colnames(.sp_upper_masked)[worst_pair[1, 2]],
+      " (rho = ", sprintf("%.3f", sp_full_min), ")")
 } else {
   add("- Best/worst concordant pairs could not be determined (insufficient valid correlations)")
 }
@@ -432,13 +461,69 @@ if (length(ranking_results) > 0) {
   add("- Across all gene groups: ", total_flagged, "/", total_genes,
       " genes show unstable rankings across methods.")
   if (total_flagged > 0) {
-    add("- Flagged genes: [`tables/ranking_instability_flagged.csv`](cross_method_concordance/tables/ranking_instability_flagged.csv)")
+    add("- Flagged genes: [`tables/ranking_instability_flagged.csv`](tables/ranking_instability_flagged.csv)")
   }
   add("")
 }
 
+} else if (CONCORDANCE_MODE == "cross_equivalent_gene") {
+  # cross_equivalent_gene mode: per-gene correlations across genome pairs
+  add("## 2. Equivalent-Gene Concordance")
+  add("")
+  gene_cors <- concordance$gene_correlations
+  pair_labels <- concordance$pair_labels
+  if (!is.null(gene_cors) && length(gene_cors) > 0) {
+    add("Per-gene Spearman correlations between equivalent genes across genome pairs.")
+    add("")
+    for (pi in seq_along(gene_cors)) {
+      .label <- if (!is.null(pair_labels) && pi <= length(pair_labels)) pair_labels[pi] else paste("Pair", pi)
+      .cors <- gene_cors[[pi]]
+      .finite <- .cors[is.finite(.cors)]
+      if (length(.finite) == 0) next
+      add("### ", .label)
+      add("")
+      add("- **Genes compared:** ", length(.cors))
+      add("- **Median Spearman:** ", sprintf("%.3f", median(.finite)))
+      add("- **Range:** ", sprintf("%.3f", min(.finite)), " to ", sprintf("%.3f", max(.finite)))
+      add("")
+    }
+    # Link to heatmap figure if it exists
+    add("![Equivalent Gene Concordance](cross_method_concordance/figures/equivalent_gene_heatmap.png)")
+    add("")
+  } else {
+    add("No equivalent-gene concordance results available.")
+    add("")
+  }
+
+} else {
+  # cross_gene_group mode: report on gene-vs-gene correlation matrices
+  add("## 2. Gene-vs-Gene Concordance")
+  add("")
+  gene_cor_matrices <- concordance$gene_cor_matrices
+  if (!is.null(gene_cor_matrices) && length(gene_cor_matrices) > 0) {
+    for (gg_name in names(gene_cor_matrices)) {
+      safe_name <- gsub("[^[:alnum:]_.-]", "_", gg_name)
+      cor_mat <- gene_cor_matrices[[gg_name]]
+      n_genes <- nrow(cor_mat)
+      off_diag <- cor_mat[row(cor_mat) != col(cor_mat)]
+      add("### ", gg_name)
+      add("")
+      add("- **Genes:** ", n_genes)
+      add("- **Median pairwise Spearman:** ", sprintf("%.3f", median(off_diag, na.rm = TRUE)))
+      add("- **Range:** ", sprintf("%.3f", min(off_diag, na.rm = TRUE)),
+          " to ", sprintf("%.3f", max(off_diag, na.rm = TRUE)))
+      add("")
+      add("![Gene Concordance](cross_method_concordance/figures/gene_concordance_heatmap_", safe_name, ".png)")
+      add("")
+    }
+  } else {
+    add("No gene-vs-gene concordance results available.")
+    add("")
+  }
+}  # end .has_spearman guard
+
 add("---")
-add("*Generated by HeatSeq Cross-Method Concordance Analysis*")
+add("*Generated by HeatSeq Cross-", .item_label, " Concordance Analysis*")
 
 # -----------------------------------------------
 # Write report
@@ -453,6 +538,8 @@ cat("Report saved to:", report_path, "\n")
 # Write figure interpretation guide
 # -----------------------------------------------
 
+# Figure interpretation guide is cross_method-specific (references method-specific figures)
+if (.has_spearman) {
 guide_path <- file.path(FIGURES_DIR, "figure_interpretation_guide.txt")
 guide <- c(
 "================================================================================",
@@ -638,5 +725,6 @@ paste0("Generated: ", format(Sys.time(), "%Y-%m-%d %H:%M:%S"))
 
 writeLines(guide, guide_path)
 cat("Figure interpretation guide saved to:", guide_path, "\n")
+}  # end .has_spearman guard for figure guide
 
 cat("\n[DONE] Report generation complete\n")

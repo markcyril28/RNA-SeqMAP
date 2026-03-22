@@ -40,8 +40,10 @@ common_samples <- data$common_samples
 methods <- names(tpm_matrices)
 n_methods <- length(methods)
 
-# vapply is type-safe and avoids sapply's simplify overhead — O(M) either way
-cat("Methods:", paste(vapply(methods, get_short_name, character(1)), collapse = ", "), "\n")
+# Pre-compute short names once — reused below in pair_names, build_median_cor_matrix, etc.
+# O(M) vapply; avoids redundant get_short_name() calls on lines 60, 131, 151.
+short_names <- vapply(methods, get_short_name, character(1))
+cat("Methods:", paste(short_names, collapse = ", "), "\n")
 cat("Genes:", length(common_genes), "| Samples:", length(common_samples), "\n\n")
 
 if (n_methods < 2) {
@@ -57,7 +59,7 @@ if (n_methods < 2) {
 cat("--- Computing pairwise correlations per sample ---\n")
 
 method_pairs <- combn(methods, 2, simplify = FALSE)
-pair_names <- vapply(method_pairs, function(p) paste(get_short_name(p[1]), "vs", get_short_name(p[2])), character(1))
+pair_names <- vapply(method_pairs, function(p) paste(short_names[p[1]], "vs", short_names[p[2]]), character(1))
 
 spearman_per_sample <- matrix(NA, nrow = length(common_samples), ncol = length(method_pairs),
                                dimnames = list(common_samples, pair_names))
@@ -109,9 +111,16 @@ for (i in seq_along(method_pairs)) {
     r2 <- apply(m2_valid, 2, rank, na.last = "keep")
 
     # Pearson correlation on ranks = Spearman (vectorized per column)
-    # Center each column, compute dot-product correlation
-    r1_centered <- sweep(r1, 2, colMeans(r1, na.rm = TRUE))
-    r2_centered <- sweep(r2, 2, colMeans(r2, na.rm = TRUE))
+    # Center each column — t(t(r)-cm) broadcasts without allocating a full G×S
+    # intermediate vector (rep() created one). O(G×S) with better memory reuse.
+    cm1 <- colMeans(r1, na.rm = TRUE)
+    cm2 <- colMeans(r2, na.rm = TRUE)
+    # Guard: if a column is all-NA, colMeans returns NaN → replace with 0 to avoid
+    # NaN propagation through the entire column during centering.
+    cm1[!is.finite(cm1)] <- 0
+    cm2[!is.finite(cm2)] <- 0
+    r1_centered <- t(t(r1) - cm1)
+    r2_centered <- t(t(r2) - cm2)
     # NOTE: Zeroing NAs biases correlation vs pairwise-complete Spearman when
     # many genes are unexpressed in one method. Acceptable for cross-method
     # concordance ranking (relative, not absolute) but not for formal inference.
@@ -126,7 +135,7 @@ for (i in seq_along(method_pairs)) {
 
   if (length(skipped_samples) > 0) {
     cat("  Warning: Skipped", length(skipped_samples), "samples for pair",
-        get_short_name(m1), "vs", get_short_name(m2),
+        short_names[m1], "vs", short_names[m2],
         "(fewer than", CORRELATION_MIN_GENES, "expressed genes):",
         paste(head(skipped_samples, 5), collapse = ", "),
         if (length(skipped_samples) > 5) "..." else "", "\n")
@@ -134,8 +143,13 @@ for (i in seq_along(method_pairs)) {
 }
 
 # Save per-sample correlations
-write.csv(data.frame(Sample = rownames(spearman_per_sample), spearman_per_sample, check.names = FALSE),
-          file.path(TABLES_DIR, "pairwise_spearman_per_sample.csv"), row.names = FALSE)
+.spearman_out <- data.frame(Sample = rownames(spearman_per_sample), spearman_per_sample, check.names = FALSE)
+if (.conc_use_dt) {
+  data.table::fwrite(.spearman_out, file.path(TABLES_DIR, "pairwise_spearman_per_sample.csv"))
+} else {
+  write.csv(.spearman_out, file.path(TABLES_DIR, "pairwise_spearman_per_sample.csv"), row.names = FALSE)
+}
+rm(.spearman_out)
 
 cat("  Saved per-sample Spearman correlation table\n")
 
@@ -144,8 +158,6 @@ cat("  Saved per-sample Spearman correlation table\n")
 # -----------------------------------------------
 
 cat("--- Computing median Spearman correlation matrix ---\n")
-
-short_names <- vapply(methods, get_short_name, character(1))
 
 build_median_cor_matrix <- function(per_sample_mat) {
   cor_mat <- matrix(1, nrow = n_methods, ncol = n_methods,
@@ -164,8 +176,13 @@ build_median_cor_matrix <- function(per_sample_mat) {
 
 median_spearman <- build_median_cor_matrix(spearman_per_sample)
 
-write.csv(data.frame(Method = rownames(median_spearman), median_spearman, check.names = FALSE),
-          file.path(TABLES_DIR, "median_correlation_matrix_spearman.csv"), row.names = FALSE)
+.median_out <- data.frame(Method = rownames(median_spearman), median_spearman, check.names = FALSE)
+if (.conc_use_dt) {
+  data.table::fwrite(.median_out, file.path(TABLES_DIR, "median_correlation_matrix_spearman.csv"))
+} else {
+  write.csv(.median_out, file.path(TABLES_DIR, "median_correlation_matrix_spearman.csv"), row.names = FALSE)
+}
+rm(.median_out)
 
 cat("  Spearman median correlations:\n")
 print(round(median_spearman, 3))
@@ -205,22 +222,29 @@ ht <- Heatmap(median_spearman,
   row_names_gp = gpar(fontsize = 13),
   column_names_gp = gpar(fontsize = 13),
   column_names_rot = 45,
-  column_title = "Cross-Method Concordance (Median Spearman Correlation)",
+  column_title = get_concordance_title(),
   column_title_gp = gpar(fontsize = 16, fontface = "bold"),
   heatmap_legend_param = list(
-    title = "Median\n Spearman",
+    title = "Median Spearman\nCorrelation\n(Cross-Method\nTPM)",
     legend_height = unit(5, "cm")
   ),
   width = unit(14, "cm"),
   height = unit(14, "cm")
 )
 
+.fig_layout <- calc_figure_layout(
+  row_labels = rownames(median_spearman),
+  col_labels = colnames(median_spearman),
+  col_rot = 45, hm_body_cm = c(14, 14),
+  has_dendro = TRUE, has_title = TRUE,
+  legend_width_cm = 5, font_size = 13
+)
 .dev_open <- FALSE
 tryCatch({
   png(file.path(FIGURES_DIR, "method_concordance_heatmap_spearman.png"),
-      width = 1600 / 300 * FIGURE_DPI, height = 1300 / 300 * FIGURE_DPI, res = FIGURE_DPI)
+      width = .fig_layout$width, height = .fig_layout$height, res = FIGURE_DPI)
   .dev_open <- TRUE
-  draw(ht, padding = unit(c(30, 30, 25, 40), "mm"))
+  draw(ht, padding = .fig_layout$padding)
   dev.off()
   .dev_open <- FALSE
   cat("  Saved: method_concordance_heatmap_spearman.png\n")
