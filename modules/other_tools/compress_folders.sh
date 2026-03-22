@@ -2,7 +2,9 @@
 # compress_folders.sh - Compress specified folders using 7z LZMA2 at maximum compression with 64 threads
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
 cd "$SCRIPT_DIR"
 
 THREADS=64
