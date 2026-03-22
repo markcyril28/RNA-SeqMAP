@@ -180,19 +180,18 @@ _m1_validate_fasta_gtf_chromosomes() {
 			}
 		' "$fasta_source" "$gtf" 2>/dev/null)
 	else
-		# Single awk pass over both files — replaces 3 separate awk processes.
-		# Uses FILENAME==ARGV[1] guard (same pattern as the FAI path above).
-		# FASTA: exits early after 20 unique headers. GTF: scans first 20 unique chroms.
+		# Two-pass approach with early exit: each awk process exits after collecting
+		# 20 unique names, avoiding full scan of multi-GB FASTA files.
 		# O(header_positions) instead of O(file_size) for FASTA.
+		# Trade-off: 3 awk processes but with early exit beats 1 awk scanning full FASTA
+		# without gawk-only `nextfile`.
+		local _fasta_chroms _gtf_chroms
+		_fasta_chroms=$(awk '/^>/ { sub(/^>/, ""); sub(/[[:space:]].*/, ""); if (!seen[$0]++) { print; if (++n >= 20) exit } }' "$fasta" 2>/dev/null)
+		_gtf_chroms=$(awk '!/^#/ { if (!seen[$1]++) { print $1; if (++n >= 20) exit } }' "$gtf" 2>/dev/null)
+
 		result=$(awk '
-			FILENAME == ARGV[1] && /^>/ {
-				sub(/^>/, ""); sub(/[[:space:]].*/, "")
-				if (!fasta_seen[$0]++) { fasta_n++ }
-				if (fasta_n >= 20) nextfile
-			}
-			FILENAME == ARGV[2] && !/^#/ && gtf_n < 20 {
-				if (!gtf_seen[$1]++) { gtf_n++ }
-			}
+			NR == FNR { if ($0 != "") { fasta_seen[$0]=1; fasta_n++ }; next }
+			$0 != "" { gtf_seen[$0]=1; gtf_n++ }
 			END {
 				overlap = 0
 				for (c in gtf_seen) if (c in fasta_seen) overlap++
@@ -201,7 +200,7 @@ _m1_validate_fasta_gtf_chromosomes() {
 				printf "| "
 				n=0; for (c in gtf_seen) { if (n<5) printf "%s ", c; n++ }
 			}
-		' "$fasta" "$gtf" 2>/dev/null)
+		' <(printf '%s\n' "$_fasta_chroms") <(printf '%s\n' "$_gtf_chroms") 2>/dev/null)
 	fi
 
 	if [[ -z "$result" ]]; then

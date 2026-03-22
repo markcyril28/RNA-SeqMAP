@@ -110,24 +110,25 @@ load_sample_metadata() {
 	local -n metadata_array=$2
 	
 	[[ ! -f "$metadata_file" ]] && { log_warn "Metadata file not found: $metadata_file"; return 1; }
-	
-	# Count valid sample lines (exclude comments, blanks, and header) — single pass
-	local line_count
-	line_count=$(awk '!/^#/ && !/^$/ && !/^SRR_ID/ {n++} END{print n+0}' "$metadata_file")
-	[[ $line_count -lt 2 ]] && { log_error "Metadata file must contain at least 2 samples (found: $line_count)"; return 1; }
-	
+
+	# Single-pass: count valid lines AND parse metadata simultaneously.
+	# Replaces previous two-pass approach (awk count + while-read parse).
 	# O(S) single pass: skip blank lines, comments, and header without per-line regex
-	local _line_num=0
+	local _sample_count=0
 	while IFS=$'\t' read -r srr condition batch; do
-		(( ++_line_num ))
 		[[ -z "$srr" || "$srr" == \#* ]] && continue
-		# Skip header (first non-blank line with "SRR_ID")
 		[[ "$srr" == "SRR_ID" ]] && continue
 		metadata_array["${srr}_condition"]="$condition"
 		metadata_array["${srr}_batch"]="$batch"
+		(( ++_sample_count ))
 	done < "$metadata_file"
-	
-	log_info "Loaded metadata: $(( ${#metadata_array[@]} / 2 )) samples from $metadata_file"
+
+	if [[ $_sample_count -lt 2 ]]; then
+		log_error "Metadata file must contain at least 2 samples (found: $_sample_count)"
+		return 1
+	fi
+
+	log_info "Loaded metadata: $_sample_count samples from $metadata_file"
 	return 0
 }
 
