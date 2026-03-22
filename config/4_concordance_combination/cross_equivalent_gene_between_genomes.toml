@@ -14,7 +14,7 @@
 concordance_mode = "cross_equivalent_gene"
 
 # Method to use for the cross-genome gene-level comparison
-fixed_method = "M1_HISAT2_RefGuided"
+fixed_method = "M2_HISAT2_DeNovo"
 
 # Genomes to compare
 concordance_genomes = [

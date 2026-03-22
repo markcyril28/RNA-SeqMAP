@@ -3,8 +3,10 @@
 # ==============================================================================
 # Baseline single-run defaults for run_concordance.sh.
 # Any values here can be overridden by env vars or other crosses loaded later.
+# Bare accession (no _genome/_transcripts suffix): each method auto-resolves
+# to its appropriate reference type.
 
-master_reference = "GPE001970_genome"
+master_reference = "GPE001970"
 
 methods = "M1_HISAT2_RefGuided M2_HISAT2_DeNovo M3_STAR_Align M4_Salmon_Saf M5_RSEM_Bowtie2"
 

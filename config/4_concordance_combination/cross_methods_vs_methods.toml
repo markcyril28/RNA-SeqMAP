@@ -1,12 +1,13 @@
 # ==============================================================================
 # CROSS: METHODS VS METHODS
 # ==============================================================================
-# Cross-method concordance: for a fixed reference genome, compare TPM across
-# different alignment/quantification methods. This is the default mode.
+# Cross-method concordance: compare TPM across all alignment/quantification
+# methods for a single accession. Reference-agnostic: each method auto-resolves
+# to its appropriate reference type (genome for M1/M3, transcripts for M2/M4/M5).
 
 concordance_mode = "cross_method"
 
-master_reference = "GPE001970_genome"
+master_reference = "GPE001970"
 
 methods = "M1_HISAT2_RefGuided M2_HISAT2_DeNovo M3_STAR_Align M4_Salmon_Saf M5_RSEM_Bowtie2"
 

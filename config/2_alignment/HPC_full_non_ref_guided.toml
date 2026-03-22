@@ -34,7 +34,8 @@ all_fasta_files = [
     "inputs/fasta/reference_genome/Eggplant_V4.1_transcripts.function.fa",
 ]
 
-# SRR datasets loaded from config/shared/srr_datasets.toml
+# SRR dataset file — relative to config/shared/ or absolute path
+srr_datasets = "srr_datasets.toml"
 
 # Output
 post_processing_root = "3_POST_PROC"
