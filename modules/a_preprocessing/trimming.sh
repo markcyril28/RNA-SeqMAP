@@ -57,8 +57,8 @@ _trim_single_srr() {
 	# Get trim parameters for this specific SRR from profile
 	get_trim_params "$SRR"
 	
-	local _decompress_cmd="gunzip"
-	[[ "$_TRIMMING_HAS_PIGZ" == "true" ]] && _decompress_cmd="pigz -d -p ${THREADS_PER_JOB:-4}"
+	local -a _decompress_cmd=(gunzip)
+	[[ "$_TRIMMING_HAS_PIGZ" == "true" ]] && _decompress_cmd=(pigz -d -p "${THREADS_PER_JOB:-4}")
 
 	if [[ -n "$raw2" && -f "$raw2" ]]; then
 		# ── Paired-end ──
@@ -70,15 +70,15 @@ _trim_single_srr() {
 		local tg_r1="$trim_dir/${SRR}_1_val_1.fq"
 		local tg_r2="$trim_dir/${SRR}_2_val_2.fq"
 		if [[ -f "${tg_r1}.gz" && -f "${tg_r2}.gz" ]]; then
-			$_decompress_cmd "${tg_r1}.gz" &
+			"${_decompress_cmd[@]}" "${tg_r1}.gz" &
 			local _pid1=$!
-			$_decompress_cmd "${tg_r2}.gz" &
+			"${_decompress_cmd[@]}" "${tg_r2}.gz" &
 			local _pid2=$!
-			wait $_pid1 $_pid2
+			wait "$_pid1" "$_pid2"
 		elif [[ -f "${tg_r1}.gz" ]]; then
-			$_decompress_cmd "${tg_r1}.gz"
+			"${_decompress_cmd[@]}" "${tg_r1}.gz"
 		elif [[ -f "${tg_r2}.gz" ]]; then
-			$_decompress_cmd "${tg_r2}.gz"
+			"${_decompress_cmd[@]}" "${tg_r2}.gz"
 		fi
 
 		local tmp_r1="$trim_dir/${SRR}_1_headcrop.fq"
@@ -106,7 +106,7 @@ _trim_single_srr() {
 
 		log_info "Applying HEADCROP:${HEADCROP_BASES} for $SRR..."
 		local tg_r1="$trim_dir/${SRR}_trimmed.fq"
-		[[ -f "${tg_r1}.gz" ]] && $_decompress_cmd "${tg_r1}.gz"
+		[[ -f "${tg_r1}.gz" ]] && "${_decompress_cmd[@]}" "${tg_r1}.gz"
 
 		local tmp_r1="$trim_dir/${SRR}_headcrop.fq"
 		run_with_space_time_log trimmomatic SE -threads "${THREADS_PER_JOB:-2}" \
@@ -128,19 +128,7 @@ _trim_single_srr() {
 # SEQUENTIAL TRIMMING (primary entry points)
 # ==============================================================================
 
-trim_srrs() {
-	local SRR_LIST=("$@")
-	[[ ${#SRR_LIST[@]} -eq 0 ]] && { log_error "No SRR IDs provided for trimming"; return 1; }
-	
-	local total=${#SRR_LIST[@]} current=0
-	for SRR in "${SRR_LIST[@]}"; do
-		((current++))
-		log_info "[$current/$total] Processing $SRR..."
-		_trim_single_srr "$SRR" || log_warn "Trimming failed for $SRR"
-	done
-	gzip_trimmed_fastq_files
-	log_info "All trimming completed."
-}
+# trim_srrs() — removed (dead code; superseded by download_and_trim_srrs_parallel)
 
 # ==============================================================================
 # ALTERNATIVE: Trimmomatic-only (no TrimGalore pre-step)
@@ -229,10 +217,10 @@ download_and_trim_srrs() {
 			run_with_space_time_log prefetch "$SRR" --output-directory "$raw_dir"
 			run_with_space_time_log fasterq-dump --split-files --threads "$THREADS" \
 				"$raw_dir/$SRR/$SRR.sra" -O "$raw_dir"
-			local _ccmd="gzip"
-			[[ "$_TRIMMING_HAS_PIGZ" == "true" ]] && _ccmd="pigz -p ${THREADS:-4}"
-			[[ -f "$raw_dir/${SRR}_1.fastq" ]] && $_ccmd "$raw_dir/${SRR}_1.fastq" &
-			[[ -f "$raw_dir/${SRR}_2.fastq" ]] && $_ccmd "$raw_dir/${SRR}_2.fastq" &
+			local -a _ccmd=(gzip)
+			[[ "$_TRIMMING_HAS_PIGZ" == "true" ]] && _ccmd=(pigz -p "${THREADS:-4}")
+			[[ -f "$raw_dir/${SRR}_1.fastq" ]] && "${_ccmd[@]}" "$raw_dir/${SRR}_1.fastq" &
+			[[ -f "$raw_dir/${SRR}_2.fastq" ]] && "${_ccmd[@]}" "$raw_dir/${SRR}_2.fastq" &
 			wait
 			find_raw_fastq "$SRR"
 		fi
@@ -267,7 +255,9 @@ download_and_trim_srrs_parallel() {
 	
 	export SERIALIZED_TRIM_PROFILES="$(_serialize_trim_profiles)"
 
-	export -f timestamp log log_info log_warn log_error run_with_space_time_log run_with_error_capture
+	# Export _log_impl (core logger) alongside its callers — without it, log_info/log_warn/log_error
+	# fail silently in GNU Parallel subshells because they delegate to _log_impl.
+	export -f _log_impl timestamp log log_info log_warn log_error run_with_space_time_log run_with_error_capture
 	export -f find_trimmed_fastq find_raw_fastq verify_trimming_and_cleanup
 
 	_parallel_worker() {
@@ -290,10 +280,10 @@ download_and_trim_srrs_parallel() {
 		if [[ -z "$raw1" ]]; then
 			prefetch "$SRR" --output-directory "$raw_dir" || return 1
 			fasterq-dump --split-files --threads "${THREADS_PER_JOB:-4}" "$raw_dir/$SRR/$SRR.sra" -O "$raw_dir" || return 1
-			local _ccmd="gzip"
-			[[ "$_TRIMMING_HAS_PIGZ" == "true" ]] && _ccmd="pigz -p ${THREADS_PER_JOB:-4}"
-			[[ -f "$raw_dir/${SRR}_1.fastq" ]] && $_ccmd "$raw_dir/${SRR}_1.fastq" &
-			[[ -f "$raw_dir/${SRR}_2.fastq" ]] && $_ccmd "$raw_dir/${SRR}_2.fastq" &
+			local -a _ccmd=(gzip)
+			[[ "$_TRIMMING_HAS_PIGZ" == "true" ]] && _ccmd=(pigz -p "${THREADS_PER_JOB:-4}")
+			[[ -f "$raw_dir/${SRR}_1.fastq" ]] && "${_ccmd[@]}" "$raw_dir/${SRR}_1.fastq" &
+			[[ -f "$raw_dir/${SRR}_2.fastq" ]] && "${_ccmd[@]}" "$raw_dir/${SRR}_2.fastq" &
 			wait
 			find_raw_fastq "$SRR"
 		fi
@@ -308,8 +298,8 @@ download_and_trim_srrs_parallel() {
 		local HEADCROP_BASES TAILCROP_BASES MINLEN SW_SIZE SW_QUAL
 		IFS=':' read -r HEADCROP_BASES TAILCROP_BASES MINLEN SW_SIZE SW_QUAL <<< "$profile"
 
-		local _dcmd="gunzip"
-		[[ "$_TRIMMING_HAS_PIGZ" == "true" ]] && _dcmd="pigz -d -p ${THREADS_PER_JOB:-2}"
+		local -a _dcmd=(gunzip)
+		[[ "$_TRIMMING_HAS_PIGZ" == "true" ]] && _dcmd=(pigz -d -p "${THREADS_PER_JOB:-2}")
 
 		if [[ -n "$raw2" && -f "$raw2" ]]; then
 			# ── Paired-end ──
@@ -317,14 +307,14 @@ download_and_trim_srrs_parallel() {
 			local tg_r1="$trim_dir/${SRR}_1_val_1.fq"
 			local tg_r2="$trim_dir/${SRR}_2_val_2.fq"
 			if [[ -f "${tg_r1}.gz" && -f "${tg_r2}.gz" ]]; then
-				$_dcmd "${tg_r1}.gz" &
+				"${_dcmd[@]}" "${tg_r1}.gz" &
 				local _p1=$!
-				$_dcmd "${tg_r2}.gz" &
+				"${_dcmd[@]}" "${tg_r2}.gz" &
 				local _p2=$!
-				wait $_p1 $_p2
+				wait "$_p1" "$_p2"
 			else
-				[[ -f "${tg_r1}.gz" ]] && $_dcmd "${tg_r1}.gz"
-				[[ -f "${tg_r2}.gz" ]] && $_dcmd "${tg_r2}.gz"
+				[[ -f "${tg_r1}.gz" ]] && "${_dcmd[@]}" "${tg_r1}.gz"
+				[[ -f "${tg_r2}.gz" ]] && "${_dcmd[@]}" "${tg_r2}.gz"
 			fi
 
 			trimmomatic PE -threads "${THREADS_PER_JOB:-2}" "$tg_r1" "$tg_r2" \
@@ -345,7 +335,7 @@ download_and_trim_srrs_parallel() {
 			# ── Single-end ──
 			trim_galore --cores "${THREADS_PER_JOB:-2}" "$raw1" --output_dir "$trim_dir"
 			local tg_r1="$trim_dir/${SRR}_trimmed.fq"
-			[[ -f "${tg_r1}.gz" ]] && $_dcmd "${tg_r1}.gz"
+			[[ -f "${tg_r1}.gz" ]] && "${_dcmd[@]}" "${tg_r1}.gz"
 
 			trimmomatic SE -threads "${THREADS_PER_JOB:-2}" "$tg_r1" \
 				"${tg_r1}.tmp" HEADCROP:${HEADCROP_BASES}
@@ -394,7 +384,9 @@ trim_srrs_trimmomatic_parallel() {
 	
 	export SERIALIZED_TRIM_PROFILES="$(_serialize_trim_profiles)"
 
-	export -f timestamp log log_info log_warn log_error run_with_space_time_log run_with_error_capture
+	# Export _log_impl (core logger) alongside its callers — without it, log_info/log_warn/log_error
+	# fail silently in GNU Parallel subshells because they delegate to _log_impl.
+	export -f _log_impl timestamp log log_info log_warn log_error run_with_space_time_log run_with_error_capture
 	export -f find_trimmed_fastq find_raw_fastq verify_trimming_and_cleanup
 
 	_trimmomatic_parallel_worker() {

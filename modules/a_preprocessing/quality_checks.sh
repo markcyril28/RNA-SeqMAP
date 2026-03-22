@@ -189,28 +189,4 @@ run_quality_control_parallel() {
 # QC SUMMARY FUNCTIONS
 # ==============================================================================
 
-generate_qc_summary() {
-	local output_file="${1:-$FASTQC_ROOT/qc_summary.txt}"
-	
-	log_step "Generating QC Summary"
-	
-	{
-		echo "=========================================="
-		echo "FastQC Summary Report"
-		local _qc_ts; printf -v _qc_ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _qc_ts=$(date '+%Y-%m-%d %H:%M:%S')
-		echo "Generated: $_qc_ts"
-		echo "=========================================="
-		echo ""
-		
-		# Single awk pass over all summary files — replaces S cat + S echo subprocesses
-		# with 1 awk process. O(S × lines) total, O(1) process spawns.
-		shopt -s nullglob
-		local _summary_files=("$FASTQC_ROOT"/*/*_fastqc/summary.txt)
-		shopt -u nullglob
-		if [[ ${#_summary_files[@]} -gt 0 ]]; then
-			awk 'FNR==1 { if (NR>1) print ""; f=FILENAME; sub(/.*\//, "", f); sub(/_fastqc\/summary\.txt$/, "", f); print "Sample: " f } {print}' "${_summary_files[@]}"
-		fi
-	} > "$output_file"
-	
-	log_info "QC summary saved to: $output_file"
-}
+# generate_qc_summary() — removed (dead code; never called by active pipeline)

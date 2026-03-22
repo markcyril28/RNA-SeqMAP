@@ -51,16 +51,16 @@ download_srrs() {
 			"$raw_dir/$SRR/$SRR.sra" -O "$raw_dir"
 		
 		# Compress downloaded files (use shared pigz detection, avoid per-SRR command -v spawn)
-		local _ccmd="${_SHARED_GZIP_C:-gzip}"
-		[[ "$_ccmd" == "pigz" ]] && _ccmd="pigz -p ${THREADS:-4}"
+		local -a _ccmd=("${_SHARED_GZIP_C:-gzip}")
+		[[ "${_ccmd[0]}" == "pigz" ]] && _ccmd=(pigz -p "${THREADS:-4}")
 		local _p1 _p2
 		if [[ -f "$raw_dir/${SRR}_1.fastq" && -f "$raw_dir/${SRR}_2.fastq" ]]; then
-			$_ccmd "$raw_dir/${SRR}_1.fastq" & _p1=$!
-			$_ccmd "$raw_dir/${SRR}_2.fastq" & _p2=$!
-			wait $_p1 $_p2
+			"${_ccmd[@]}" "$raw_dir/${SRR}_1.fastq" & _p1=$!
+			"${_ccmd[@]}" "$raw_dir/${SRR}_2.fastq" & _p2=$!
+			wait "$_p1" "$_p2"
 		else
-			[[ -f "$raw_dir/${SRR}_1.fastq" ]] && $_ccmd "$raw_dir/${SRR}_1.fastq"
-			[[ -f "$raw_dir/${SRR}_2.fastq" ]] && $_ccmd "$raw_dir/${SRR}_2.fastq"
+			[[ -f "$raw_dir/${SRR}_1.fastq" ]] && "${_ccmd[@]}" "$raw_dir/${SRR}_1.fastq"
+			[[ -f "$raw_dir/${SRR}_2.fastq" ]] && "${_ccmd[@]}" "$raw_dir/${SRR}_2.fastq"
 		fi
 	done
 	log_info "All downloads completed."
@@ -84,7 +84,9 @@ download_srrs_parallel() {
 	log_info "Running parallel downloads with GNU Parallel (JOBS=${JOBS:-2})"
 	export PATH CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_EXE
 	export RAW_DIR_ROOT TRIM_DIR_ROOT THREADS THREADS_PER_JOB
-	export -f timestamp log log_info log_warn log_error find_trimmed_fastq find_raw_fastq _srr_already_downloaded
+	# Export _log_impl (core logger) alongside its callers — without it, log_info/log_warn/log_error
+	# fail silently in GNU Parallel subshells because they delegate to _log_impl.
+	export -f _log_impl timestamp log log_info log_warn log_error find_trimmed_fastq find_raw_fastq _srr_already_downloaded
 	
 	_download_worker() {
 		local SRR="$1"
@@ -102,10 +104,12 @@ download_srrs_parallel() {
 		
 		prefetch "$SRR" --output-directory "$raw_dir" || return 1
 		fasterq-dump --split-files --threads "${THREADS_PER_JOB:-2}" "$raw_dir/$SRR/$SRR.sra" -O "$raw_dir" || return 1
-		local _ccmd="${_SHARED_GZIP_C:-gzip}"
-		[[ "$_ccmd" == "pigz" ]] && _ccmd="pigz -p ${THREADS_PER_JOB:-2}"
-		[[ -f "$raw_dir/${SRR}_1.fastq" ]] && $_ccmd "$raw_dir/${SRR}_1.fastq"
-		[[ -f "$raw_dir/${SRR}_2.fastq" ]] && $_ccmd "$raw_dir/${SRR}_2.fastq"
+		local -a _ccmd=("${_SHARED_GZIP_C:-gzip}")
+		[[ "${_ccmd[0]}" == "pigz" ]] && _ccmd=(pigz -p "${THREADS_PER_JOB:-2}")
+		# Compress R1/R2 concurrently — paired-end gzip is I/O-bound, ~2x faster with overlap
+		[[ -f "$raw_dir/${SRR}_1.fastq" ]] && "${_ccmd[@]}" "$raw_dir/${SRR}_1.fastq" &
+		[[ -f "$raw_dir/${SRR}_2.fastq" ]] && "${_ccmd[@]}" "$raw_dir/${SRR}_2.fastq" &
+		wait
 	}
 	export -f _download_worker
 	

@@ -78,6 +78,8 @@ find_trimmed_fastq() {
 			for _v in "${_all_vals[@]}"; do
 				[[ "$_v" == *val_1* && -f "$_v" ]] && trimmed1="$_v"
 				[[ "$_v" == *val_2* && -f "$_v" ]] && trimmed2="$_v"
+				# Early exit once both files found — avoids O(n) unnecessary glob iterations
+				[[ -n "$trimmed1" && -n "$trimmed2" ]] && break
 			done
 		# Single-end patterns (compressed first)
 		elif [[ -f "$TrimGalore_DIR/${SRR}_trimmed.fq.gz" ]]; then

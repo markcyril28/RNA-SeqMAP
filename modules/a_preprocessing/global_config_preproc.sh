@@ -105,10 +105,3 @@ get_trim_params() {
 
 # Initialize the mapping on source
 init_srr_trim_profiles
-
-# ==============================================================================
-# INITIALIZE PREPROCESSING DIRECTORIES
-# ==============================================================================
-init_preproc_directories() {
-	mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT"
-}
