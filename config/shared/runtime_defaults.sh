@@ -28,7 +28,9 @@ fi
 # ==============================================================================
 
 # Resolve relative to this file's location (two levels up from config/shared/)
-_RUNTIME_DEFAULTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_RUNTIME_DEFAULTS_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$_RUNTIME_DEFAULTS_DIR" == "${BASH_SOURCE[0]}" ]] && _RUNTIME_DEFAULTS_DIR="."
+_RUNTIME_DEFAULTS_DIR="$(cd "$_RUNTIME_DEFAULTS_DIR" && pwd)"
 source "${_RUNTIME_DEFAULTS_DIR}/../../modules/modules_loader.sh"
 unset _RUNTIME_DEFAULTS_DIR
 
