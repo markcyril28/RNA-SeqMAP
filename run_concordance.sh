@@ -31,7 +31,10 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve script directory: parameter expansion avoids nested $(dirname) subshell
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
 BASE_DIR="${SCRIPT_DIR}"
 REPORT_BASE="${REPORT_BASE:-${BASE_DIR}/4_CONCORDANCE_ANALYSIS}"
 
@@ -39,8 +42,11 @@ REPORT_BASE="${REPORT_BASE:-${BASE_DIR}/4_CONCORDANCE_ANALYSIS}"
 # CONDA ENVIRONMENT
 #===============================================================================
 
-# Skip conda hook if already in the gea environment (~0.3-0.5s saved per invocation)
-if [[ "${CONDA_DEFAULT_ENV:-}" != "gea" ]]; then
+# Activate conda env only if not already active — child processes (bash "$0")
+# inherit CONDA_DEFAULT_ENV but not the conda PATH entries from the parent shell,
+# so we must always run the hook. Skip only when PATH is already configured.
+# O(1) string match avoids ~0.3-0.5s conda hook overhead per child process.
+if [[ "${CONDA_DEFAULT_ENV:-}" != "gea" ]] || ! command -v Rscript &>/dev/null; then
     eval "$(conda shell.bash hook 2>/dev/null)" 2>/dev/null || true
     conda activate gea 2>/dev/null || true
 fi
@@ -69,7 +75,8 @@ CONFIG_CROSS_DIR="${CONCORDANCE_CONFIG_CROSS_DIR:-${BASE_DIR}/config/4_concordan
 
 # Analysis steps to run (comment out entries to skip)
 # ─────────────────────────────────────────────────────
-if [[ ! "$(declare -p ANALYSES 2>/dev/null)" == "declare -a"* ]]; then
+# Guard: only set defaults if ANALYSES is not already defined as an array
+if [[ "$(declare -p ANALYSES 2>/dev/null)" != "declare -a"* ]]; then
     ANALYSES=(
         "Load_Matrices"                 # Step 1: Load & harmonize matrices (required by all others)
         "Quantification_Concordance"    # Step 2: Compare quantification across methods
@@ -81,9 +88,9 @@ fi
 # Figure resolution in DPI (300–600)
 FIGURE_DPI="${FIGURE_DPI:-300}"
 
-# Clear previous outputs before running
-CLEAR_LOGS="TRUE"
-CLEAR_OUTPUT_FOLDER="TRUE"
+# Clear previous outputs before running (respect parent env in child dispatch)
+CLEAR_LOGS="${CLEAR_LOGS:-TRUE}"
+CLEAR_OUTPUT_FOLDER="${CLEAR_OUTPUT_FOLDER:-TRUE}"
 
 # Optional curated config list (comment in/out as needed).
 # Entries can be:
@@ -93,8 +100,9 @@ CLEAR_OUTPUT_FOLDER="TRUE"
 CONCORDANCE_CONFIGS=(
     #"defaults.toml"
     "cross_genomes_vs_genomes.toml"
+    "cross_equivalent_gene_between_genomes.toml"
     "cross_methods_vs_methods.toml"
-    "cross_genes_vs_genes.toml"
+    "cross_within_gene_group_vs_within_gene_group.toml"
     #"cross_full_factorial_example.toml"
 )
 
@@ -151,9 +159,17 @@ if [[ -n "$CONFIG_INPUT" ]]; then
     if [[ -f "$CONFIG_INPUT" ]]; then
         source_config_file "$CONFIG_INPUT"
     elif [[ -d "$CONFIG_INPUT" ]]; then
-        while IFS= read -r _cfg; do
+        # Bash glob + mapfile avoids find+sort subprocess pair. O(F) where F = config files.
+        _cfg_files=()
+        for _cfg in "$CONFIG_INPUT"/*.toml "$CONFIG_INPUT"/*.sh; do
+            [[ -f "$_cfg" ]] && _cfg_files+=("$_cfg")
+        done
+        # Sort for deterministic order (globs are locale-sorted but toml/sh interleave)
+        IFS=$'\n' _cfg_files=($(printf '%s\n' "${_cfg_files[@]}" | sort)); unset IFS
+        for _cfg in "${_cfg_files[@]}"; do
             source_config_file "$_cfg"
-        done < <(find "$CONFIG_INPUT" -maxdepth 1 -type f \( -name "*.toml" -o -name "*.sh" \) | sort)
+        done
+        unset _cfg_files
     elif [[ -f "${CONFIG_CROSS_DIR}/${CONFIG_INPUT}" ]]; then
         source_config_file "${CONFIG_CROSS_DIR}/${CONFIG_INPUT}"
     elif [[ -f "${CONFIG_CROSS_DIR}/${CONFIG_INPUT}.toml" ]]; then
@@ -196,7 +212,7 @@ sanitize_tag() {
 #===============================================================================
 
 REPORT_BASE="${REPORT_BASE:-${BASE_DIR}/4_CONCORDANCE_ANALYSIS}"
-OUTPUT_DIR="${OUTPUT_DIR:-${REPORT_BASE}/cross_method_concordance}"
+OUTPUT_DIR="${OUTPUT_DIR:-${REPORT_BASE}}"
 ALIGNMENT_BASE="${ALIGNMENT_BASE:-${BASE_DIR}/2_ALIGNMENT_RESULTs}"
 POST_PROC_BASE="${POST_PROC_BASE:-${BASE_DIR}/3_POST_PROC}"
 ANALYSIS_MODULES_DIR="${BASE_DIR}/modules/c_post_processing/analysis_modules"
@@ -230,6 +246,14 @@ ERROR_WARN_DIR="${CONCORDANCE_LOG_BASE}/error_warn_logs"
 SOFTWARE_CATALOG_DIR="${CONCORDANCE_LOG_BASE}/software_catalogs"
 GPU_LOG_DIR="${CONCORDANCE_LOG_BASE}/gpu_log"
 export LOG_DIR TIME_DIR SPACE_DIR SPACE_TIME_DIR ERROR_WARN_DIR SOFTWARE_CATALOG_DIR GPU_LOG_DIR
+
+# Ensure log directories exist before setup_logging (which may skip mkdir
+# if LOGGING_INITIALIZED was inherited from a parent process).
+mkdir -p "$LOG_DIR" "$TIME_DIR" "$SPACE_DIR" "$SPACE_TIME_DIR" \
+         "$ERROR_WARN_DIR" "$SOFTWARE_CATALOG_DIR" "$GPU_LOG_DIR" 2>/dev/null || true
+
+# Reset so setup_logging re-derives file paths for this concordance run
+unset LOGGING_INITIALIZED
 
 if declare -f setup_logging &>/dev/null; then
     setup_logging "$CLEAR_LOGS"
@@ -266,9 +290,9 @@ _throttle_pids() {
 # Optional multi-config mode:
 # When multiple CONCORDANCE_CONFIGS are active and we're not already in single-config
 # child mode, dispatch a separate child process per config with an isolated output folder.
-if [[ -z "${__CONCORDANCE_OVERRIDE_SINGLE_CONFIG:-}" && \
-      "$(declare -p CONCORDANCE_CONFIGS 2>/dev/null)" == "declare -a"* && \
-      ${#CONCORDANCE_CONFIGS[@]} -gt 1 ]]; then
+if [[ -z "${__CONCORDANCE_OVERRIDE_SINGLE_CONFIG:-}" ]] && \
+   [[ "$(declare -p CONCORDANCE_CONFIGS 2>/dev/null)" == "declare -a"* ]] && \
+   [[ ${#CONCORDANCE_CONFIGS[@]} -gt 1 ]]; then
     _parent_report_base="${REPORT_BASE}"
     _overall_rc=0
 
@@ -279,11 +303,16 @@ if [[ -z "${__CONCORDANCE_OVERRIDE_SINGLE_CONFIG:-}" && \
     for _cfg in "${CONCORDANCE_CONFIGS[@]}"; do
         _throttle_pids _cfg_pids
         _cfg_basename="${_cfg##*/}"
-        _cfg_tag="${_cfg_basename%.*}"
+        _cfg_tag="${_cfg_basename%.*}_concordance"
         log_step "Launching concordance for config: ${_cfg_basename}"
+        # Give each child a unique RUN_ID to prevent log file collisions
+        # when multiple children start within the same second.
+        printf -v _child_run_id '%(%Y%m%d_%H%M%S)T' -1 2>/dev/null || _child_run_id=$(date +%Y%m%d_%H%M%S)
+        _child_run_id="${_child_run_id}_${_cfg_tag}"
         __CONCORDANCE_OVERRIDE_REPORT_BASE="${_parent_report_base}/${_cfg_tag}" \
         __CONCORDANCE_OVERRIDE_SINGLE_CONFIG="${_cfg}" \
         CONCORDANCE_LOG_BASE="${CONCORDANCE_LOG_BASE}" \
+        RUN_ID="${_child_run_id}" LOGGING_INITIALIZED="" \
         CLEAR_LOGS=FALSE CLEAR_OUTPUT_FOLDER=FALSE \
         bash "$0" ${REINVOKE_ARGS[@]+"${REINVOKE_ARGS[@]}"} &
         _cfg_pids+=($!)
@@ -318,11 +347,14 @@ if [[ "${RUN_ALL_MASTER_REFERENCES^^}" == "TRUE" ]]; then
         for _ref in "${MASTER_REFERENCES[@]}"; do
             _throttle_pids _ref_pids
             log_step "Launching concordance for reference: ${_ref}"
+            printf -v _child_run_id '%(%Y%m%d_%H%M%S)T' -1 2>/dev/null || _child_run_id=$(date +%Y%m%d_%H%M%S)
+            _child_run_id="${_child_run_id}_${_ref}"
             __CONCORDANCE_OVERRIDE_REPORT_BASE="${_parent_report_base}/${_ref}" \
             __CONCORDANCE_OVERRIDE_MASTER_REFERENCE="${_ref}" \
             __CONCORDANCE_OVERRIDE_RUN_ALL_MASTER_REFERENCES="FALSE" \
             __CONCORDANCE_OVERRIDE_SINGLE_CONFIG="${__CONCORDANCE_OVERRIDE_SINGLE_CONFIG:-}" \
             CONCORDANCE_LOG_BASE="${CONCORDANCE_LOG_BASE}" \
+            RUN_ID="${_child_run_id}" LOGGING_INITIALIZED="" \
             CLEAR_LOGS=FALSE CLEAR_OUTPUT_FOLDER=FALSE \
             bash "$0" ${REINVOKE_ARGS[@]+"${REINVOKE_ARGS[@]}"} &
             _ref_pids+=($!)
@@ -365,11 +397,14 @@ if [[ "${RUN_ALL_METHOD_COMBINATIONS^^}" == "TRUE" ]]; then
             _methods="${_combo//[,|]/ }"
             _combo_tag="$(sanitize_tag "$_combo")"
             log_step "Launching concordance for methods: ${_methods}"
+            printf -v _child_run_id '%(%Y%m%d_%H%M%S)T' -1 2>/dev/null || _child_run_id=$(date +%Y%m%d_%H%M%S)
+            _child_run_id="${_child_run_id}_methods_${_combo_tag}"
             __CONCORDANCE_OVERRIDE_REPORT_BASE="${_parent_report_base}/methods_${_combo_tag}" \
             __CONCORDANCE_OVERRIDE_METHODS="${_methods}" \
             __CONCORDANCE_OVERRIDE_RUN_ALL_METHOD_COMBINATIONS="FALSE" \
             __CONCORDANCE_OVERRIDE_SINGLE_CONFIG="${__CONCORDANCE_OVERRIDE_SINGLE_CONFIG:-}" \
             CONCORDANCE_LOG_BASE="${CONCORDANCE_LOG_BASE}" \
+            RUN_ID="${_child_run_id}" LOGGING_INITIALIZED="" \
             CLEAR_LOGS=FALSE CLEAR_OUTPUT_FOLDER=FALSE \
             bash "$0" ${REINVOKE_ARGS[@]+"${REINVOKE_ARGS[@]}"} &
             _combo_pids+=($!)
@@ -411,11 +446,14 @@ if [[ "${RUN_ALL_GENE_GROUP_COMBINATIONS^^}" == "TRUE" ]]; then
             _groups="${_combo//|/,}"
             _combo_tag="$(sanitize_tag "$_combo")"
             log_step "Launching concordance for gene groups: ${_groups}"
+            printf -v _child_run_id '%(%Y%m%d_%H%M%S)T' -1 2>/dev/null || _child_run_id=$(date +%Y%m%d_%H%M%S)
+            _child_run_id="${_child_run_id}_genes_${_combo_tag}"
             __CONCORDANCE_OVERRIDE_REPORT_BASE="${_parent_report_base}/genes_${_combo_tag}" \
             __CONCORDANCE_OVERRIDE_GENE_GROUPS="${_groups}" \
             __CONCORDANCE_OVERRIDE_RUN_ALL_GENE_GROUP_COMBINATIONS="FALSE" \
             __CONCORDANCE_OVERRIDE_SINGLE_CONFIG="${__CONCORDANCE_OVERRIDE_SINGLE_CONFIG:-}" \
             CONCORDANCE_LOG_BASE="${CONCORDANCE_LOG_BASE}" \
+            RUN_ID="${_child_run_id}" LOGGING_INITIALIZED="" \
             CLEAR_LOGS=FALSE CLEAR_OUTPUT_FOLDER=FALSE \
             bash "$0" ${REINVOKE_ARGS[@]+"${REINVOKE_ARGS[@]}"} &
             _gg_combo_pids+=($!)
@@ -439,7 +477,7 @@ fi
 # If MASTER_REFERENCE was not explicitly provided, and a sourced config set
 # MASTER_REFERENCES as an array, take the first element
 # (matches run_post_processing.sh behaviour).
-if [[ -z "${MASTER_REFERENCE:-}" && "$(declare -p MASTER_REFERENCES 2>/dev/null)" == "declare -a"* ]]; then
+if [[ -z "${MASTER_REFERENCE:-}" ]] && [[ "$(declare -p MASTER_REFERENCES 2>/dev/null)" == "declare -a"* ]]; then
     MASTER_REFERENCE="${MASTER_REFERENCES[0]}"
 fi
 # Default must match 0_concordance_config.R and 0_shared_config.R ("Eggplant_V4.1")
@@ -447,8 +485,12 @@ MASTER_REFERENCE="${MASTER_REFERENCE:-Eggplant_V4.1}"
 
 # Methods to compare (space-separated string).
 # If a sourced config set METHODS as an array, flatten it to a string.
+# Must unset array before reassignment — bash arrays cannot be exported to child processes.
 if [[ "$(declare -p METHODS 2>/dev/null)" == "declare -a"* ]]; then
-    METHODS="${METHODS[*]}"
+    _methods_str="${METHODS[*]}"
+    unset METHODS
+    METHODS="$_methods_str"
+    unset _methods_str
 fi
 METHODS="${METHODS:-
     M1_HISAT2_RefGuided 
@@ -536,7 +578,8 @@ for _probe_dir in "${_transcript_ref_dirs[@]}"; do
             [[ -d "$_candidate" ]] || continue
             _found_ref="${_candidate%/}"
             _found_ref="${_found_ref##*/}"
-            log_info "Auto-derived transcript ref '${_transcript_ref}' not found in $(basename "$(dirname "$_probe_dir")"); using '${_found_ref}'"
+            _parent_dir="${_probe_dir%/*}"
+            log_info "Auto-derived transcript ref '${_transcript_ref}' not found in ${_parent_dir##*/}; using '${_found_ref}'"
             _transcript_ref="$_found_ref"
             break 2
         done
@@ -559,6 +602,7 @@ if [[ "$(declare -p GENE_GROUPS 2>/dev/null)" == "declare -a"* ]]; then
     for _gg in "${GENE_GROUPS[@]}"; do
         _gg_joined="${_gg_joined:+${_gg_joined},}${_gg}"
     done
+    unset GENE_GROUPS
     GENE_GROUPS="$_gg_joined"
     unset _gg_joined _gg
 fi
@@ -622,12 +666,13 @@ CONCORDANCE_MODE="${CONCORDANCE_MODE:-cross_method}"
 FIXED_METHOD="${FIXED_METHOD:-}"
 
 # Build CONCORDANCE_GENOMES_STR from array for R (semicolon-separated)
+# Must unset array before reassignment — bash arrays cannot be exported to child processes.
 CONCORDANCE_GENOMES_STR=""
 if [[ "$(declare -p CONCORDANCE_GENOMES 2>/dev/null)" == "declare -a"* ]]; then
     for _g in "${CONCORDANCE_GENOMES[@]}"; do
         CONCORDANCE_GENOMES_STR="${CONCORDANCE_GENOMES_STR:+${CONCORDANCE_GENOMES_STR};}${_g}"
     done
-    unset _g
+    unset _g CONCORDANCE_GENOMES
 fi
 
 export BASE_DIR MASTER_REFERENCE METHODS METHOD_REF_DIRS_STR
@@ -637,7 +682,20 @@ export CONCORDANCE_SCRIPT_DIR ANALYSIS_MODULES_DIR UTILITIES_DIR
 export OUTPUT_DIR ALIGNMENT_BASE POST_PROC_BASE REPORT_BASE
 export FIGURE_DPI
 CONCORDANCE_GENOMES="${CONCORDANCE_GENOMES_STR}"
+# Per-genome gene group CSV mapping for cross-genome orthology (positional row correspondence)
+# GENOME_GENE_GROUPS_MAP is set by TOML as a flat string; export as-is for R parsing.
+export GENOME_GENE_GROUPS_MAP="${GENOME_GENE_GROUPS_MAP:-}"
 export CONCORDANCE_MODE FIXED_METHOD CONCORDANCE_GENOMES_STR CONCORDANCE_GENOMES
+
+# Set CURRENT_METHOD for 0_shared_config.R compatibility (avoids warning)
+if [[ -z "${CURRENT_METHOD:-}" ]]; then
+    if [[ -n "${FIXED_METHOD:-}" ]]; then
+        export CURRENT_METHOD="${FIXED_METHOD}"
+    elif [[ -n "${METHODS:-}" ]]; then
+        CURRENT_METHOD="${METHODS%% *}"
+        export CURRENT_METHOD
+    fi
+fi
 
 #===============================================================================
 # RUN ANALYSIS PIPELINE
@@ -657,6 +715,10 @@ case "${CONCORDANCE_MODE}" in
     cross_genome)
         STEP1_SCRIPT="1_load_matrices_cross_genome.R"
         STEP2_SCRIPT="2_quantification_concordance.R"
+        ;;
+    cross_equivalent_gene)
+        STEP1_SCRIPT="1_load_matrices_cross_genome.R"
+        STEP2_SCRIPT="2_equivalent_gene_concordance.R"
         ;;
     cross_gene_group)
         STEP1_SCRIPT="1_load_matrices_cross_gene_group.R"
@@ -686,6 +748,14 @@ if analysis_enabled "Load_Matrices"; then
     run_step 1 "Load & Harmonize Matrices"    "${STEP1_SCRIPT}"
 else
     log_info "Skipping Step 1 (Load_Matrices)"
+fi
+
+# Check if Step 1 wrote a skip sentinel (e.g., zero common genes in cross_genome mode)
+if [[ -f "${OUTPUT_DIR}/.skip_sentinel" ]]; then
+    _skip_reason=$(<"${OUTPUT_DIR}/.skip_sentinel")
+    log_info "Analysis skipped by Step 1: ${_skip_reason}"
+    log_step "CONCORDANCE ANALYSIS SKIPPED (mode: ${CONCORDANCE_MODE})"
+    exit 0
 fi
 
 # Steps 2 and 3 are independent (both read HARMONIZED_RDS, write separate outputs).
@@ -750,13 +820,27 @@ else
 fi
 
 log_step "CONCORDANCE ANALYSIS COMPLETE (mode: ${CONCORDANCE_MODE})"
-log_info "Report:  ${REPORT_BASE}/cross_method_concordance_report.md"
+# Report filename matches R prefix: cross_method, cross_genome, or cross_gene_group
+_report_prefix="${CONCORDANCE_MODE:-cross_method}"
+log_info "Report:  ${REPORT_BASE}/${_report_prefix}_concordance_report.md"
 log_info "Figures: ${OUTPUT_DIR}/figures/"
 log_info "Tables:  ${OUTPUT_DIR}/tables/"
 
-# Copy logs into the output folder for self-contained results
+# Copy logs into the output folder for self-contained results.
+# In multi-config child mode, only copy this child's own log files (by RUN_ID prefix)
+# to avoid a race condition where sibling children concurrently cp -r the shared log dir,
+# producing incomplete/stale log snapshots.
 if [[ -d "${CONCORDANCE_LOG_BASE}" ]]; then
     mkdir -p "${OUTPUT_DIR}/logs"
-    cp -r "${CONCORDANCE_LOG_BASE}/." "${OUTPUT_DIR}/logs/" 2>/dev/null || true
+    if [[ -n "${__CONCORDANCE_OVERRIDE_SINGLE_CONFIG:-}" && -n "${RUN_ID:-}" ]]; then
+        # Child mode: copy only files matching this child's RUN_ID to avoid race
+        for _lf in "${CONCORDANCE_LOG_BASE}"/*"${RUN_ID}"*; do
+            [[ -f "$_lf" ]] && cp "$_lf" "${OUTPUT_DIR}/logs/" 2>/dev/null || true
+        done
+        unset _lf
+    else
+        # Single-config or parent mode: safe to copy everything
+        cp -r "${CONCORDANCE_LOG_BASE}/." "${OUTPUT_DIR}/logs/" 2>/dev/null || true
+    fi
     log_info "Logs:    ${OUTPUT_DIR}/logs/"
 fi
