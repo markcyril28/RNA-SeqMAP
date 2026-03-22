@@ -156,6 +156,10 @@ fi
 # CONFIG LOOP
 #===============================================================================
 
+# Global CSV cache persists across configs — avoids re-parsing the same SRR CSV
+# when multiple configs reference the same datasets. O(datasets) instead of O(configs × datasets).
+declare -A _GLOBAL_SRR_CACHE=()
+
 for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
 
     [[ "$CONFIG_FILE" != /* ]] && CONFIG_FILE="$SCRIPT_DIR/$CONFIG_FILE"
@@ -181,21 +185,28 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
     [[ "$CLEAR_OUTPUT_FOLDER" == "TRUE" ]] && OVERWRITE_EXISTING="TRUE" || OVERWRITE_EXISTING="FALSE"
     export AVAILABLE_RAM_GB GPU_VRAM_GB OVERWRITE_EXISTING FIGURE_DPI
 
-    # Build combined SRR list and cache per-dataset results (avoids re-parsing later)
+    # Build combined SRR list using global cache — avoids re-parsing CSVs across configs
     SRR_COMBINED_LIST=()
     declare -A _CACHED_SRR_LISTS=()
     for dataset in "${SRR_DATASETS[@]}"; do
-        csv_file="$SRR_CSV_DIR/${dataset}.csv"
-        if [[ -f "$csv_file" ]]; then
-            _cached=$(parse_srr_csv "$csv_file")
-            if [[ -n "$_cached" ]]; then
-                _CACHED_SRR_LISTS["$dataset"]="$_cached"
-                mapfile -t -O "${#SRR_COMBINED_LIST[@]}" SRR_COMBINED_LIST <<< "$_cached"
-            else
-                log_warn "No valid SRR entries in: $csv_file"
-            fi
+        # Check global cross-config cache first
+        if [[ -n "${_GLOBAL_SRR_CACHE[$dataset]+set}" ]]; then
+            _cached="${_GLOBAL_SRR_CACHE[$dataset]}"
         else
-            log_warn "SRR CSV not found: $csv_file"
+            csv_file="$SRR_CSV_DIR/${dataset}.csv"
+            if [[ -f "$csv_file" ]]; then
+                _cached=$(parse_srr_csv "$csv_file")
+                [[ -n "$_cached" ]] && _GLOBAL_SRR_CACHE["$dataset"]="$_cached"
+            else
+                log_warn "SRR CSV not found: $csv_file"
+                _cached=""
+            fi
+        fi
+        if [[ -n "$_cached" ]]; then
+            _CACHED_SRR_LISTS["$dataset"]="$_cached"
+            mapfile -t -O "${#SRR_COMBINED_LIST[@]}" SRR_COMBINED_LIST <<< "$_cached"
+        else
+            log_warn "No valid SRR entries for dataset: $dataset"
         fi
     done
 
@@ -399,4 +410,6 @@ done
 
 log_step "All Configs Complete"
 log_info "Configs run: ${#PIPELINE_CONFIGS[@]} | Log: $LOG_FILE | Time: $TIME_FILE"
-log_step "Pipeline completed at $(date)"
+# O(1) bash builtin — avoids $(date) subprocess fork
+_final_ts=""; printf -v _final_ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _final_ts=$(date '+%Y-%m-%d %H:%M:%S')
+log_step "Pipeline completed at $_final_ts"
