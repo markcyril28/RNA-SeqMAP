@@ -98,30 +98,35 @@ if (exists(".METHOD_LOADERS_SOURCED") && .METHOD_LOADERS_SOURCED) {
   # "Eggplant_V4.1_genome" vs "Eggplant_V4.1") by trying suffix variants.
 
   .resolve_ref_dir <- function(parent_dir, ref_dir) {
-    # Helper: TRUE if dir exists and contains at least one subdirectory.
-    # Prevents returning an empty directory as a valid data location (e.g.,
-    # Eggplant_V4.1/ exists but data lives in Eggplant_V4.1_transcripts.function/).
-    .dir_has_content <- function(d) {
-      dir.exists(d) && length(list.dirs(d, recursive = FALSE, full.names = FALSE)) > 0
+    if (!dir.exists(parent_dir)) return(NULL)
+    # Single list.dirs() up front replaces up to 4× dir.exists() + 4× list.dirs()
+    # + 1× list.dirs(parent_dir) = 9 syscalls → 1 listing + O(1) match() lookups.
+    # Called 1-2× per method × 5 methods per concordance run.
+    .all_children <- list.dirs(parent_dir, recursive = FALSE, full.names = TRUE)
+    if (length(.all_children) == 0L) return(NULL)
+    .child_names <- basename(.all_children)
+    # Helper: TRUE if dir has at least one subdirectory (content check)
+    .has_content <- function(d) {
+      length(list.dirs(d, recursive = FALSE, full.names = FALSE)) > 0
     }
 
-    exact <- file.path(parent_dir, ref_dir)
-    if (.dir_has_content(exact)) return(exact)
+    # Try exact match via O(1) hash lookup instead of filesystem stat
+    .idx <- match(ref_dir, .child_names)
+    if (!is.na(.idx) && .has_content(.all_children[.idx])) return(.all_children[.idx])
     # Try without _genome / _transcripts suffix
     stripped <- sub("_(genome|transcripts)(\\..+)?$", "", ref_dir)
     if (stripped != ref_dir) {
-      alt <- file.path(parent_dir, stripped)
-      if (.dir_has_content(alt)) return(alt)
+      .idx <- match(stripped, .child_names)
+      if (!is.na(.idx) && .has_content(.all_children[.idx])) return(.all_children[.idx])
     }
     # Try adding _genome suffix
-    alt <- file.path(parent_dir, paste0(ref_dir, "_genome"))
-    if (.dir_has_content(alt)) return(alt)
-    # Glob: match any dir starting with the base name
-    candidates <- list.dirs(parent_dir, recursive = FALSE, full.names = TRUE)
+    .idx <- match(paste0(ref_dir, "_genome"), .child_names)
+    if (!is.na(.idx) && .has_content(.all_children[.idx])) return(.all_children[.idx])
+    # Glob: match any dir starting with the base name (reuses cached listing)
     base_pattern <- paste0("^", gsub("([.()])", "\\\\\\1", stripped))
-    matches <- candidates[grepl(base_pattern, basename(candidates))]
+    matches <- .all_children[grepl(base_pattern, .child_names)]
     # Prefer directories with content; fall back to any match
-    with_content <- matches[vapply(matches, .dir_has_content, logical(1))]
+    with_content <- matches[vapply(matches, .has_content, logical(1))]
     if (length(with_content) >= 1L) return(with_content[1L])
     if (length(matches) == 1L) return(matches[1L])
     return(NULL)
