@@ -276,18 +276,77 @@ run_single_analysis() {
         script_path="${_PIPELINE_MODS_DIR}/$script"
     fi
 
+    local _rc=0
     if [[ -n "$script_path" && -f "$script_path" ]]; then
         log_info "Running: $analysis ($method)"
         if [[ "$script_path" == *.sh ]]; then
-            run_with_error_capture bash "$script_path" || log_error "Failed: $analysis ($method)"
+            run_with_error_capture bash "$script_path" || _rc=$?
         else
-            run_with_error_capture Rscript "$script_path" || log_error "Failed: $analysis ($method)"
+            run_with_error_capture Rscript "$script_path" || _rc=$?
         fi
+        [[ $_rc -ne 0 ]] && log_error "Failed: $analysis ($method) (exit=$_rc)"
     else
         log_warn "Script not found for: $analysis ($method)"
     fi
 
     popd > /dev/null || log_warn "popd failed in run_single_analysis (was in $method_dir)"
+    return $_rc
+}
+
+# Run multiple analyses for a single method in one R session (batch mode).
+# Saves ~2-3s per additional analysis by reusing R's loaded shared config,
+# packages, and in-memory caches. Falls back to sequential run_single_analysis()
+# if batch_dispatcher.R is missing or only 1 task is provided.
+# Usage: run_batched_analyses "method_name" "master_reference" "analysis1" "analysis2" ...
+run_batched_analyses() {
+    local method=$1 master_ref=$2
+    shift 2
+    local -a analyses=("$@")
+    local method_dir="$BASE_DIR/3_POST_PROC/$method"
+    local dispatcher="${_PIPELINE_MODS_DIR}/batch_dispatcher.R"
+
+    # Fallback: if dispatcher missing or single task, use individual calls
+    if [[ ! -f "$dispatcher" ]] || [[ ${#analyses[@]} -le 1 ]]; then
+        for analysis in "${analyses[@]}"; do
+            run_single_analysis "$method" "$master_ref" "$analysis"
+        done
+        return
+    fi
+
+    # Filter out legacy preprocessing names and empty entries
+    local -a r_tasks=()
+    for analysis in "${analyses[@]}"; do
+        [[ -z "$analysis" ]] && continue
+        [[ "$analysis" =~ ^(Tximport_Salmon|Tximport_RSEM|Tximport_STAR|Stringtie_Matrix)$ ]] && continue
+        r_tasks+=("$analysis")
+    done
+
+    if [[ ${#r_tasks[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    # Single task after filtering: no benefit from batching
+    if [[ ${#r_tasks[@]} -eq 1 ]]; then
+        run_single_analysis "$method" "$master_ref" "${r_tasks[0]}"
+        return
+    fi
+
+    pushd "$method_dir" > /dev/null || { log_error "Cannot cd to $method_dir"; return 1; }
+
+    # Re-export env vars if needed (same logic as run_single_analysis)
+    if [[ "${CURRENT_METHOD:-}" != "$method" ]]; then
+        export CURRENT_METHOD="$method" MASTER_REFERENCE="$master_ref"
+        export METHOD_BASE_DIR="$method_dir"
+        _rebuild_exported_arrays
+    fi
+
+    log_info "Batching ${#r_tasks[@]} analyses for $method: ${r_tasks[*]}"
+    local _rc=0
+    run_with_error_capture Rscript "$dispatcher" "${r_tasks[@]}" || _rc=$?
+    [[ $_rc -ne 0 ]] && log_error "Batch failed for $method (exit=$_rc)"
+
+    popd > /dev/null || log_warn "popd failed in run_batched_analyses (was in $method_dir)"
+    return $_rc
 }
 
 # Legacy wrapper — runs ALL analyses for a single method sequentially.
@@ -326,7 +385,7 @@ export_utils_for_parallel() {
     # Export pipeline functions
     export _PIPELINE_UTIL_DIR _PIPELINE_MODS_DIR
     export -f _rebuild_exported_arrays
-    export -f run_method_analysis run_single_analysis setup_method_env run_method_preprocessing
+    export -f run_method_analysis run_single_analysis run_batched_analyses setup_method_env run_method_preprocessing
     export -f is_figure_analysis get_analysis_script get_matrix_creation_script get_preprocessing_script parse_srr_csv
     _PARALLEL_UTILS_EXPORTED="true"
 }

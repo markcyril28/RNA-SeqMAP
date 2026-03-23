@@ -733,7 +733,7 @@ function cycleCell(cellKey, dir) {
   const cs = cellState[cellKey];
   cs.idx = (cs.idx + dir + cs.images.length) % cs.images.length;
   // Find the cell div by data attribute and re-render its parent TD
-  const el = document.querySelector(`.cell[data-cell-key="${CSS.escape ? cellKey : cellKey}"]`);
+  const el = document.querySelector(`.cell[data-cell-key="${CSS.escape ? CSS.escape(cellKey) : cellKey}"]`);
   if (el) el.parentElement.innerHTML = buildCellHTML(cellKey, cs);
 }
 
