@@ -1,8 +1,8 @@
 #!/bin/bash
 # ==============================================================================
-# GENE EXPRESSION ANALYSIS (GEA) PIPELINE
+# Tissues Specific GENE EXPRESSION ANALYSIS (GEA) PIPELINE
 # RNA-seq analysis pipeline using multiple alignment/quantification methods
-# Author: Mark Cyril R. Mercado | Version: v12 | Date: December 2025
+# Author: Mark Cyril R. Mercado | Version: v14 | Date: March 2026
 # ==============================================================================
 
 set -o pipefail   # -e/-u omitted intentionally (sourced functions use boolean returns)
