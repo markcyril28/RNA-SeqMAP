@@ -122,6 +122,14 @@ if ! command -v python3 &>/dev/null; then
     exit 1
 fi
 
+# Cache browser command once — avoids repeated command -v PATH lookups in open/serve blocks
+_BROWSER_CMD=""
+if   command -v xdg-open     &>/dev/null; then _BROWSER_CMD="xdg-open"
+elif command -v open         &>/dev/null; then _BROWSER_CMD="open"
+elif command -v wslview      &>/dev/null; then _BROWSER_CMD="wslview"
+elif command -v explorer.exe &>/dev/null; then _BROWSER_CMD="explorer.exe"
+fi
+
 # Count available outputs — single find pass for files (3 traversals → 1)
 read -r _png_count _csv_count _md_count < <(
     find "$CONCORDANCE_DIR" \( -name "*.png" -o -path "*/tables/*.csv" -o -name "concordance_report.md" \) -print0 2>/dev/null \
@@ -181,11 +189,14 @@ fi
 
 if [[ "$DO_OPEN" == true && "$DRY_RUN" == false && -f "$_html_out" ]]; then
     log_info "Opening viewer in browser..."
-    if   command -v xdg-open     &>/dev/null; then xdg-open     "$_html_out" &
-    elif command -v open         &>/dev/null; then open          "$_html_out" &
-    elif command -v wslview      &>/dev/null; then wslview       "$_html_out" &
-    elif command -v explorer.exe &>/dev/null; then explorer.exe "$(wslpath -w "$_html_out" 2>/dev/null || echo "$_html_out")" &
-    else log_warn "Cannot auto-open browser — open manually: $_html_out"
+    if [[ -n "$_BROWSER_CMD" ]]; then
+        if [[ "$_BROWSER_CMD" == "explorer.exe" ]]; then
+            explorer.exe "$(wslpath -w "$_html_out" 2>/dev/null || echo "$_html_out")" &
+        else
+            "$_BROWSER_CMD" "$_html_out" &
+        fi
+    else
+        log_warn "Cannot auto-open browser — open manually: $_html_out"
     fi
 fi
 
@@ -199,7 +210,7 @@ if [[ "$DO_SERVE" == true ]]; then
         exit 1
     fi
 
-    _serve_url="http://localhost:${SERVE_PORT}/concordance_viewer.html"
+    _serve_url="http://localhost:${SERVE_PORT}/${_html_out##*/}"
 
     log_step "Serving Concordance Viewer"
     log_info "Directory : $CONCORDANCE_DIR"
@@ -207,15 +218,9 @@ if [[ "$DO_SERVE" == true ]]; then
     log_info "Stop      : Ctrl+C"
     log_info ""
 
-    # Auto-open after small delay
-    if [[ "$DO_OPEN" == false && "$DRY_RUN" == false ]]; then
-        (sleep 1
-         if   command -v xdg-open     &>/dev/null; then xdg-open     "$_serve_url"
-         elif command -v open         &>/dev/null; then open          "$_serve_url"
-         elif command -v wslview      &>/dev/null; then wslview       "$_serve_url"
-         elif command -v explorer.exe &>/dev/null; then explorer.exe  "$_serve_url"
-         fi
-        ) &>/dev/null &
+    # Auto-open after small delay (reuses cached _BROWSER_CMD — no repeated PATH lookups)
+    if [[ "$DO_OPEN" == false && "$DRY_RUN" == false && -n "$_BROWSER_CMD" ]]; then
+        (sleep 1; "$_BROWSER_CMD" "$_serve_url") &>/dev/null &
     fi
 
     if [[ "$DRY_RUN" == true ]]; then
