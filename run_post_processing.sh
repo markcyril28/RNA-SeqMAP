@@ -24,15 +24,22 @@ DESIRED_CPU_PER_JOB=1
 PARALLEL_CONFIGS="${PARALLEL_CONFIGS:-auto}"
 
 # Auto-detect available RAM (fallback: 24 GB)
+# Pure bash: avoids awk fork. O(1) — reads ~25 lines then breaks.
+# Matches run_concordance_analysis.sh pattern (Pass 30).
 if [[ -f /proc/meminfo ]]; then
-    AVAILABLE_RAM_GB=$(awk '/MemAvailable/ {printf "%d", $2/1048576}' /proc/meminfo)
+    while IFS=' ' read -r _key _val _; do
+        if [[ "$_key" == "MemAvailable:" ]]; then
+            AVAILABLE_RAM_GB=$(( _val / 1048576 ))
+            break
+        fi
+    done < /proc/meminfo
+    unset _key _val
 elif command -v sysctl &>/dev/null; then
-    AVAILABLE_RAM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1/1073741824}')
+    _raw_bytes=$(sysctl -n hw.memsize 2>/dev/null)
+    AVAILABLE_RAM_GB=$(( _raw_bytes / 1073741824 ))
+    unset _raw_bytes
 fi
-# Fallback: try free(1) before using hardcoded default
-if [[ -z "${AVAILABLE_RAM_GB:-}" || "${AVAILABLE_RAM_GB:-0}" -eq 0 ]] 2>/dev/null; then
-    AVAILABLE_RAM_GB=$(free -g 2>/dev/null | awk '/^Mem:/ {print $7}')
-fi
+# Fallback covers both unset and empty (e.g., MemAvailable line missing from /proc/meminfo)
 AVAILABLE_RAM_GB="${AVAILABLE_RAM_GB:-24}"
 # Ensure numeric (strip non-digits) before arithmetic
 [[ "$AVAILABLE_RAM_GB" =~ ^[0-9]+$ ]] || AVAILABLE_RAM_GB=24
@@ -287,6 +294,14 @@ declare -A _GLOBAL_SRR_CACHE=()
 export BASE_DIR THREADS ENABLE_GPU ANALYSIS_MODULES_DIR GENE_GROUPS_DIR UTILITIES_DIR SRR_CSV_DIR
 export AVAILABLE_RAM_GB GPU_VRAM_GB FIGURE_DPI
 
+# Static analysis->folder mapping — computed once, reused across all configs.
+# Avoids re-declaring the associative array inside the CLEAR_OUTPUT_FOLDER block per config.
+declare -A _FOLDER_NAME_MAP=(
+    [Matrix_Creation]="0_Matrix_Creation"
+    [Basic_Heatmap]="I_Basic_Heatmap"
+    [Heatmap_with_CV]="II_Heatmap_with_CV"
+)
+
 for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
 
     [[ "$CONFIG_FILE" != /* ]] && CONFIG_FILE="$SCRIPT_DIR/$CONFIG_FILE"
@@ -350,24 +365,17 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
     # Clear output folders if requested (rm -rf + mkdir is faster than find -delete on deep trees)
     if [[ "$CLEAR_OUTPUT_FOLDER" == "TRUE" ]]; then
         log_info "Clearing output folders for $MASTER_REFERENCE..."
-        # Pre-compute folder names once — inline case avoids O(A) subshell forks from $(get_output_folder_name)
-        declare -A _folder_cache=(
-            [Matrix_Creation]="0_Matrix_Creation"
-            [Basic_Heatmap]="I_Basic_Heatmap"
-            [Heatmap_with_CV]="II_Heatmap_with_CV"
-        )
-        # Collect all target directories, then batch rm + mkdir
+        # Uses _FOLDER_NAME_MAP declared once before the config loop (avoids per-config re-declaration)
         _clear_targets=()
         for method in "${METHODS[@]}"; do
             output_base="$BASE_DIR/3_POST_PROC/$method/Figure_Outputs"
             [[ -d "$output_base" ]] || continue
             for analysis in "${ANALYSES[@]}"; do
-                folder_name="${_folder_cache[$analysis]}"
+                folder_name="${_FOLDER_NAME_MAP[$analysis]}"
                 target="$output_base/$folder_name/$MASTER_REFERENCE"
                 [[ -n "$folder_name" && -d "$target" ]] && _clear_targets+=("$target")
             done
         done
-        unset _folder_cache
         if [[ ${#_clear_targets[@]} -gt 0 ]]; then
             rm -rf "${_clear_targets[@]}"
             mkdir -p "${_clear_targets[@]}"
@@ -419,6 +427,18 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
             HEAVY_ANALYSES+=("$analysis")
         fi
     done
+
+    # Pre-export figure analyses string and worker function once per config (not per dataset).
+    # FIGURE_ANALYSES is config-level — re-exporting per dataset was redundant.
+    if [[ ${#FIGURE_ANALYSES[@]} -gt 0 ]] && $_HAS_PARALLEL && [[ "$ENABLE_GNU_PARALLEL" == "TRUE" && $JOBS -gt 1 ]]; then
+        export _FIGURE_ANALYSES_STR="${FIGURE_ANALYSES[*]}"
+        _run_figures_for_method() {
+            local -a _figs=()
+            IFS=' ' read -ra _figs <<< "$_FIGURE_ANALYSES_STR"
+            run_batched_analyses "$1" "$2" "${_figs[@]}"
+        }
+        export -f _run_figures_for_method
+    fi
 
     # Process each dataset (reuse cached CSV parse — avoids redundant file I/O)
     for dataset in "${SRR_DATASETS[@]}"; do
@@ -495,20 +515,11 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
         fi
 
         # ── Phase 3: Figure generation (parallelisable — lightweight per job) ──
+        # _FIGURE_ANALYSES_STR and _run_figures_for_method are pre-exported above
+        # the dataset loop (config-level, not dataset-level).
         if [[ ${#FIGURE_ANALYSES[@]} -gt 0 ]]; then
             if [[ "$ENABLE_GNU_PARALLEL" == "TRUE" && $JOBS -gt 1 ]] && $_HAS_PARALLEL; then
                 log_info "Phase 3: Figure generation (GNU Parallel, $JOBS jobs, batched per method): ${FIGURE_ANALYSES[*]}"
-                # Batch figure analyses per method: each parallel worker runs all
-                # figure analyses in a single R session, saving ~2-3s startup per
-                # additional analysis. Parallelism unit = method (not method×analysis).
-                # Export array as string (bash arrays can't be exported to parallel subshells)
-                export _FIGURE_ANALYSES_STR="${FIGURE_ANALYSES[*]}"
-                _run_figures_for_method() {
-                    local -a _figs=()
-                    IFS=' ' read -ra _figs <<< "$_FIGURE_ANALYSES_STR"
-                    run_batched_analyses "$1" "$2" "${_figs[@]}"
-                }
-                export -f _run_figures_for_method
                 parallel \
                     -j "$JOBS" \
                     --halt soon,fail,30% \

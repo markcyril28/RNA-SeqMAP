@@ -290,12 +290,18 @@ source "${PROJECT_ROOT}/modules/logging/logging_utils.sh" 2>/dev/null || {
 source "${PROJECT_ROOT}/config/shared/toml_parser.sh"
 source "${PROJECT_ROOT}/config/shared/runtime_defaults.sh"
 
+# Track whether STAR was used across ANY config (not just the last one).
+# The cleanup trap needs this because RUN_METHOD_3_STAR_ALIGNMENT only reflects
+# the most recently loaded config — if STAR was used in config 1 but not config 2,
+# orphan _STARtmp dirs from config 1 would not be cleaned.
+_STAR_WAS_USED=false
+
 # Cleanup trap: log summary on exit; clean up STAR temp dirs on signal kill
 _pipeline_cleanup() {
 	local rc=$?
-	# Only search for orphan STAR temp dirs when STAR was actually used (avoids
-	# traversing entire PROJECT_ROOT on every exit — saves ~0.5-2s on large trees)
-	if [[ "${RUN_METHOD_3_STAR_ALIGNMENT:-}" == "TRUE" ]]; then
+	# Only search for orphan STAR temp dirs when STAR was actually used in any config
+	# (avoids traversing entire PROJECT_ROOT on every exit — saves ~0.5-2s on large trees)
+	if [[ "$_STAR_WAS_USED" == "true" ]]; then
 		find "${PROJECT_ROOT}/2_ALIGNMENT_RESULTs" -maxdepth 4 -type d -name '_STARtmp*' -exec rm -rf {} + 2>/dev/null || true
 	fi
 	if [[ $rc -ne 0 ]]; then
@@ -364,6 +370,8 @@ for config_file in "${CONFIG_FILES[@]}"; do
 	export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
 
 	set_pipeline_flags
+	# Track STAR usage across all configs for cleanup trap (see _pipeline_cleanup)
+	[[ "${RUN_METHOD_3_STAR_ALIGNMENT:-}" == "TRUE" ]] && _STAR_WAS_USED=true
 
 	mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT"
 	# setup_logging is called inside run_all(); avoid redundant re-initialization per config.

@@ -129,8 +129,10 @@ elif command -v wslview      &>/dev/null; then _BROWSER_CMD="wslview"
 elif command -v explorer.exe &>/dev/null; then _BROWSER_CMD="explorer.exe"
 fi
 
-# Count available figures
-_png_count=$(find "$POST_PROC_DIR" -name "*.png" 2>/dev/null | wc -l)
+# Count available figures — find -printf '.' outputs 1 byte per match;
+# wc -c counts them without transferring full paths through pipe. O(N) I/O.
+_png_count=0
+_png_count=$(find "$POST_PROC_DIR" -name "*.png" -printf '.' 2>/dev/null | wc -c)
 log_info "Post-processing dir : $POST_PROC_DIR"
 log_info "Figures found       : $_png_count PNG files"
 if [[ "$_png_count" -eq 0 ]]; then
