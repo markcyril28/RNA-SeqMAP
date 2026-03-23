@@ -1,25 +1,25 @@
 # Concordance Combination Config Crosses
 
-This folder defines reusable config crosses for `run_concordance.sh`.
+This folder defines reusable config crosses for `run_concordance_analysis.sh`.
 
 ## How To Use
 
 Run with a single cross:
 
 ```bash
-bash run_concordance.sh config/4_concordance_combination/defaults.toml
+bash run_concordance_analysis.sh config/4_concordance_combination/defaults.toml
 ```
 
 Run with cross basename:
 
 ```bash
-bash run_concordance.sh defaults
+bash run_concordance_analysis.sh defaults
 ```
 
 Chain multiple crosses using env var (later cross overrides earlier values):
 
 ```bash
-CONCORDANCE_CONFIG_CROSSES="defaults,cross_methods_vs_methods" bash run_concordance.sh
+CONCORDANCE_CONFIG_CROSSES="defaults,cross_methods_vs_methods" bash run_concordance_analysis.sh
 ```
 
 ## Cross Types

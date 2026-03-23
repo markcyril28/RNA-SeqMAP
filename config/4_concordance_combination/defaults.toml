@@ -1,7 +1,7 @@
 # ==============================================================================
 # CONCORDANCE DEFAULTS
 # ==============================================================================
-# Baseline single-run defaults for run_concordance.sh.
+# Baseline single-run defaults for run_concordance_analysis.sh.
 # Any values here can be overridden by env vars or other crosses loaded later.
 # Bare accession (no _genome/_transcripts suffix): each method auto-resolves
 # to its appropriate reference type.
