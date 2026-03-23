@@ -113,12 +113,14 @@ $3 == "exon" || $3 == "CDS" {
 # VALIDATION
 # ==============================================================================
 
-INPUT_GENES=$(awk -F'\t' '$3=="gene"' "$INPUT_GFF" | wc -l)
-INPUT_MRNAS=$(awk -F'\t' '$3=="mRNA"' "$INPUT_GFF" | wc -l)
-OUTPUT_LINES=$(wc -l < "$OUTPUT_GTF")
-OUTPUT_TRANSCRIPTS=$(awk -F'\t' '$3=="transcript"' "$OUTPUT_GTF" | wc -l)
-OUTPUT_EXONS=$(awk -F'\t' '$3=="exon"' "$OUTPUT_GTF" | wc -l)
-OUTPUT_CDS=$(awk -F'\t' '$3=="CDS"' "$OUTPUT_GTF" | wc -l)
+# Single-pass awk per file: O(n) read instead of 2x/3x multi-pass (saves 8 forks + redundant I/O)
+read -r INPUT_GENES INPUT_MRNAS < <(
+    awk -F'\t' '{if($3=="gene") g++; else if($3=="mRNA") m++} END{print g+0, m+0}' "$INPUT_GFF"
+)
+read -r OUTPUT_LINES OUTPUT_TRANSCRIPTS OUTPUT_EXONS OUTPUT_CDS < <(
+    awk -F'\t' '{n++; if($3=="transcript") t++; else if($3=="exon") e++; else if($3=="CDS") c++}
+        END{print n, t+0, e+0, c+0}' "$OUTPUT_GTF"
+)
 
 echo "Input  (GFF3):  $INPUT_GENES genes, $INPUT_MRNAS mRNAs"
 echo "Output (GTF):   $OUTPUT_TRANSCRIPTS transcripts, $OUTPUT_EXONS exons, $OUTPUT_CDS CDS ($OUTPUT_LINES total lines)"
