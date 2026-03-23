@@ -139,7 +139,13 @@ read -r _png_count _csv_count _md_count < <(
         /concordance_report\.md$/      { md++  }
         END { print png+0, csv+0, md+0 }
     ')
-_mode_count=$(find "$CONCORDANCE_DIR" -mindepth 1 -maxdepth 1 -type d ! -name "logs" ! -name "_viewer_cache" 2>/dev/null | wc -l)
+# Bash glob for top-level dirs — avoids find+wc fork pair (O(1) stat vs 2 forks)
+_mode_count=0
+for _d in "$CONCORDANCE_DIR"/*/; do
+    [[ -d "$_d" ]] || continue
+    case "${_d%/}" in */logs|*/_viewer_cache) continue ;; esac
+    (( _mode_count++ ))
+done
 
 log_info "Concordance dir   : $CONCORDANCE_DIR"
 log_info "Concordance modes : $_mode_count"
