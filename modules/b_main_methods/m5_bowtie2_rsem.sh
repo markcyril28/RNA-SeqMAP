@@ -536,7 +536,7 @@ _rsem_quantify_parallel() {
 		--env RSEM_STRANDEDNESS \
 		--env RSEM_SEED \
 		-j "$parallel_jobs" \
-		--halt soon,fail=1 \
+		--halt soon,fail,1 \
 		--joblog "$quant_root/parallel_rsem.log" \
 		--progress \
 		_rsem_parallel_worker {}

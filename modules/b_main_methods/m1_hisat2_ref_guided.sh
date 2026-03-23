@@ -561,7 +561,7 @@ hisat2_ref_guided_pipeline() {
 			--env hisat2_strand_opts --env stringtie_strand_opt \
 			--env OVERWRITE_MODE --env _SAMTOOLS_HAS_WRITE_INDEX --env _CACHED_AVAIL_MB \
 			-j "$parallel_jobs" \
-			--halt soon,fail=1 \
+			--halt soon,fail,1 \
 			--joblog "$HISAT2_REF_GUIDED_ROOT/parallel_hisat2_refguided_align.log" \
 			_m1_align_parallel_worker {}
 

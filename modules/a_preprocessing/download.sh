@@ -116,7 +116,7 @@ download_srrs_parallel() {
 	printf "%s\n" "${SRR_LIST[@]}" | parallel \
 		--env PATH --env CONDA_PREFIX --env _SHARED_GZIP_C \
 		-j "${JOBS:-2}" \
-		--halt soon,fail=1 \
+		--halt soon,fail,1 \
 		--joblog "$RAW_DIR_ROOT/parallel_download.log" \
 		_download_worker {}
 }

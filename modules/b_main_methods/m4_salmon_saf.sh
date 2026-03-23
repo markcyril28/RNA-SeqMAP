@@ -165,7 +165,7 @@ salmon_saf_pipeline() {
 			--env idx_dir --env quant_root --env threads_per_job --env salmon_num_bootstraps \
 			--env OVERWRITE_MODE \
 			-j "$parallel_jobs" \
-			--halt soon,fail=1 \
+			--halt soon,fail,1 \
 			--joblog "$quant_root/parallel_salmon_saf.log" \
 			_m4_salmon_parallel_worker {}
 

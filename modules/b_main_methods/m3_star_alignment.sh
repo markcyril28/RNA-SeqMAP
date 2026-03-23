@@ -646,7 +646,7 @@ star_alignment_pipeline() {
 			--env _star_strand_args_str --env _star_sj_filter_args_str \
 			--env _STAR_READ_CMD --env _star_sort_ram_bytes \
 			-j "$parallel_jobs" \
-			--halt soon,fail=1 \
+			--halt soon,fail,1 \
 			--joblog "$star_genome_dir/parallel_star_align.log" \
 			_m3_star_parallel_worker {}
 
@@ -948,7 +948,7 @@ star_alignment_pipeline() {
 			--env _sal_lib_pe --env _sal_lib_se \
 			--env OVERWRITE_MODE \
 			-j "$parallel_jobs" \
-			--halt soon,fail=1 \
+			--halt soon,fail,1 \
 			--joblog "$quant_root/parallel_salmon_star_quant.log" \
 			_m3_salmon_parallel_worker {}
 

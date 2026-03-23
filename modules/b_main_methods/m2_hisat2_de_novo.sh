@@ -265,7 +265,7 @@ hisat2_de_novo_pipeline() {
 			--env abs_hisat2_dn_root --env abs_stringtie_dn_root \
 			--env OVERWRITE_MODE --env _SAMTOOLS_HAS_WRITE_INDEX --env _CACHED_AVAIL_MB \
 			-j "$parallel_jobs" \
-			--halt soon,fail=1 \
+			--halt soon,fail,1 \
 			--joblog "$HISAT2_DE_NOVO_ROOT/parallel_hisat2_denovo.log" \
 			_m2_align_parallel_worker {}
 
