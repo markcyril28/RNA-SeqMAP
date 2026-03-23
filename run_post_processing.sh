@@ -448,7 +448,7 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
             log_info "Phase 1: Preprocessing (parallel across ${#METHODS[@]} methods)"
             printf '%s\n' "${METHODS[@]}" | parallel \
                 -j "${#METHODS[@]}" \
-                --halt soon,fail=30% \
+                --halt soon,fail,30% \
                 --joblog "$LOG_DIR/parallel_preproc_${dataset}.log" \
                 run_method_preprocessing {} "$MASTER_REFERENCE" \
                 || log_warn "Phase 1: Some preprocessing tasks failed for dataset '$dataset' (see joblog)"
@@ -487,7 +487,7 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
                 export _threads_per_method
                 printf '%s\n' "${METHODS[@]}" | parallel \
                     -j "$_n_methods" \
-                    --halt soon,fail=30% \
+                    --halt soon,fail,30% \
                     --joblog "$LOG_DIR/parallel_heavy_${dataset}.log" \
                     _run_heavy_for_method {} "$MASTER_REFERENCE" "${HEAVY_ANALYSES[@]}" \
                     || log_warn "Phase 2: Some heavy analyses failed for dataset '$dataset' (see joblog)"
@@ -510,7 +510,7 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
                 printf '%s\n' "${PARALLEL_TASKS[@]}" | parallel \
                     -j "$JOBS" \
                     --colsep '\t' \
-                    --halt soon,fail=30% \
+                    --halt soon,fail,30% \
                     --joblog "$LOG_DIR/parallel_figures_${dataset}.log" \
                     run_single_analysis {1} "$MASTER_REFERENCE" {2} \
                     || log_warn "Phase 3: Some figure tasks failed for dataset '$dataset' (see joblog)"
