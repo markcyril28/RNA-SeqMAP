@@ -9,7 +9,7 @@
 #   logging/           - Logging utilities
 #   a_preprocessing/   - Download, trimming, QC functions
 #   b_main_methods/    - GEA analysis methods (M1-M5)
-#   0_input_information/ - Sample metadata files
+#   c_post_processing/   - Post-processing analysis, concordance, utilities
 # ==============================================================================
 
 # Guard against double-sourcing
@@ -27,9 +27,11 @@ export MODULES_DIR
 # LOAD MODULES IN DEPENDENCY ORDER
 # ==============================================================================
 
-# 1. Logging and GPU utilities (no dependencies)
+# 1. Logging utilities (no dependencies)
 source "$MODULES_DIR/logging/logging_utils.sh"
-source "$MODULES_DIR/logging/gpu_utils.sh"
+# NOTE: gpu_utils.sh is NOT sourced here — R does its own GPU detection in
+# 0_shared_config.R, and no active pipeline code calls any gpu_utils function.
+# Source it explicitly if needed: source "$MODULES_DIR/logging/gpu_utils.sh"
 
 # 2. Preprocessing modules
 source "$MODULES_DIR/a_preprocessing/global_config_preproc.sh"
@@ -43,11 +45,6 @@ source "$MODULES_DIR/b_main_methods/global_config_method.sh"
 source "$MODULES_DIR/b_main_methods/shared_utils_method.sh"
 source "$MODULES_DIR/b_main_methods/methods_loader.sh"
 
-# ==============================================================================
-# INITIALIZE DIRECTORIES
-# ==============================================================================
-
-# init_directories() — removed (dead code; directory creation handled by run scripts directly)
 
 # ==============================================================================
 # AVAILABLE FUNCTIONS (for reference)
