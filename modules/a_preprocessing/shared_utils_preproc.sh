@@ -181,7 +181,9 @@ detect_read_length() {
 	# Sample 100 reads (400 lines) instead of 1000 — statistically equivalent for
 	# read length detection but 10x fewer lines decompressed. O(400) vs O(4000).
 	# head merged into awk (NR>400{exit}) — eliminates 1 subprocess per cache miss.
-	local avg_length=$($decompress_cmd "$fastq" 2>/dev/null | \
+	# Split declaration from assignment to avoid 'local' masking pipeline exit code
+	local avg_length
+	avg_length=$($decompress_cmd "$fastq" 2>/dev/null | \
 		awk 'NR>400{exit} NR%4==2 {sum+=length($0); count++} END {if (count>0) print int(sum/count)}')
 
 	if [[ -z "$avg_length" || $avg_length -lt 50 || $avg_length -gt 300 ]]; then
