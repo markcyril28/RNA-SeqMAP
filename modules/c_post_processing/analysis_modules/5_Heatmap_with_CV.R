@@ -370,10 +370,9 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
     if (exists("EXPORT_RAW_VALUES") && EXPORT_RAW_VALUES) {
       tryCatch({
         csv_path <- sub("\\.png$", "_values.csv", output_path)
-        # Build the summary row as a separate data frame with matching column types
-        # to avoid rbind coercing the entire data frame to character
+        # Write main data first, then append summary row separately — avoids O(G×S)
+        # rbind copy that clones the entire data.frame just to add 1 row.
         if (transpose) {
-          # Organs as rows, genes as columns — row CV = sample CV
           row_id_label <- if (label_type == "Organ") "OrganID" else "SampleID"
           export_df <- data.frame(
             row_id_label = rownames(data_matrix),
@@ -382,43 +381,28 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
             check.names = FALSE
           )
           names(export_df)[1] <- row_id_label
-          # Append a summary row with per-gene (column) CV
-          # Build summary row as a one-row data.frame and rbind (avoids row-copy overhead
-          # from cloning export_df[1,] then overwriting every cell)
-          if (length(col_cv) == ncol(data_matrix)) {
-            summary_vals <- c(NA_real_, col_cv)
-            summary_row <- data.frame(
-              V1 = "Gene_CV",
-              matrix(summary_vals, nrow = 1),
-              check.names = FALSE
-            )
-            names(summary_row) <- names(export_df)
-            export_df <- rbind(export_df, summary_row)
-          }
+          .summary_label <- "Gene_CV"
+          .summary_cv <- col_cv
         } else {
-          # Genes as rows, samples as columns — row CV = gene CV
           export_df <- data.frame(
             GeneID = rownames(data_matrix),
             Gene_CV = row_cv,
             data_matrix,
             check.names = FALSE
           )
-          # Append a summary row with per-sample (column) CV
-          if (length(col_cv) == ncol(data_matrix)) {
-            summary_vals <- c(NA_real_, col_cv)
-            summary_row <- data.frame(
-              V1 = "Sample_CV",
-              matrix(summary_vals, nrow = 1),
-              check.names = FALSE
-            )
-            names(summary_row) <- names(export_df)
-            export_df <- rbind(export_df, summary_row)
-          }
+          .summary_label <- "Sample_CV"
+          .summary_cv <- col_cv
         }
+        # Write main data
         if (.HAS_DATATABLE) {
           data.table::fwrite(export_df, csv_path, sep = ",", quote = FALSE)
         } else {
           write.table(export_df, csv_path, sep = ",", row.names = FALSE, quote = FALSE)
+        }
+        # Append summary row directly to file — O(S) string concat instead of O(G×S) rbind copy
+        if (length(.summary_cv) == ncol(data_matrix)) {
+          .summary_line <- paste(c(.summary_label, NA_real_, .summary_cv), collapse = ",")
+          cat(.summary_line, "\n", sep = "", file = csv_path, append = TRUE)
         }
         cat("      Exported values:", basename(csv_path), "\n")
       }, error = function(e) {

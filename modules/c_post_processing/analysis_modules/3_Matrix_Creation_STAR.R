@@ -206,11 +206,10 @@ if (GENERATE_GENE_LEVEL) {
               # Save full tximport object for DESeq2 (preserves transcript-length offsets)
               txi_rds_dir <- file.path(output_dir, MASTER_REFERENCE, "gene_level")
               ensure_output_dir(txi_rds_dir)
-              tryCatch(
-                saveRDS(txi_gene, file.path(txi_rds_dir, "tximport_gene_level.rds")),
-                error = function(e) cat("  Warning: Failed to save tximport RDS:", e$message, "\n")
-              )
-              cat("Saved tximport RDS for DESeq2: tximport_gene_level.rds\n")
+              tryCatch({
+                saveRDS(txi_gene, file.path(txi_rds_dir, "tximport_gene_level.rds"))
+                cat("Saved tximport RDS for DESeq2: tximport_gene_level.rds\n")
+              }, error = function(e) cat("  Warning: Failed to save tximport RDS:", e$message, "\n"))
             }
           }
         }
@@ -253,11 +252,10 @@ if (GENERATE_ISOFORM_LEVEL) {
         # Save full tximport object for DESeq2 isoform-level analysis
         txi_iso_rds_dir <- file.path(output_dir, MASTER_REFERENCE, "isoform_level")
         ensure_output_dir(txi_iso_rds_dir)
-        tryCatch(
-          saveRDS(txi_iso, file.path(txi_iso_rds_dir, "tximport_isoform_level.rds")),
-          error = function(e) cat("  Warning: Failed to save isoform tximport RDS:", e$message, "\n")
-        )
-        cat("Saved tximport RDS for isoform-level DESeq2: tximport_isoform_level.rds\n")
+        tryCatch({
+          saveRDS(txi_iso, file.path(txi_iso_rds_dir, "tximport_isoform_level.rds"))
+          cat("Saved tximport RDS for isoform-level DESeq2: tximport_isoform_level.rds\n")
+        }, error = function(e) cat("  Warning: Failed to save isoform tximport RDS:", e$message, "\n"))
       }
     }
   }

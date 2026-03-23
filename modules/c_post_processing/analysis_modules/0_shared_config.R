@@ -704,20 +704,24 @@ wrap_title <- function(title, max_width_mm, font_size_pt = 14) {
   if (nchar(title) <= max_chars) {
     return(list(text = title, n_lines = 1L))
   }
-  # Split on underscores, rejoin with wrapping
+  # Split on underscores, rejoin with wrapping.
+  # Use pre-allocated list to avoid O(T²) c(lines, current) growth.
   tokens <- strsplit(title, "_")[[1]]
-  lines <- character(0)
+  lines <- vector("list", length(tokens))
+  li <- 0L
   current <- tokens[1]
   for (tok in tokens[-1]) {
     candidate <- paste0(current, "_", tok)
     if (nchar(candidate) > max_chars && nchar(current) > 0) {
-      lines <- c(lines, current)
+      li <- li + 1L
+      lines[[li]] <- current
       current <- tok
     } else {
       current <- candidate
     }
   }
-  if (nchar(current) > 0) lines <- c(lines, current)
+  if (nchar(current) > 0) { li <- li + 1L; lines[[li]] <- current }
+  lines <- unlist(lines[seq_len(li)])
   list(text = paste(lines, collapse = "\n"), n_lines = length(lines))
 }
 
