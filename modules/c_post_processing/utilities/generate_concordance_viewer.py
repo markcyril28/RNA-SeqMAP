@@ -533,13 +533,16 @@ function renderFigures() {
   const byMode = {};
   figs.forEach(f => { if (!byMode[f.mode]) byMode[f.mode] = []; byMode[f.mode].push(f); });
 
+  // O(n) Map build — avoids O(n²) .indexOf() scan inside render loop
+  const figIndexMap = new Map(figs.map((f, i) => [f, i]));
+
   let html = "";
   for (const mode of Object.keys(byMode).sort()) {
     html += '<div class="mode-section">';
     html += '<div class="mode-title">' + mode + '</div>';
     html += '<div class="fig-gallery">';
     byMode[mode].forEach((f, i) => {
-      const globalIdx = figs.indexOf(f);
+      const globalIdx = figIndexMap.get(f);
       html += '<div class="fig-card" onclick="openModal(' + globalIdx + ')">';
       html += '<img src="' + f.path + '" alt="" loading="lazy">';
       html += '<div class="fig-card-meta">';
@@ -654,7 +657,7 @@ function mdTable(rows) {
   if (rows.length === 0) return "";
   let html = "<table>";
   rows.forEach((row, ri) => {
-    const cells = row.split("|").filter((_, i, a) => i > 0 && i < a.length - 1).map(c => c.trim());
+    const cells = row.split("|").slice(1, -1).map(c => c.trim());
     const tag = ri === 0 ? "th" : "td";
     html += "<tr>" + cells.map(c => "<" + tag + ">" + mdInline(c) + "</" + tag + ">").join("") + "</tr>";
   });
@@ -849,6 +852,8 @@ function setZoom(level) {
 
 def generate_html(manifest: dict) -> str:
     json_str = json.dumps(manifest, separators=(",", ":"))
+    # Escape </ sequences to prevent </script> breakout in inline JSON
+    json_str = json_str.replace("</", r"<\/")
     return HTML_TEMPLATE.replace("__MANIFEST_JSON__", json_str)
 
 

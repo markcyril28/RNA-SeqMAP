@@ -547,13 +547,14 @@ function render() {
   const cols = activeAccessions.length > 0 ? activeAccessions : ACCESSION_GROUPS;
 
   // All gene groups present in filtered images (preserving encounter order, deduped)
-  const geneGroupSet = [];
-  images.forEach(img => { if (!geneGroupSet.includes(img.gene_group)) geneGroupSet.push(img.gene_group); });
+  // O(n) Set-based dedup instead of O(n²) .includes() scan
+  const geneGroupSet = [...new Set(images.map(img => img.gene_group))];
   if (geneGroupSet.length === 0) MANIFEST.dimensions.gene_groups.forEach(g => geneGroupSet.push(g));
 
   // Always render all known methods as rows (cells are "No data" when empty)
-  const methods = METHOD_ORDER.filter(m =>
-    MANIFEST.dimensions.methods.includes(m));
+  // O(M) Set lookup instead of O(M×D) .includes() scan
+  const _methodSet = new Set(MANIFEST.dimensions.methods);
+  const methods = METHOD_ORDER.filter(m => _methodSet.has(m));
 
   // Per-accession gene group visibility: when hide_empty_cols is on, drop sub-columns
   // where every method has no data for that (accession × gene_group) pair.
