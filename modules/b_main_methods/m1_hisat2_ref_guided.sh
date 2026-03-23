@@ -92,13 +92,14 @@ _hisat2_check_alignment_rates() {
 	if [[ $n -ge 3 ]]; then
 		# Single AWK pass: compute stats AND find outliers (1 process instead of 2)
 		local _stats_and_outliers
-		_stats_and_outliers=$(printf '%s\n' "${overall_rates[@]}" | awk '{
-			vals[NR-1]=$1; s+=$1; ss+=$1*$1
+		# Herestring avoids printf subprocess fork — awk splits on RS=' '
+		_stats_and_outliers=$(awk -v RS=' ' 'NF{
+			vals[n]=$1+0; s+=$1; ss+=$1*$1; n++
 		} END {
-			m=s/NR; v=ss/NR - m*m; sd=(v>0)?sqrt(v):0; thr=m-2*sd
+			m=s/n; v=ss/n - m*m; sd=(v>0)?sqrt(v):0; thr=m-2*sd
 			printf "%.2f %.2f %.2f", m, sd, thr
-			for (i=0; i<NR; i++) if (vals[i]+0 < thr+0) printf " %d", i
-		}')
+			for (i=0; i<n; i++) if (vals[i] < thr) printf " %d", i
+		}' <<< "${overall_rates[*]}")
 		local mean sd threshold _outlier_tail
 		read -r mean sd threshold _outlier_tail <<< "$_stats_and_outliers"
 
@@ -553,7 +554,7 @@ hisat2_ref_guided_pipeline() {
 
 		# O(S/parallel_jobs × (N×log N + T×G)) — S samples dispatched across parallel_jobs slots;
 		# each worker runs HISAT2 O(N log N) + samtools sort O(N log N) + StringTie O(T×G)
-		printf '%s\n' "${rnaseq_list[@]}" | parallel \
+		parallel \
 			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
 			--env abs_trim_dir_root --env abs_error_warn_file --env keep_bam_global \
 			--env fasta_tag --env index_prefix --env threads_per_job \
@@ -563,7 +564,8 @@ hisat2_ref_guided_pipeline() {
 			-j "$parallel_jobs" \
 			--halt soon,fail,1 \
 			--joblog "$HISAT2_REF_GUIDED_ROOT/parallel_hisat2_refguided_align.log" \
-			_m1_align_parallel_worker {}
+			_m1_align_parallel_worker {} \
+			< <(printf '%s\n' "${rnaseq_list[@]}")
 
 		local par_exit=$?
 		log_info "[PARALLEL] HISAT2 Ref-Guided align+assembly complete (exit=$par_exit)"

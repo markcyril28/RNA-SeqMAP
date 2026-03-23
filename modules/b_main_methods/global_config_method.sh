@@ -61,7 +61,7 @@ STAR_STRAND_SPECIFIC="${STAR_STRAND_SPECIFIC:-None}"
 # OVERWRITE_MODE controls whether alignment steps skip existing outputs.
 # "overwrite" = re-run even if outputs exist; "skip" = skip existing (default).
 # Derived from OVERWRITE_EXISTING (set/exported by run_post_processing.sh).
-# Respects an existing OVERWRITE_MODE set by a_GEA_script_v12.sh or the environment.
+# Respects an existing OVERWRITE_MODE set by run_characterize_GEA_script_v14.sh or the environment.
 _ow="${OVERWRITE_EXISTING:-FALSE}"
 if [[ "${_ow^^}" == "TRUE" ]]; then
 	OVERWRITE_MODE="overwrite"
@@ -145,20 +145,6 @@ if ! declare -p SRR_COMBINED_LIST &>/dev/null; then
 	declare -a SRR_COMBINED_LIST=()
 fi
 
-# ==============================================================================
-# INITIALIZE ALL METHOD DIRECTORIES
-# ==============================================================================
-init_method_directories() {
-	# Alignment directories
-	mkdir -p "$HISAT2_REF_GUIDED_ROOT" "$HISAT2_REF_GUIDED_INDEX_DIR" "$STRINGTIE_HISAT2_REF_GUIDED_ROOT" \
-		"$HISAT2_DE_NOVO_ROOT" "$HISAT2_DE_NOVO_INDEX_DIR" "$STRINGTIE_HISAT2_DE_NOVO_ROOT" \
-		"$STAR_ALIGN_ROOT" "$STAR_INDEX_ROOT" \
-		"$SALMON_INDEX_ROOT" "$SALMON_QUANT_ROOT" \
-		"$RSEM_INDEX_ROOT" "$RSEM_QUANT_ROOT"
-	# Post-processing matrix directories
-	mkdir -p "$HISAT2_REF_GUIDED_MATRIX_ROOT" "$HISAT2_DE_NOVO_MATRIX_ROOT" \
-		"$STAR_MATRIX_ROOT" "$SALMON_SAF_MATRIX_ROOT" "$RSEM_MATRIX_ROOT"
-}
 
 # ==============================================================================
 # DYNAMIC FASTA-BASED OUTPUT DIRECTORIES

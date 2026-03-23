@@ -159,7 +159,7 @@ salmon_saf_pipeline() {
 		}
 		export -f _m4_salmon_parallel_worker
 
-		printf '%s\n' "${rnaseq_list[@]}" | parallel \
+		parallel \
 			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
 			--env abs_trim_dir_root --env abs_error_warn_file --env keep_bam_global \
 			--env idx_dir --env quant_root --env threads_per_job --env salmon_num_bootstraps \
@@ -167,7 +167,8 @@ salmon_saf_pipeline() {
 			-j "$parallel_jobs" \
 			--halt soon,fail,1 \
 			--joblog "$quant_root/parallel_salmon_saf.log" \
-			_m4_salmon_parallel_worker {}
+			_m4_salmon_parallel_worker {} \
+			< <(printf '%s\n' "${rnaseq_list[@]}")
 
 		local par_exit=$?
 		# Count only samples from this run's rnaseq_list to avoid inflating the count

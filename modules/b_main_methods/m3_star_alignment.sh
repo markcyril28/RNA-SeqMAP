@@ -192,13 +192,14 @@ _star_check_alignment_rates() {
 	if [[ $n -ge 3 ]]; then
 		# O(S) — single AWK pass over S sample rates computes mean, SD, and outlier indices simultaneously
 		local _stats_and_outliers
-		_stats_and_outliers=$(printf '%s\n' "${unique_rates[@]}" | awk '{
-			vals[NR-1]=$1; s+=$1; ss+=$1*$1
+		# Herestring avoids printf subprocess fork — awk splits on RS=' '
+		_stats_and_outliers=$(awk -v RS=' ' 'NF{
+			vals[n]=$1+0; s+=$1; ss+=$1*$1; n++
 		} END {
-			m=s/NR; v=ss/NR - m*m; sd=(v>0)?sqrt(v):0; thr=m-2*sd
+			m=s/n; v=ss/n - m*m; sd=(v>0)?sqrt(v):0; thr=m-2*sd
 			printf "%.2f %.2f %.2f", m, sd, thr
-			for (i=0; i<NR; i++) if (vals[i]+0 < thr+0) printf " %d", i
-		}')
+			for (i=0; i<n; i++) if (vals[i] < thr) printf " %d", i
+		}' <<< "${unique_rates[*]}")
 		local mean sd threshold _outlier_rest
 		read -r mean sd threshold _outlier_rest <<< "$_stats_and_outliers"
 
@@ -636,7 +637,7 @@ star_alignment_pipeline() {
 
 		# O(S/parallel_jobs × (N log N + G_bp)) — S samples dispatched across parallel_jobs slots;
 		# each worker runs STAR 2-pass O(N log N) alignment + in-process BAM sort O(N log N)
-		printf '%s\n' "${rnaseq_list[@]}" | parallel \
+		parallel \
 			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
 			--env abs_trim_dir_root --env abs_error_warn_file --env keep_bam_global \
 			--env fasta_tag --env threads_per_job --env parallel_jobs \
@@ -648,7 +649,8 @@ star_alignment_pipeline() {
 			-j "$parallel_jobs" \
 			--halt soon,fail,1 \
 			--joblog "$star_genome_dir/parallel_star_align.log" \
-			_m3_star_parallel_worker {}
+			_m3_star_parallel_worker {} \
+			< <(printf '%s\n' "${rnaseq_list[@]}")
 
 		local par_exit=$?
 		log_info "[PARALLEL] STAR alignment complete (exit=$par_exit)"
@@ -941,7 +943,7 @@ star_alignment_pipeline() {
 		}
 		export -f _m3_salmon_parallel_worker
 
-		printf '%s\n' "${rnaseq_list[@]}" | parallel \
+		parallel \
 			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
 			--env abs_trim_dir_root --env abs_error_warn_file --env keep_bam_global \
 			--env fasta_tag --env threads_per_job --env salmon_idx --env quant_root \
@@ -950,7 +952,8 @@ star_alignment_pipeline() {
 			-j "$parallel_jobs" \
 			--halt soon,fail,1 \
 			--joblog "$quant_root/parallel_salmon_star_quant.log" \
-			_m3_salmon_parallel_worker {}
+			_m3_salmon_parallel_worker {} \
+			< <(printf '%s\n' "${rnaseq_list[@]}")
 
 		local par_exit_salmon=$?
 		log_info "[PARALLEL] Salmon quant complete (exit=$par_exit_salmon)"

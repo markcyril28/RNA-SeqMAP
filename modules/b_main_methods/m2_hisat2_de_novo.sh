@@ -257,7 +257,7 @@ hisat2_de_novo_pipeline() {
 		_samtools_has_write_index || true
 		_get_available_ram_mb > /dev/null
 
-		printf '%s\n' "${rnaseq_list[@]}" | parallel \
+		parallel \
 			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
 			--env abs_trim_dir_root --env abs_error_warn_file --env keep_bam_global \
 			--env fasta_tag --env index_prefix --env threads_per_job \
@@ -267,7 +267,8 @@ hisat2_de_novo_pipeline() {
 			-j "$parallel_jobs" \
 			--halt soon,fail,1 \
 			--joblog "$HISAT2_DE_NOVO_ROOT/parallel_hisat2_denovo.log" \
-			_m2_align_parallel_worker {}
+			_m2_align_parallel_worker {} \
+			< <(printf '%s\n' "${rnaseq_list[@]}")
 
 		local par_exit=$?
 		log_info "[PARALLEL] HISAT2 De Novo complete (exit=$par_exit)"

@@ -519,7 +519,7 @@ _rsem_quantify_parallel() {
 
 	# O(S/parallel_jobs × (N log N + T)) — S samples batched across parallel_jobs slots;
 	# each worker runs Bowtie2 O(N log N) + RSEM EM O(T × iterations)
-	printf "%s\n" "${valid_samples[@]}" | parallel \
+	parallel \
 		--env PATH \
 		--env CONDA_PREFIX \
 		--env CONDA_DEFAULT_ENV \
@@ -539,7 +539,8 @@ _rsem_quantify_parallel() {
 		--halt soon,fail,1 \
 		--joblog "$quant_root/parallel_rsem.log" \
 		--progress \
-		_rsem_parallel_worker {}
+		_rsem_parallel_worker {} \
+		< <(printf "%s\n" "${valid_samples[@]}")
 
 	local parallel_exit=$?
 
