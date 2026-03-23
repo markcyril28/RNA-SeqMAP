@@ -22,7 +22,7 @@ concordance_genomes = [
     "Eggplant_V4.1",
 ]
 
-# Gene groups for ranking stability and per-gene analysis
+# Gene groups for per-gene analysis
 gene_groups = "SmelDMPs_v5_with_18s_and_HAP2,Selected_SmelGRF-GIF_with_two_GIF"
 
 # Per-genome gene group CSV names for positional orthology mapping.
