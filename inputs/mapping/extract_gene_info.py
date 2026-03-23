@@ -5,6 +5,10 @@ import re
 import csv
 import sys
 
+# Pre-compiled regex — avoids re-compilation per FASTA header line. O(H) total
+# instead of O(H × compile_cost) where H = number of header lines.
+_NAME_PATTERN = re.compile(r'Name:"([^"]*)"')
+
 def extract_gene_info(input_fasta, output_csv):
     with open(input_fasta, 'r') as fasta, open(output_csv, 'w', newline='') as out:
         writer = csv.writer(out)
@@ -15,7 +19,7 @@ def extract_gene_info(input_fasta, output_csv):
                 # Extract gene ID (first field after ">")
                 gene_id = line.split()[0][1:]
                 # Extract Name from Name:"..." pattern
-                name_match = re.search(r'Name:"([^"]*)"', line)
+                name_match = _NAME_PATTERN.search(line)
                 name = name_match.group(1) if name_match else ""
                 writer.writerow([gene_id, name])
 
