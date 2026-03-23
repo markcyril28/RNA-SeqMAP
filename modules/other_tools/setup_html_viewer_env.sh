@@ -50,7 +50,8 @@ for arg in "$@"; do
         --generate) DO_GENERATE=true ;;
         --dry-run)  DRY_RUN=true ;;
         --help|-h)
-            grep '^#' "$0" | sed 's/^# \?//' | head -20
+            # Single awk pass replaces grep|head|sed 3-process pipe
+            awk 'NR>20{exit} /^#/{sub(/^# ?/,""); print} !/^#/{exit}' "$0"
             exit 0
             ;;
         *) echo "WARNING: Unknown argument: $arg"; echo "Valid: --serve, --generate, --dry-run"; exit 1 ;;

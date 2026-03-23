@@ -50,7 +50,7 @@ for (genome in CONCORDANCE_GENOMES) {
     stats_idx <- stats_idx + 1L
     stats_list[[stats_idx]] <- data.frame(
       method = genome,
-      short_name = get_short_name(genome),
+      short_name = get_short_name(genome),  # called once per genome during loading
       n_genes_raw = nrow(mat),
       n_samples_raw = ncol(mat),
       stringsAsFactors = FALSE
@@ -73,6 +73,11 @@ if (length(tpm_matrices) < 2) {
 }
 
 cat("\n--- Loaded", length(tpm_matrices), "genomes ---\n")
+
+# Pre-compute short names map once — avoids O(G²) repeated get_short_name() calls
+# in pairwise overlap reporting, error paths, and subset loops below.
+.genome_short_names <- setNames(vapply(names(tpm_matrices), get_short_name, character(1)),
+                                names(tpm_matrices))
 
 # -----------------------------------------------
 # Harmonize gene IDs across genomes
@@ -229,7 +234,7 @@ if (length(GENOME_GENE_GROUPS_MAP) >= 2) {
           break
         }
         if (sum(!.present) > 0) {
-          cat("  [INFO]", sum(!.present), "mapped gene(s) missing from", get_short_name(.genome),
+          cat("  [INFO]", sum(!.present), "mapped gene(s) missing from", .genome_short_names[.genome],
               "matrix — excluded from analysis\n")
         }
         # Subset matrix and rename rows to common labels
@@ -273,7 +278,7 @@ if (length(common_genes) == 0) {
   cat("\n  [WARN] Zero common genes across genomes (different annotations?).\n")
   cat("  Per-genome gene counts:\n")
   for (g in names(gene_sets)) {
-    cat("    ", get_short_name(g), ":", length(gene_sets[[g]]), "genes",
+    cat("    ", .genome_short_names[g], ":", length(gene_sets[[g]]), "genes",
         "(example:", paste(head(gene_sets[[g]], 3), collapse = ", "), "...)\n")
   }
   cat("\n  [SKIP] Cross-genome concordance requires shared gene IDs across references.\n")
@@ -288,8 +293,8 @@ if (length(common_genes) == 0) {
 for (i in seq_len(n_genomes - 1)) {
   for (j in seq(i + 1, n_genomes)) {
     overlap <- length(intersect(gene_sets[[names(gene_sets)[i]]], gene_sets[[names(gene_sets)[j]]]))
-    cat("  ", get_short_name(names(gene_sets)[i]), " & ",
-        get_short_name(names(gene_sets)[j]), ":", overlap, "shared genes\n")
+    cat("  ", .genome_short_names[names(gene_sets)[i]], " & ",
+        .genome_short_names[names(gene_sets)[j]], ":", overlap, "shared genes\n")
   }
 }
 
@@ -322,7 +327,7 @@ cat("\n--- Subsetting to common features ---\n")
 
 for (genome in names(tpm_matrices)) {
   tpm_matrices[[genome]] <- tpm_matrices[[genome]][common_genes, common_samples, drop = FALSE]
-  cat("  ", get_short_name(genome), ":", nrow(tpm_matrices[[genome]]), "x",
+  cat("  ", .genome_short_names[genome], ":", nrow(tpm_matrices[[genome]]), "x",
       ncol(tpm_matrices[[genome]]), "\n")
 }
 

@@ -50,8 +50,10 @@ all_cor_matrices <- list()
 .gene_group_csv_cache <- if (dir.exists(GENE_GROUPS_DIR)) {
   list.files(GENE_GROUPS_DIR, pattern = "\\.csv$", recursive = TRUE, full.names = TRUE)
 } else character(0)
-# Pre-compute basenames once (O(C)) instead of per-group basename() call (O(G×C))
+# Pre-compute basenames once (O(C)) and build a name→paths hash map via split()
+# for O(1) lookup per gene group instead of O(C) vectorized == scan.
 .gene_group_csv_basenames <- basename(.gene_group_csv_cache)
+.gene_group_csv_by_name <- split(.gene_group_csv_cache, .gene_group_csv_basenames)
 
 for (gg_name in groups) {
   cat("\n--- Processing gene group:", gg_name, "---\n")
@@ -73,6 +75,12 @@ for (gg_name in groups) {
         round(n_genes^2 * 8 / 1e6, 1), " MB)\n")
     next
   }
+  # Soft warning for 3000-5000 genes: O(G²) matrix is 72-200 MB.
+  # Proceeding, but user should be aware of memory cost.
+  if (n_genes > 3000) {
+    cat("  [NOTE] Large gene group (", n_genes, " genes): G×G correlation will allocate ~",
+        round(n_genes^2 * 8 / 1e6, 0), " MB\n")
+  }
 
   # Use log2(TPM+1) to reduce skewness from highly expressed genes
   log2_mat <- log2(sub_mat + 1)
@@ -90,8 +98,9 @@ for (gg_name in groups) {
     file.path(GENE_GROUPS_DIR, paste0(gg_name, ".csv")),
     file.path(GENE_GROUPS_DIR, gg_name)
   )
-  # Use pre-computed basenames for O(C) vectorized match instead of per-group basename() call
-  found <- .gene_group_csv_cache[.gene_group_csv_basenames == paste0(gg_name, ".csv")]
+  # O(1) hash lookup via pre-built name→paths map (replaces O(C) vectorized == scan)
+  found <- .gene_group_csv_by_name[[paste0(gg_name, ".csv")]]
+  if (is.null(found)) found <- character(0)
   candidates <- c(candidates, found)
   for (cand in candidates) {
     if (file.exists(cand)) { gg_file <- cand; break }
@@ -103,8 +112,10 @@ for (gg_name in groups) {
       gg_df$Gene_ID_clean <- sub("(\\.[0-9]+){1,2}$", "", trimws(gg_df$Gene_ID))
       name_map <- setNames(trimws(gg_df$Shortened_Name), gg_df$Gene_ID_clean)
       mapped <- name_map[gene_labels]
-      # Use short name where available, fall back to gene ID
-      gene_labels <- ifelse(is.na(mapped) | !nzchar(mapped), gene_labels, mapped)
+      # Use short name where available, fall back to gene ID.
+      # Direct index assignment avoids ifelse() full-vector allocation.
+      valid <- !is.na(mapped) & nzchar(mapped)
+      gene_labels[valid] <- mapped[valid]
     }
   }
 

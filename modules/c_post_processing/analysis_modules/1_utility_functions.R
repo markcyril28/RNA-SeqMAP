@@ -62,9 +62,18 @@ gpu_cor <- function(x, method = "pearson") {
     col_names <- colnames(x)
 
     # Spearman = Pearson on ranks: rank-transform columns on CPU (O(n×p×log n),
-    # lightweight vs the O(p²×n) GPU matmul that follows)
+    # lightweight vs the O(p²×n) GPU matmul that follows).
+    # matrixStats::colRanks is C-level — avoids p R-level apply() calls.
     if (method == "spearman") {
-      x_mat <- apply(x_mat, 2, rank, na.last = "keep")
+      if (.HAS_MATRIXSTATS) {
+        na_mask <- is.na(x_mat)  # save before colRanks overwrites
+        x_mat <- matrixStats::colRanks(x_mat, ties.method = "average",
+                                       preserveShape = TRUE)
+        # colRanks ignores NAs differently from rank(na.last="keep") — restore NAs
+        if (any(na_mask)) x_mat[na_mask] <- NA
+      } else {
+        x_mat <- apply(x_mat, 2, rank, na.last = "keep")
+      }
     }
 
     # Replace NAs with column means so GPU path (no NA support) is numerically
@@ -333,8 +342,9 @@ match_gene_ids <- function(gene_list, data_rownames) {
     ne_results <- vector("list", length(non_exact))
     # Pre-compute all base forms outside loop — vectorized sub() is O(m) total
     # vs O(m) individual sub() calls inside loop (same complexity but avoids
-    # per-iteration regex compilation overhead)
-    ne_bases <- sub("\\.[0-9]+$", "", non_exact)
+    # per-iteration regex compilation overhead).
+    # Use same double-suffix regex as base_ids (line 308) to handle both .X and .X.XX suffixes
+    ne_bases <- sub("(\\.[0-9]+){1,2}$", "", non_exact)
     ne_has_suffix <- ne_bases != non_exact
     # Pre-compute set membership for base-level IDs in data_rownames (O(m) hash lookup)
     ne_base_in_data <- ne_bases %in% data_rownames

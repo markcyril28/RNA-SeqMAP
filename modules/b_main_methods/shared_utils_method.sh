@@ -248,16 +248,28 @@ create_gene_trans_map() {
 
 # Get available system RAM in MB. Caches result in _CACHED_AVAIL_MB to avoid
 # repeated /proc/meminfo reads in tight loops.
+# Pure bash on Linux: avoids awk fork. O(1) — reads ~25 lines then breaks.
 # Usage: _get_available_ram_mb
 _get_available_ram_mb() {
 	if [[ -n "${_CACHED_AVAIL_MB:-}" ]]; then
 		echo "$_CACHED_AVAIL_MB"
 		return
 	fi
-	local avail_mb
-	avail_mb=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null) \
-		|| avail_mb=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1/1048576}') \
-		|| avail_mb=8192  # fallback: 8GB
+	local avail_mb=""
+	if [[ -f /proc/meminfo ]]; then
+		local _key _val
+		while IFS=' ' read -r _key _val _; do
+			if [[ "$_key" == "MemAvailable:" ]]; then
+				avail_mb=$(( _val / 1024 ))
+				break
+			fi
+		done < /proc/meminfo
+	fi
+	if [[ -z "$avail_mb" || "$avail_mb" -eq 0 ]] 2>/dev/null; then
+		local _raw_bytes
+		_raw_bytes=$(sysctl -n hw.memsize 2>/dev/null) && avail_mb=$(( _raw_bytes / 1048576 ))
+	fi
+	[[ -z "$avail_mb" || "$avail_mb" -eq 0 ]] 2>/dev/null && avail_mb=8192  # fallback: 8GB
 	export _CACHED_AVAIL_MB="$avail_mb"
 	echo "$avail_mb"
 }

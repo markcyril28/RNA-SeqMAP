@@ -27,6 +27,25 @@ source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_method_loaders.R"
 
 cat("\n=== STEP 1: Loading Expression Matrices ===\n\n")
 
+# Shared fallback: try loading a pre-built TPM CSV from tximport output.
+# Used by M3, M4, M5 when per-sample quantification files are not found.
+# O(D) list.files scan + O(G×S) CSV read.  Deduplicates ~30 lines of
+# identical fallback code across 3 loaders.
+.try_prebuilt_tpm <- function(search_base, method_label) {
+  tpm_files <- list.files(search_base, pattern = "_tpm_Gene_ID_.*\\.csv$",
+                          recursive = TRUE, full.names = TRUE)
+  if (length(tpm_files) == 0L) return(NULL)
+  tpm_file <- tpm_files[1L]
+  cat("[", method_label, "] Using pre-built TPM matrix:", tpm_file, "\n")
+  df <- if (.use_dt) {
+    data.table::fread(tpm_file, data.table = FALSE)
+  } else {
+    read.csv(tpm_file, header = TRUE, stringsAsFactors = FALSE, check.names = FALSE)
+  }
+  rownames(df) <- df[[1L]]; df <- df[, -1L, drop = FALSE]
+  as.matrix(df)
+}
+
 # -----------------------------------------------
 # M1: HISAT2 + StringTie (ref-guided)
 # -----------------------------------------------
@@ -63,7 +82,7 @@ load_m1_tpm <- function() {
     if (is.null(df) || !"TPM" %in% colnames(df)) return(NULL)
     setNames(df$TPM, df[[1]])
   }), basename(sample_dirs))
-  tpm_list <- Filter(Negate(is.null), tpm_list)
+  tpm_list <- tpm_list[lengths(tpm_list) > 0L]
 
   tpm_matrix <- .assemble_tpm_matrix(tpm_list, filter_genes = TRUE)
   if (!is.null(tpm_matrix))
@@ -132,7 +151,7 @@ load_m2_tpm <- function() {
       tapply(df$TPM[valid], gene_ids[valid], max, na.rm = TRUE)
     }
   }), basename(sample_dirs))
-  tpm_list <- Filter(Negate(is.null), tpm_list)
+  tpm_list <- tpm_list[lengths(tpm_list) > 0L]
 
   tpm_matrix <- .assemble_tpm_matrix(tpm_list, filter_genes = TRUE)
   if (!is.null(tpm_matrix))
@@ -187,22 +206,10 @@ load_m3_tpm <- function() {
 
   if (length(sample_dirs) == 0) {
     cat("[M3] No sample directories found under", quant_base, "\n")
-    # Fallback: try pre-built TPM matrix from tximport (matches M4 fallback pattern)
-    tpm_search_base <- file.path(POST_PROC_BASE, method,
-                                 "count_matrices_from_STAR", ref_dir)
-    tpm_files <- list.files(tpm_search_base, pattern = "_tpm_Gene_ID_.*\\.csv$",
-                            recursive = TRUE, full.names = TRUE)
-    if (length(tpm_files) > 0) {
-      tpm_file <- tpm_files[1]
-      cat("[M3] Using pre-built TPM matrix:", tpm_file, "\n")
-      df <- if (.use_dt) data.table::fread(tpm_file, data.table = FALSE) else {
-        read.csv(tpm_file, header = TRUE, stringsAsFactors = FALSE,
-                 check.names = FALSE)
-      }
-      rownames(df) <- df[[1]]; df <- df[, -1, drop = FALSE]
-      return(as.matrix(df))
-    }
-    return(NULL)
+    # Fallback: try pre-built TPM matrix from tximport
+    .fb <- .try_prebuilt_tpm(file.path(POST_PROC_BASE, method,
+                                        "count_matrices_from_STAR", ref_dir), "M3")
+    return(if (!is.null(.fb)) .fb else NULL)
   }
 
   # Pre-build named vector for O(1) hash lookup inside parallel workers.
@@ -235,7 +242,7 @@ load_m3_tpm <- function() {
     rs <- rowsum(df$TPM, df$gene_id, reorder = FALSE, na.rm = TRUE)
     setNames(rs[, 1], rownames(rs))
   }), basename(sample_dirs))
-  tpm_list <- Filter(Negate(is.null), tpm_list)
+  tpm_list <- tpm_list[lengths(tpm_list) > 0L]
 
   tpm_matrix <- .assemble_tpm_matrix(tpm_list, filter_genes = TRUE)
   if (!is.null(tpm_matrix))
@@ -278,26 +285,13 @@ load_m4_tpm <- function() {
     rs <- rowsum(df$TPM, df$gene_id, reorder = FALSE, na.rm = TRUE)
     setNames(rs[, 1], rownames(rs))
   }), basename(sample_dirs))
-  tpm_list <- Filter(Negate(is.null), tpm_list)
+  tpm_list <- tpm_list[lengths(tpm_list) > 0L]
 
   if (length(tpm_list) == 0) {
     # Fallback: try pre-built TPM matrix from tximport
-    # tximport_salmon_to_matrices.R saves as {prefix}_tpm_Gene_ID_from_{ref}_gene_level.csv
-    tpm_search_base <- file.path(POST_PROC_BASE, method,
-                                 "count_matrices_from_Salmon_Quant", ref_dir)
-    tpm_files <- list.files(tpm_search_base, pattern = "_tpm_Gene_ID_.*\\.csv$",
-                            recursive = TRUE, full.names = TRUE)
-    if (length(tpm_files) > 0) {
-      tpm_file <- tpm_files[1]
-      cat("[M4] Using pre-built TPM matrix:", tpm_file, "\n")
-      df <- if (.use_dt) data.table::fread(tpm_file, data.table = FALSE) else {
-        read.csv(tpm_file, header = TRUE, stringsAsFactors = FALSE,
-                 check.names = FALSE)
-      }
-      rownames(df) <- df[[1]]; df <- df[, -1, drop = FALSE]
-      return(as.matrix(df))
-    }
-    return(NULL)
+    .fb <- .try_prebuilt_tpm(file.path(POST_PROC_BASE, method,
+                                        "count_matrices_from_Salmon_Quant", ref_dir), "M4")
+    return(if (!is.null(.fb)) .fb else NULL)
   }
 
   tpm_matrix <- .assemble_tpm_matrix(tpm_list, filter_genes = TRUE)
@@ -336,7 +330,7 @@ load_m5_tpm <- function() {
         rs <- rowsum(df$TPM, gene_ids, reorder = FALSE, na.rm = TRUE)
         setNames(rs[, 1], rownames(rs))
       }), basename(sample_dirs))
-      tpm_list <- Filter(Negate(is.null), tpm_list)
+      tpm_list <- tpm_list[lengths(tpm_list) > 0L]
 
       if (length(tpm_list) > 0) {
         tpm_matrix <- .assemble_tpm_matrix(tpm_list, filter_genes = TRUE)
@@ -350,22 +344,9 @@ load_m5_tpm <- function() {
   }
 
   # Fallback: try pre-built TPM matrix from tximport
-  # tximport_rsem_to_matrices.R saves as {prefix}_tpm_Gene_ID_from_{ref}_gene_level.csv
-  # under count_matrices_from_RSEM_Quant/{ref}/gene_level/
-  tpm_search_base <- file.path(POST_PROC_BASE, method,
-                               "count_matrices_from_RSEM_Quant", ref_dir)
-  tpm_files <- list.files(tpm_search_base, pattern = "_tpm_Gene_ID_.*\\.csv$",
-                          recursive = TRUE, full.names = TRUE)
-  if (length(tpm_files) > 0) {
-    tpm_file <- tpm_files[1]
-    cat("[M5] Using pre-built TPM matrix:", tpm_file, "\n")
-    df <- if (.use_dt) data.table::fread(tpm_file, data.table = FALSE) else {
-      read.csv(tpm_file, header = TRUE, stringsAsFactors = FALSE,
-               check.names = FALSE)
-    }
-    rownames(df) <- df[[1]]; df <- df[, -1, drop = FALSE]
-    return(as.matrix(df))
-  }
+  .fb <- .try_prebuilt_tpm(file.path(POST_PROC_BASE, method,
+                                      "count_matrices_from_RSEM_Quant", ref_dir), "M5")
+  if (!is.null(.fb)) return(.fb)
 
   cat("[M5] TPM matrix not found\n")
   return(NULL)
@@ -472,20 +453,22 @@ if (n_methods == 1L) {
 }
 cat("  Common genes across all methods:", length(common_genes), "\n")
 
+# Pre-compute short names once — reused in error reporting, overlap table, and subset loop.
+# Hoisted before the zero-common-genes check so the error path also benefits.
+n_mat <- length(tpm_matrices)
+mat_names <- names(tpm_matrices)
+short_names_map <- setNames(vapply(mat_names, get_short_name, character(1)), mat_names)
+
 if (length(common_genes) == 0) {
   cat("\n  [ERROR] Zero common genes across methods. Per-method gene counts:\n")
   for (m in names(gene_sets)) {
-    cat("    ", get_short_name(m), ":", length(gene_sets[[m]]), "genes",
+    cat("    ", short_names_map[m], ":", length(gene_sets[[m]]), "genes",
         "(first genes:", paste(head(gene_sets[[m]], 3), collapse = ", "), "...)\n")
   }
   stop("No common genes found across methods. Check gene ID formats (suffix stripping may be too aggressive).")
 }
 
 # Pairwise gene overlaps for reporting
-# Pre-compute short names — avoids O(M²) calls to get_short_name()
-n_mat <- length(tpm_matrices)
-mat_names <- names(tpm_matrices)
-short_names_map <- setNames(vapply(mat_names, get_short_name, character(1)), mat_names)
 for (i in seq_len(n_mat - 1)) {
   for (j in seq(i + 1, n_mat)) {
     overlap <- length(intersect(gene_sets[[mat_names[i]]], gene_sets[[mat_names[j]]]))
@@ -524,7 +507,7 @@ cat("\n--- Subsetting to common features ---\n")
 
 for (method in names(tpm_matrices)) {
   tpm_matrices[[method]] <- tpm_matrices[[method]][common_genes, common_samples, drop = FALSE]
-  cat("  ", get_short_name(method), ":", nrow(tpm_matrices[[method]]), "x",
+  cat("  ", short_names_map[method], ":", nrow(tpm_matrices[[method]]), "x",
       ncol(tpm_matrices[[method]]), "\n")
 }
 

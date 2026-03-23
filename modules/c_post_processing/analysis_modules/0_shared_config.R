@@ -527,7 +527,7 @@ load_sample_labels_from_csv <- function(srr_csv_dir = SRR_CSV_DIR) {
     })
   }
   # Merge all label parts at once, first-seen wins (dedup by name)
-  .all_labels <- do.call(c, Filter(Negate(is.null), .label_parts))
+  .all_labels <- do.call(c, .label_parts[lengths(.label_parts) > 0L])
   if (!is.null(.all_labels)) {
     .all_labels <- .all_labels[!duplicated(names(.all_labels))]
     labels <- c(labels, .all_labels[!names(.all_labels) %in% names(labels)])

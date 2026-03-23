@@ -34,8 +34,10 @@ if (exists(".METHOD_LOADERS_SOURCED") && .METHOD_LOADERS_SOURCED) {
     } else 1L
   }
   if (!exists(".par_lapply")) {
+    # Threshold: mclapply fork+merge overhead (~5-10ms per worker) exceeds benefit
+    # for fewer than 5 items. For 1-4 samples, sequential lapply is faster.
     .par_lapply <- function(X, FUN, ...) {
-      if (.use_parallel && .n_cores > 1L && length(X) > 1L) {
+      if (.use_parallel && .n_cores > 1L && length(X) > 4L) {
         tryCatch(
           parallel::mclapply(X, FUN, ..., mc.cores = .n_cores),
           error = function(e) { message("[CONCORDANCE] mclapply failed: ", e$message); lapply(X, FUN, ...) }
@@ -81,9 +83,14 @@ if (exists(".METHOD_LOADERS_SOURCED") && .METHOD_LOADERS_SOURCED) {
         if (filter_genes) all_genes <- all_genes[nzchar(all_genes) & !is.na(all_genes)]
         mat <- matrix(0, nrow = length(all_genes), ncol = length(tpm_list),
                       dimnames = list(all_genes, names(tpm_list)))
+        # Pre-compute gene->row index map: O(G) once, then O(1) named lookup per sample.
+        # Replaces O(G) intersect() per sample → total O(G + S×g) vs prior O(S×G).
+        gene_idx <- setNames(seq_along(all_genes), all_genes)
         for (srr in names(tpm_list)) {
-          genes <- intersect(names(tpm_list[[srr]]), all_genes)
-          mat[genes, srr] <- tpm_list[[srr]][genes]
+          sv <- tpm_list[[srr]]
+          idx <- gene_idx[names(sv)]
+          valid <- !is.na(idx)
+          mat[idx[valid], srr] <- sv[valid]
         }
         if (nrow(mat) == 0) { warning("Matrix assembly produced 0 rows"); return(NULL) }
       }
@@ -151,7 +158,7 @@ if (exists(".METHOD_LOADERS_SOURCED") && .METHOD_LOADERS_SOURCED) {
       if (is.null(df) || !"TPM" %in% colnames(df)) return(NULL)
       setNames(df$TPM, df[[1]])
     }), basename(sample_dirs))
-    .assemble_tpm_matrix(Filter(Negate(is.null), tpm_list), filter_genes = TRUE)
+    .assemble_tpm_matrix(tpm_list[lengths(tpm_list) > 0L], filter_genes = TRUE)
   }
 
   .load_stringtie_denovo_tpm <- function(method, ref_dir) {
@@ -177,7 +184,7 @@ if (exists(".METHOD_LOADERS_SOURCED") && .METHOD_LOADERS_SOURCED) {
         tapply(df$TPM[valid], gene_ids[valid], max, na.rm = TRUE)
       }
     }), basename(sample_dirs))
-    .assemble_tpm_matrix(Filter(Negate(is.null), tpm_list), filter_genes = TRUE)
+    .assemble_tpm_matrix(tpm_list[lengths(tpm_list) > 0L], filter_genes = TRUE)
   }
 
   .load_star_salmon_tpm <- function(method, ref_dir) {
@@ -249,7 +256,7 @@ if (exists(".METHOD_LOADERS_SOURCED") && .METHOD_LOADERS_SOURCED) {
       rs <- rowsum(df$TPM, df$gene_id, reorder = FALSE, na.rm = TRUE)
       setNames(rs[, 1], rownames(rs))
     }), basename(sample_dirs))
-    .assemble_tpm_matrix(Filter(Negate(is.null), tpm_list), filter_genes = TRUE)
+    .assemble_tpm_matrix(tpm_list[lengths(tpm_list) > 0L], filter_genes = TRUE)
   }
 
   .load_salmon_saf_tpm <- function(method, ref_dir) {
@@ -285,7 +292,7 @@ if (exists(".METHOD_LOADERS_SOURCED") && .METHOD_LOADERS_SOURCED) {
       rs <- rowsum(df$TPM, df$gene_id, reorder = FALSE, na.rm = TRUE)
       setNames(rs[, 1], rownames(rs))
     }), basename(sample_dirs))
-    .assemble_tpm_matrix(Filter(Negate(is.null), tpm_list), filter_genes = TRUE)
+    .assemble_tpm_matrix(tpm_list[lengths(tpm_list) > 0L], filter_genes = TRUE)
   }
 
   .load_rsem_tpm <- function(method, ref_dir) {
@@ -307,7 +314,7 @@ if (exists(".METHOD_LOADERS_SOURCED") && .METHOD_LOADERS_SOURCED) {
           rs <- rowsum(df$TPM, gene_ids, reorder = FALSE, na.rm = TRUE)
           setNames(rs[, 1], rownames(rs))
         }), basename(sample_dirs))
-        tpm_list <- Filter(Negate(is.null), tpm_list)
+        tpm_list <- tpm_list[lengths(tpm_list) > 0L]
         if (length(tpm_list) > 0) {
           mat <- .assemble_tpm_matrix(tpm_list, filter_genes = TRUE)
           if (!is.null(mat)) return(mat)

@@ -141,16 +141,21 @@ def create_viewer_cache(post_proc_dir: Path, records: list[dict]) -> None:
         dst = cache_dir / short_name
 
         # Incremental: skip if cached file exists and is not older than source.
-        # Uses mtime comparison — if source was regenerated, re-link.
-        if dst.exists():
+        # Single stat() replaces exists() + stat() — 1 syscall instead of 2 per cached file.
+        # O(C) where C = cached files; saves ~C stat syscalls on WSL2 cross-fs mounts.
+        try:
+            _dst_mtime = dst.stat().st_mtime
+        except OSError:
+            _dst_mtime = None
+        if _dst_mtime is not None:
             try:
-                if dst.stat().st_mtime >= src.stat().st_mtime:
+                if _dst_mtime >= src.stat().st_mtime:
                     rec["original_path"] = original_rel
                     rec["path"] = f"_viewer_cache/{short_name}"
                     reused += 1
                     continue
             except OSError:
-                pass  # stat failed — fall through to recreate
+                pass  # src stat failed — fall through to recreate
             # Stale: source is newer, remove old cached entry
             try:
                 dst.unlink()
