@@ -22,13 +22,6 @@ if (!file.exists(concordance_rds)) {
 }
 data <- readRDS(HARMONIZED_RDS)
 concordance <- readRDS(concordance_rds)
-# Pre-compute path to avoid redundant file.path() call
-ranking_rds_path <- file.path(OUTPUT_DIR, "ranking_results.rds")
-ranking_results <- if (file.exists(ranking_rds_path)) {
-  readRDS(ranking_rds_path)
-} else {
-  list()
-}
 
 methods <- names(data$tpm_matrices)
 short_names <- vapply(methods, get_short_name, character(1))
@@ -114,7 +107,7 @@ add("")
 # Section 2: Quantification Concordance
 # -----------------------------------------------
 
-# Sections 2-4 require median_spearman from 2_quantification_concordance.R.
+# Sections 2-3 require median_spearman from 2_quantification_concordance.R.
 # cross_gene_group mode uses 2_gene_group_concordance.R which produces
 # gene_cor_matrices instead — skip the method-pair concordance sections.
 .has_spearman <- !is.null(concordance$median_spearman)
@@ -152,7 +145,7 @@ sp_overall <- median(sp_upper_vals, na.rm = TRUE)
 sp_min <- min(sp_upper_vals, na.rm = TRUE)
 sp_max <- max(sp_upper_vals, na.rm = TRUE)
 
-# Find best/worst pairs — upper-triangle mask computed once and reused in Section 4
+# Find best/worst pairs — upper-triangle mask computed once and reused in Section 3
 # (avoids redundant O(M²) copy + mask at lines ~399-401)
 .sp_upper_masked <- concordance$median_spearman
 diag(.sp_upper_masked) <- NA
@@ -260,152 +253,10 @@ if (n_below_90 > 0) {
 add("")
 
 # -----------------------------------------------
-# Section 3: Ranking Stability
+# Section 3: Conclusions
 # -----------------------------------------------
 
-add("## 3. Ranking Stability for Gene Groups of Interest")
-add("")
-add("For each gene group, genes are ranked by mean TPM per method (rank 1 = highest).")
-add("Genes are flagged if their fractional rank change exceeds ",
-    RANKING_CHANGE_THRESHOLD * 100, "% of the group size.")
-add("")
-
-for (.gi in seq_along(ranking_results)) {
-  gene_group <- names(ranking_results)[.gi]
-  rdf <- ranking_results[[.gi]]
-  add("### 3.", .gi, " ", gene_group)
-  add("")
-
-  n_total <- nrow(rdf)
-  n_flagged <- sum(rdf$Flagged)
-  add("**Genes:** ", n_total, " | **Flagged (unstable):** ", n_flagged)
-  add("")
-
-  # Ranking table
-  method_cols <- vapply(methods, get_short_name, character(1))
-  display_cols <- intersect(method_cols, colnames(rdf))
-
-  add("| Gene | Short Name | Median Rank | Range | SD | Flagged | ",
-      paste(display_cols, collapse = " | "), " | Mean TPM |")
-  sep_cols <- paste(rep.int("---:", length(display_cols)), collapse = " | ")
-  add("|------|-----------|----------:|-----:|---:|---------| ", sep_cols, " |--------:|")
-
-  # Pre-extract columns as vectors: O(C + R) vs O(R × C) for rdf[i,] subsetting
-  .gene_ids <- rdf$Gene_ID
-  .short_names <- rdf$Shortened_Name
-  .med_ranks <- rdf$Median_Rank
-  .rank_ranges <- rdf$Rank_Range
-  .rank_sds <- rdf$Rank_SD
-  .flagged <- ifelse(rdf$Flagged, "**YES**", "")
-  .mean_tpms <- rdf$Mean_TPM
-  .rank_mat <- as.matrix(rdf[, display_cols, drop = FALSE])
-  # Pre-format entire matrix: vectorized row construction avoids O(G) per-row paste
-  .rank_mat_str <- matrix(sprintf("%.0f", .rank_mat), nrow = nrow(.rank_mat),
-                          dimnames = dimnames(.rank_mat))
-  # Vectorized row-paste: single C-level call vs O(G) per-row paste dispatch
-  .rank_col_str <- do.call(paste, c(as.data.frame(.rank_mat_str, stringsAsFactors = FALSE), sep = " | "))
-  .table_rows <- paste0("| ", .gene_ids, " | ", .short_names,
-                        " | ", .med_ranks,
-                        " | ", .rank_ranges,
-                        " | ", .rank_sds,
-                        " | ", .flagged,
-                        " | ", .rank_col_str,
-                        " | ", .mean_tpms, " |")
-  invisible(lapply(.table_rows, add))
-  add("")
-
-  add("![Ranking Heatmap](figures/ranking_heatmap_", gene_group, ".png)")
-  add("")
-  add("#### Z-Score Normalized Expression (0\u201310 Scale)")
-  add("")
-  add("Per-gene Z-score scaled to 0\u201310 across methods. Blue (0) = method gives lowest estimate,")
-  add("white (5) = average, red (10) = highest. Uniform rows indicate strong method agreement.")
-  add("")
-  add("![Z-Score Heatmap](figures/zscore_heatmap_", gene_group, ".png)")
-  add("")
-  add("![Bump Chart](figures/ranking_bump_chart_", gene_group, ".png)")
-  add("")
-
-  # ---- Data-driven interpretation of ranking stability per gene group ----
-  add("#### Interpretation: ", gene_group)
-  add("")
-
-  pct_flagged <- 100 * n_flagged / n_total
-
-  if (n_flagged == 0) {
-    add("**All ", n_total, " genes have stable rankings across methods.** No gene's rank ",
-        "changes by more than ", RANKING_CHANGE_THRESHOLD * 100, "% of the group size. ",
-        "This indicates robust cross-method consistency for this gene group.")
-  } else if (pct_flagged < 20) {
-    add("**", n_flagged, "/", n_total, " genes (", sprintf("%.0f%%", pct_flagged),
-        ") show unstable rankings.** Most genes in this group are consistently ranked ",
-        "across methods, but a few show notable rank shifts.")
-  } else if (pct_flagged < 50) {
-    add("**", n_flagged, "/", n_total, " genes (", sprintf("%.0f%%", pct_flagged),
-        ") show unstable rankings.** A substantial portion of this gene group is ",
-        "ranked differently depending on which method is used. Biological conclusions ",
-        "about relative expression levels within this group should be verified.")
-  } else {
-    add("**", n_flagged, "/", n_total, " genes (", sprintf("%.0f%%", pct_flagged),
-        ") show unstable rankings.** The majority of genes in this group are ranked ",
-        "differently across methods, suggesting high method sensitivity for this gene set. ",
-        "Use caution when interpreting expression hierarchies within this group.")
-  }
-  add("")
-
-  # Identify most/least stable genes
-  if (n_total >= 3) {
-    most_stable <- rdf[which.min(rdf$Rank_SD), ]
-    least_stable <- rdf[which.max(rdf$Rank_SD), ]
-
-    add("- **Most stable gene:** ", most_stable$Shortened_Name, " (",
-        most_stable$Gene_ID, ") \u2014 median rank ", most_stable$Median_Rank,
-        ", range ", most_stable$Rank_Range, ", SD ", most_stable$Rank_SD)
-    add("- **Least stable gene:** ", least_stable$Shortened_Name, " (",
-        least_stable$Gene_ID, ") \u2014 median rank ", least_stable$Median_Rank,
-        ", range ", least_stable$Rank_Range, ", SD ", least_stable$Rank_SD)
-    add("")
-
-    # Analyze whether instability correlates with expression level
-    if ("Mean_TPM" %in% colnames(rdf)) {
-      # Columns are already numeric from round() in 3_ranking_stability.R — skip coercion
-      mean_tpm_vals <- rdf$Mean_TPM
-      rank_sd_vals <- rdf$Rank_SD
-      if (length(mean_tpm_vals) >= 5 && sd(rank_sd_vals) > 0) {
-        cor_test <- tryCatch(
-          cor.test(log2(mean_tpm_vals + 1), rank_sd_vals, method = "spearman"),
-          error = function(e) NULL
-        )
-        if (!is.null(cor_test)) {
-          if (cor_test$p.value < 0.05 && cor_test$estimate < -0.3) {
-            add("Rank instability is significantly correlated with lower expression levels ",
-                "(Spearman \u03C1 = ", sprintf("%.2f", cor_test$estimate),
-                ", p = ", sprintf("%.3g", cor_test$p.value),
-                "), confirming that low-expression genes are harder to rank consistently.")
-          } else if (cor_test$p.value < 0.05 && cor_test$estimate > 0.3) {
-            add("Unexpectedly, rank instability is correlated with *higher* expression levels ",
-                "(Spearman \u03C1 = ", sprintf("%.2f", cor_test$estimate),
-                ", p = ", sprintf("%.3g", cor_test$p.value),
-                "). This suggests method-specific biases affect highly-expressed genes in this group.")
-          } else {
-            add("Rank instability does not strongly correlate with expression level (",
-                "Spearman \u03C1 = ", sprintf("%.2f", cor_test$estimate),
-                ", p = ", sprintf("%.2g", cor_test$p.value),
-                "), indicating that method disagreement on ranking is not simply a function of ",
-                "expression magnitude.")
-          }
-          add("")
-        }
-      }
-    }
-  }
-}
-
-# -----------------------------------------------
-# Section 4: Conclusions
-# -----------------------------------------------
-
-add("## 4. Summary and Recommendations")
+add("## 3. Summary and Recommendations")
 add("")
 
 # Compute overall concordance assessment
@@ -429,7 +280,7 @@ if (!is.finite(overall_median)) {
 }
 add("")
 
-# Most/least concordant pairs — reuse .sp_upper_masked computed in Section 2
+# Most/least concordant pairs — reuse .sp_upper_masked from Section 2
 if (is.finite(sp_full_max) && is.finite(sp_full_min)) {
   best_pair <- which(.sp_upper_masked == sp_full_max, arr.ind = TRUE)
   worst_pair <- which(.sp_upper_masked == sp_full_min, arr.ind = TRUE)
@@ -452,19 +303,6 @@ if (is.finite(overall_median) && overall_median > 0.9) {
   add("- Consider using consensus results from multiple methods for higher confidence.")
 }
 add("")
-
-if (length(ranking_results) > 0) {
-  add("### Ranking Stability Summary")
-  add("")
-  total_flagged <- sum(vapply(ranking_results, function(r) sum(r$Flagged), integer(1)))
-  total_genes <- sum(vapply(ranking_results, nrow, integer(1)))
-  add("- Across all gene groups: ", total_flagged, "/", total_genes,
-      " genes show unstable rankings across methods.")
-  if (total_flagged > 0) {
-    add("- Flagged genes: [`tables/ranking_instability_flagged.csv`](tables/ranking_instability_flagged.csv)")
-  }
-  add("")
-}
 
 } else if (CONCORDANCE_MODE == "cross_equivalent_gene") {
   # cross_equivalent_gene mode: per-gene correlations across genome pairs
@@ -523,7 +361,7 @@ if (length(ranking_results) > 0) {
 }  # end .has_spearman guard
 
 add("---")
-add("*Generated by HeatSeq Cross-", .item_label, " Concordance Analysis*")
+add("*Generated by RNA-SeqMAP Cross-", .item_label, " Concordance Analysis*")
 
 # -----------------------------------------------
 # Write report
@@ -585,107 +423,6 @@ paste0("  Common samples: ", length(data$common_samples)),
 "",
 "",
 "================================================================================",
-"2. RANKING HEATMAPS (per gene group)",
-"   Files: ranking_heatmap_<gene_group>.png",
-"================================================================================",
-"",
-"WHAT IT SHOWS:",
-"  How each method ranks the genes in a gene group by mean expression. Rank 1",
-"  is the highest expressed gene.",
-"",
-"HOW TO READ IT:",
-"  - Rows: genes (using shortened/display names), ordered by median rank.",
-"  - Columns: methods.",
-"  - Cell values: the rank assigned by that method (1 = highest expression).",
-"  - Cell color: dark purple = high rank (highly expressed), light pink =",
-"    low rank (lowly expressed).",
-"  - Right-side annotations:",
-"      * 'Stability' column: green = stable ranking across methods,",
-"        orange = unstable (flagged for rank instability).",
-"      * 'Rank_Range' bar plot: the difference between the highest and",
-"        lowest rank across methods. Larger bars = more disagreement in",
-"        where a gene falls in the expression hierarchy.",
-"",
-"WHAT TO LOOK FOR:",
-"  - Uniform rows (same rank across all columns): all methods agree on",
-"    this gene's relative expression level -- high confidence result.",
-"  - Rows with large rank jumps (e.g., rank 2 in one method, rank 15 in",
-"    another): methods disagree on how expressed this gene is relative to",
-"    others in the group.",
-paste0("  - A gene is flagged as unstable when its fractional rank change exceeds ",
-       RANKING_CHANGE_THRESHOLD * 100, "% (rank range / total genes > ",
-       RANKING_CHANGE_THRESHOLD, ")."),
-"  - Consistently top-ranked genes (dark purple across all methods): the",
-"    most reliably highly-expressed genes in the group.",
-"  - Consistently bottom-ranked genes (light across all methods): reliably",
-"    lowly-expressed, regardless of method.",
-"",
-"",
-"================================================================================",
-"2b. Z-SCORE EXPRESSION HEATMAPS (per gene group)",
-"    Files: zscore_heatmap_<gene_group>.png",
-"================================================================================",
-"",
-"WHAT IT SHOWS:",
-"  Each gene's mean expression normalized to a 0-10 scale across methods.",
-"  Unlike the ranking heatmap (which shows ordinal ranks), this shows the",
-"  *magnitude* of cross-method differences on a common per-gene scale.",
-"",
-"HOW THE SCALE WORKS:",
-"  For each gene: log2(mean_TPM + 1) is computed per method, then Z-scored",
-"  across methods and rescaled so 0 = the method with the lowest estimate",
-"  and 10 = the method with the highest estimate. A score of 5.0 means",
-"  that method matches the cross-method average.",
-"",
-"HOW TO READ IT:",
-"  - Blue cells (0-3): method gives a relatively low expression estimate.",
-"  - White cells (~5): method matches the cross-method average.",
-"  - Red cells (7-10): method gives a relatively high expression estimate.",
-"  - Rows are in the same order as the ranking heatmap (by median rank).",
-"  - Right-side Rank_Range barplot: same as the ranking heatmap.",
-"  - Cell values show the 0-10 score to one decimal place.",
-"",
-"WHAT TO LOOK FOR:",
-"  - Mostly white rows: strong agreement -- all methods give similar estimates.",
-"  - Rows with strong blue-red contrast: methods disagree on this gene.",
-"  - A column that is consistently blue or red across many genes: that method",
-"    systematically under/overestimates this gene group.",
-"  - Compare with the ranking heatmap: a rank change may reflect a tiny",
-"    expression difference (narrow Z-range) or a large one (extreme blue-red).",
-"",
-"",
-"================================================================================",
-"3. RANKING BUMP CHARTS (per gene group)",
-"   Files: ranking_bump_chart_<gene_group>.png",
-"================================================================================",
-"",
-"WHAT IT SHOWS:",
-"  A bump chart / slope graph tracking each gene's rank across methods.",
-"  Each line is one gene, and horizontal position shows the method.",
-"",
-"HOW TO READ IT:",
-"  - X-axis: methods (left to right).",
-"  - Y-axis: rank (1 at top = highest expression, N at bottom = lowest).",
-"  - Each colored line represents one gene across methods.",
-"  - Solid thick lines: flagged genes (unstable ranking).",
-"  - Dashed thin lines: stable genes (consistent ranking).",
-"  - Legend (right side): maps line colors to gene names.",
-"",
-"WHAT TO LOOK FOR:",
-"  - Horizontal lines: the gene maintains the same rank across all methods",
-"    -- strong cross-method consistency.",
-"  - Lines with steep slopes: the gene's ranking changes substantially",
-"    between methods -- interpret with caution.",
-"  - Crossing lines: genes that 'swap' positions between methods. If many",
-"    lines cross between the same two methods, those methods disagree on",
-"    the relative expression ordering within this gene group.",
-"  - Clusters of stable lines at the top: genes that are reliably the",
-"    highest expressed in the group, regardless of method.",
-"  - One method with many crossings: that method may handle this gene",
-"    group differently (e.g., multi-mapped reads, transcript isoforms).",
-"",
-"",
-"================================================================================",
 " GENERAL NOTES",
 "================================================================================",
 "",
@@ -697,8 +434,6 @@ paste0("  - A gene is flagged as unstable when its fractional rank change exceed
 "THRESHOLDS USED:",
 paste0("  - Minimum expression: ", CONCORDANCE_MIN_EXPR, " TPM (genes below this are treated as unexpressed)"),
 paste0("  - Minimum samples: ", CONCORDANCE_MIN_SAMPLES, " (gene must be expressed in >= this many samples)"),
-paste0("  - Ranking instability: ", RANKING_CHANGE_THRESHOLD * 100,
-       "% (rank range / total genes > ", RANKING_CHANGE_THRESHOLD, " flags a gene)"),
 "",
 "WHAT DRIVES METHOD DISAGREEMENT:",
 "  - Multi-mapping reads: methods handle ambiguous reads differently.",

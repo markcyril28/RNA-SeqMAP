@@ -31,25 +31,6 @@ if (file.exists(.utility_funcs_path)) {
 }
 rm(.shared_config_path, .utility_funcs_path)
 
-# Source match_gene_ids if not already defined (needed by ranking stability).
-# The function may be in 1_utility_functions.R (sourced above) or in the standalone
-# utilities/match_gene_ids.R file. Try the standalone file first, then 1_utility_functions.R.
-if (!exists("match_gene_ids", mode = "function")) {
-  .match_ids_standalone <- file.path(dirname(ANALYSIS_MODULES_DIR), "utilities", "match_gene_ids.R")
-  .util_funcs_fallback <- file.path(ANALYSIS_MODULES_DIR, "1_utility_functions.R")
-  if (file.exists(.match_ids_standalone)) {
-    source(.match_ids_standalone)
-  } else if (file.exists(.util_funcs_fallback)) {
-    source(.util_funcs_fallback)
-  } else {
-    stop("[CONCORDANCE CONFIG] match_gene_ids() not defined and neither match_gene_ids.R nor 1_utility_functions.R found.",
-         "\n  Searched: ", .match_ids_standalone,
-         "\n  Searched: ", .util_funcs_fallback,
-         "\n  This function is required by ranking stability analysis.")
-  }
-  rm(.match_ids_standalone, .util_funcs_fallback)
-}
-
 # -----------------------------------------------
 # Concordance-specific configuration
 # -----------------------------------------------
@@ -120,7 +101,7 @@ CONCORDANCE_GENOMES <- if (nzchar(CONCORDANCE_GENOMES_STR)) {
   character(0)
 }
 
-# Gene groups for ranking stability
+# Gene groups for concordance analysis
 GENE_GROUPS_STR <- Sys.getenv("GENE_GROUPS", "SmelDMPs_v5_with_18s_and_HAP2,Selected_SmelGRF-GIF_with_two_GIF")
 CONCORDANCE_GENE_GROUPS <- trimws(strsplit(GENE_GROUPS_STR, ",")[[1]])
 
@@ -179,7 +160,8 @@ if (!exists("FIGURE_DPI") || !is.integer(FIGURE_DPI)) {
 calc_figure_layout <- function(row_labels, col_labels,
                                col_rot = 45, hm_body_cm = c(14, 14),
                                has_dendro = TRUE, has_title = TRUE,
-                               legend_width_cm = 4, font_size = 13) {
+                               legend_width_cm = 4, font_size = 13,
+                               title_lines = 1) {
   if (length(hm_body_cm) == 1) hm_body_cm <- rep(hm_body_cm, 2)
 
   # Estimate max label width in cm (~0.022 cm per character per pt at 300 DPI)
@@ -194,10 +176,12 @@ calc_figure_layout <- function(row_labels, col_labels,
   col_label_width_cm  <- max_col_chars * char_width_cm * abs(cos(col_rot_rad))
 
   # Padding in mm: bottom (col labels), left (row labels), top (title+dendro), right (legend)
-  pad_bottom <- max(20, col_label_height_cm * 10 + 15)
-  pad_left   <- max(15, row_label_cm * 10 + 10)
-  pad_top    <- 15 + (if (has_title) 15 else 0) + (if (has_dendro) 10 else 0)
-  pad_right  <- max(20, legend_width_cm * 10 + 15)
+  # title_lines scales top padding: each line ~8mm at 14pt; floor at 15mm for single-line titles
+  pad_bottom  <- max(20, col_label_height_cm * 10 + 15)
+  pad_left    <- max(15, row_label_cm * 10 + 10)
+  title_h_mm  <- if (has_title) max(15, title_lines * 8 + 5) else 0
+  pad_top     <- 15 + title_h_mm + (if (has_dendro) 10 else 0)
+  pad_right   <- max(20, legend_width_cm * 10 + 15)
 
   # Total figure size in cm
   total_w_cm <- pad_left / 10 + hm_body_cm[1] + pad_right / 10 +
@@ -229,7 +213,6 @@ HARMONIZED_RDS <- file.path(OUTPUT_DIR, "harmonized_tpm_matrices.rds")
 # Analysis parameters
 CONCORDANCE_MIN_EXPR <- 0.1       # Minimum TPM to consider a gene "expressed"
 CONCORDANCE_MIN_SAMPLES <- 3      # Gene must be expressed in at least this many samples
-RANKING_CHANGE_THRESHOLD <- 0.3   # Fractional rank change above this is "drastic"
 CORRELATION_MIN_GENES <- 10       # Minimum nonzero genes per sample for pairwise correlation
 
 # -----------------------------------------------
