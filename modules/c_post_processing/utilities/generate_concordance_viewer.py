@@ -13,6 +13,7 @@ Scans for:
 """
 
 import argparse
+import datetime
 import json
 import os
 import sys
@@ -116,7 +117,7 @@ def unique_sorted(items: list[dict], key: str) -> list[str]:
 
 def build_manifest(figures, tables, reports) -> dict:
     return {
-        "generated": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
+        "generated": datetime.datetime.now().isoformat(timespec="seconds"),
         "total_figures": len(figures),
         "total_tables": len(tables),
         "total_reports": len(reports),

@@ -105,18 +105,21 @@ def create_viewer_cache(post_proc_dir: Path, records: list[dict]) -> None:
     of the original relative path.  Manifest records are updated in-place so
     ``img.path`` points to the short path and ``img.original_path`` retains
     the original for display / download filename purposes.
+
+    Incremental: existing cache entries are reused if the cached file already
+    exists and the source file has not been modified since.  Stale entries
+    (present in cache but not referenced by any current record) are removed.
+    This avoids the O(R) full-rebuild cost on re-generation runs where only
+    a few images have changed — significant on WSL2 where filesystem ops are
+    expensive (~20-60 ms per hardlink/copy vs ~1 ms on native Linux).
     """
     cache_dir = post_proc_dir / "_viewer_cache"
-
-    # Clean previous cache
-    if cache_dir.exists():
-        try:
-            shutil.rmtree(cache_dir)
-        except OSError as e:
-            print(f"WARNING: Could not fully clean cache dir: {e}", file=sys.stderr)
     cache_dir.mkdir(exist_ok=True)
 
+    # O(R) pass: compute short names and link/copy only new or stale entries
     used_names: set[str] = set()
+    created = 0
+    reused = 0
     for rec in records:
         original_rel = rec["path"]  # e.g. "M1_.../file.png"
         src = post_proc_dir / original_rel
@@ -137,6 +140,23 @@ def create_viewer_cache(post_proc_dir: Path, records: list[dict]) -> None:
 
         dst = cache_dir / short_name
 
+        # Incremental: skip if cached file exists and is not older than source.
+        # Uses mtime comparison — if source was regenerated, re-link.
+        if dst.exists():
+            try:
+                if dst.stat().st_mtime >= src.stat().st_mtime:
+                    rec["original_path"] = original_rel
+                    rec["path"] = f"_viewer_cache/{short_name}"
+                    reused += 1
+                    continue
+            except OSError:
+                pass  # stat failed — fall through to recreate
+            # Stale: source is newer, remove old cached entry
+            try:
+                dst.unlink()
+            except OSError:
+                pass
+
         # Use \\?\ prefix on Windows to bypass 260-char MAX_PATH
         src_s = _win_long(src)
         dst_s = _win_long(dst)
@@ -152,6 +172,24 @@ def create_viewer_cache(post_proc_dir: Path, records: list[dict]) -> None:
 
         rec["original_path"] = original_rel
         rec["path"] = f"_viewer_cache/{short_name}"
+        created += 1
+
+    # Remove stale cache entries not referenced by any current record.
+    # O(E) where E = existing cache files.
+    removed = 0
+    try:
+        for cached in cache_dir.iterdir():
+            if cached.name not in used_names:
+                try:
+                    cached.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+    print(f"  Cache: {reused} reused, {created} created, {removed} stale removed",
+          file=sys.stderr)
 
 
 # ── HTML template ─────────────────────────────────────────────────────────────
