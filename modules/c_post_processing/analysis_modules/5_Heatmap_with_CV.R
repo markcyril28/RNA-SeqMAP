@@ -518,6 +518,8 @@ run_cv_heatmap <- function(config = NULL, matrices_dir = NULL) {
   cat("Output directory:", CV_HEATMAP_OUT_DIR, "\n")
 }
 
-if (!interactive() && identical(environment(), globalenv())) {
+# Run if executed directly (not sourced by batch_dispatcher.R)
+if (!interactive() && identical(environment(), globalenv()) &&
+    !isTRUE(get0(".BATCH_DISPATCHER_ACTIVE"))) {
   run_cv_heatmap()
 }

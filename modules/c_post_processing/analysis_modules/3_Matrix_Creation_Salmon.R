@@ -9,9 +9,6 @@
 #   SRR_COMBINED_LIST_STR, GENE_GROUPS_STR, GENE_GROUPS_DIR,
 #   SALMON_GENERATE_GENE_LEVEL, SALMON_GENERATE_ISOFORM_LEVEL
 
-GENERATE_GENE_LEVEL    <- isTRUE(as.logical(Sys.getenv("SALMON_GENERATE_GENE_LEVEL",    "TRUE")))
-GENERATE_ISOFORM_LEVEL <- isTRUE(as.logical(Sys.getenv("SALMON_GENERATE_ISOFORM_LEVEL", "TRUE")))
-
 suppressPackageStartupMessages(library(tximport))
 
 SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", ".")
@@ -54,8 +51,12 @@ import_salmon <- function(quant_dir, sample_ids, tx2gene = NULL) {
 }
 
 # ===============================================
-# TX2GENE LOOKUP (mirrors tximport_salmon_to_matrices.R search strategy)
+# MAIN (tx2gene lookup + gene/isoform-level import)
 # ===============================================
+
+run_salmon_matrix_creation <- function() {
+GENERATE_GENE_LEVEL    <- isTRUE(as.logical(Sys.getenv("SALMON_GENERATE_GENE_LEVEL",    "TRUE")))
+GENERATE_ISOFORM_LEVEL <- isTRUE(as.logical(Sys.getenv("SALMON_GENERATE_ISOFORM_LEVEL", "TRUE")))
 
 .base_dir         <- Sys.getenv("BASE_DIR", "")
 .input_fastas_dir <- Sys.getenv("INPUT_FASTAS_DIR", unset = "")
@@ -72,9 +73,12 @@ if (!nzchar(.input_fastas_dir) && nzchar(.base_dir))
   file.path(.input_fastas_dir, "fasta",   "reference_genome", paste0(MASTER_REFERENCE, ".fasta.gene_trans_map"))
 )
 
+# Vectorized candidate check: single batch stat instead of sequential loop  O(1) syscall batch
 .tx2gene_file <- NULL
-for (.cand in .candidates) {
-  if (nzchar(.cand) && file.exists(.cand)) { .tx2gene_file <- .cand; break }
+.nonempty <- nzchar(.candidates)
+if (any(.nonempty)) {
+  .found <- .nonempty & file.exists(.candidates)
+  if (any(.found)) .tx2gene_file <- .candidates[which(.found)[1L]]
 }
 # Only recurse directory tree if direct paths failed
 if (is.null(.tx2gene_file) && nzchar(.input_fastas_dir)) {
@@ -108,11 +112,7 @@ if (is.null(.tx2gene_file) && nzchar(.input_fastas_dir)) {
 }
 
 rm(list = intersect(c(".base_dir", ".input_fastas_dir", ".candidates",
-                       ".tx2gene_file", ".cand", ".all_maps", ".hits"), ls(all.names = TRUE)))
-
-# ===============================================
-# MAIN
-# ===============================================
+                       ".tx2gene_file", ".nonempty", ".found", ".all_maps", ".hits"), ls(all.names = TRUE)))
 
 cat("\n", strrep("=", 60), "\n")
 cat("MATRIX CREATION - M4 Salmon\n")
@@ -214,3 +214,10 @@ if (GENERATE_ISOFORM_LEVEL) {
 if (exists(".tx2gene")) rm(.tx2gene)
 
 run_matrix_saving(results, output_dir, MASTER_REFERENCE, count_label, GENE_GROUPS_DIR)
+}  # end run_salmon_matrix_creation
+
+# Run if executed directly (not sourced by batch_dispatcher.R)
+if (!interactive() && identical(environment(), globalenv()) &&
+    !isTRUE(get0(".BATCH_DISPATCHER_ACTIVE"))) {
+  run_salmon_matrix_creation()
+}

@@ -9,9 +9,6 @@
 #   SRR_COMBINED_LIST_STR, GENE_GROUPS_STR, GENE_GROUPS_DIR,
 #   STAR_GENERATE_GENE_LEVEL, STAR_GENERATE_ISOFORM_LEVEL
 
-GENERATE_GENE_LEVEL    <- isTRUE(as.logical(Sys.getenv("STAR_GENERATE_GENE_LEVEL",    "TRUE")))
-GENERATE_ISOFORM_LEVEL <- isTRUE(as.logical(Sys.getenv("STAR_GENERATE_ISOFORM_LEVEL", "TRUE")))
-
 suppressPackageStartupMessages(library(tximport))
 
 SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", ".")
@@ -22,6 +19,10 @@ source(file.path(SCRIPT_DIR, "3_Matrix_Creation_utils.R"))
 # ===============================================
 # MAIN
 # ===============================================
+
+run_star_matrix_creation <- function() {
+GENERATE_GENE_LEVEL    <- isTRUE(as.logical(Sys.getenv("STAR_GENERATE_GENE_LEVEL",    "TRUE")))
+GENERATE_ISOFORM_LEVEL <- isTRUE(as.logical(Sys.getenv("STAR_GENERATE_ISOFORM_LEVEL", "TRUE")))
 
 cat("\n", strrep("=", 60), "\n")
 cat("MATRIX CREATION - M3 STAR + Salmon\n")
@@ -120,8 +121,9 @@ if (GENERATE_GENE_LEVEL) {
     # .rds sidecar cache: 5-10x faster reload vs TSV re-parsing across Rscript invocations.
     # Matches the caching pattern in read_count_matrix() from 1_utility_functions.R.
     .tx2gene_rds <- paste0(tx2gene_files[1], ".tx2gene.rds")
-    .tx2gene_src_mtime <- file.mtime(tx2gene_files[1])
-    if (file.exists(.tx2gene_rds) && file.mtime(.tx2gene_rds) >= .tx2gene_src_mtime) {
+    # Batch file.info(): 1 syscall for both files instead of 3 (mtime + exists + mtime)
+    .both_info <- file.info(c(.tx2gene_rds, tx2gene_files[1]))
+    if (!is.na(.both_info$mtime[1]) && .both_info$mtime[1] >= .both_info$mtime[2]) {
       raw_tx2gene <- readRDS(.tx2gene_rds)
       cat("  Loaded tx2gene from .rds cache:", .tx2gene_rds, "\n")
     } else {
@@ -262,3 +264,10 @@ if (GENERATE_ISOFORM_LEVEL) {
 }
 
 run_matrix_saving(results, output_dir, MASTER_REFERENCE, count_label, GENE_GROUPS_DIR)
+}  # end run_star_matrix_creation
+
+# Run if executed directly (not sourced by batch_dispatcher.R)
+if (!interactive() && identical(environment(), globalenv()) &&
+    !isTRUE(get0(".BATCH_DISPATCHER_ACTIVE"))) {
+  run_star_matrix_creation()
+}

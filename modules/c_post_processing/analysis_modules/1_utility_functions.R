@@ -107,80 +107,6 @@ gpu_cor <- function(x, method = "pearson") {
   return(cor(x, method = method, use = "pairwise.complete.obs"))
 }
 
-# GPU-accelerated PCA
-gpu_prcomp <- function(x, center = TRUE, scale. = FALSE, rank. = NULL) {
-  # Check if matrix fits in GPU VRAM
-  if (!GPU_AVAILABLE || nrow(x) < 50 || !fits_in_gpu_vram(nrow(x), ncol(x))) {
-    return(prcomp(x, center = center, scale. = scale., rank. = rank.))
-  }
-  
-  tryCatch({
-    if (GPU_BACKEND == "torch") {
-      x_mat <- as.matrix(x)
-      
-      # Center and scale on CPU first (small operation)
-      # Cache colMeans — reused by both centering and scaling fallback. O(n×p) once.
-      # Always compute when centering or scaling (needed for sweep in both branches).
-      col_means <- if (center || scale.) colMeans(x_mat, na.rm = TRUE)
-      if (center) {
-        x_mat <- sweep(x_mat, 2, col_means, "-")
-      }
-      if (scale.) {
-        col_sds <- if (.HAS_MATRIXSTATS) {
-          matrixStats::colSds(x_mat, na.rm = TRUE)
-        } else {
-          # Vectorized fallback: O(n×p) vs apply()'s O(n×p + p×alloc) overhead
-          # Note: after centering, col_means of x_mat ≈ 0; recompute only if not centered
-          .scale_means <- if (center) rep(0, ncol(x_mat)) else col_means
-          sqrt(colSums((sweep(x_mat, 2, .scale_means))^2, na.rm = TRUE) / (nrow(x_mat) - 1))
-        }
-        col_sds[col_sds == 0] <- 1
-        x_mat <- sweep(x_mat, 2, col_sds, "/")
-      }
-      
-      # SVD on GPU
-      x_tensor <- torch::torch_tensor(x_mat, device = "cuda", dtype = torch::torch_float32())
-      svd_result <- torch::linalg_svd(x_tensor, full_matrices = FALSE)
-      
-      # Extract results
-      n <- nrow(x_mat)
-      sdev <- as.numeric(svd_result[[2]]$cpu()) / sqrt(max(1, n - 1))
-      rotation <- as.matrix(svd_result[[3]]$t()$cpu())
-      # Scores = X_centered %*% V; svd_result[[3]] = Vh (k×p), so Vh$t() = V (p×k)
-      x_scores <- as.matrix(torch::torch_mm(x_tensor, svd_result[[3]]$t())$cpu())
-
-      # Truncate to rank. components if requested (matches prcomp(rank.=) behavior)
-      if (!is.null(rank.) && rank. < length(sdev)) {
-        k <- as.integer(rank.)
-        sdev <- sdev[seq_len(k)]
-        rotation <- rotation[, seq_len(k), drop = FALSE]
-        x_scores <- x_scores[, seq_len(k), drop = FALSE]
-      }
-
-      # Build prcomp-compatible result
-      result <- list(
-        sdev = sdev,
-        rotation = rotation,
-        x = x_scores,
-        center = if (center) col_means else FALSE,
-        scale = if (scale.) col_sds else FALSE
-      )
-      class(result) <- "prcomp"
-      rownames(result$x) <- rownames(x)
-      colnames(result$x) <- paste0("PC", seq_len(ncol(result$x)))
-      colnames(result$rotation) <- paste0("PC", seq_len(ncol(result$rotation)))
-      rownames(result$rotation) <- colnames(x)
-      
-      return(result)
-    }
-  }, error = function(e) {
-    message("[GPU] PCA failed, falling back to CPU: ", e$message)
-  })
-  
-  # Fallback to CPU
-  return(prcomp(x, center = center, scale. = scale., rank. = rank.))
-}
-
 # GPU-accelerated matrix multiplication (for large TOM calculations in WGCNA)
 gpu_matmult <- function(A, B) {
   # Check if matrices fit in GPU VRAM
@@ -266,8 +192,9 @@ read_count_matrix <- function(file_path) {
     # Each analysis module (heatmap, PCA, DEA, etc.) re-reads the same matrix files;
     # the .rds cache eliminates redundant parsing after the first read.
     rds_path <- paste0(file_path, ".rds")
-    if (file.exists(rds_path) &&
-        file.mtime(rds_path) >= file.mtime(file_path)) {
+    # Single file.info() batch call replaces file.exists() + 2× file.mtime() = 3 stat syscalls → 1
+    .fi_mtime <- file.info(c(rds_path, file_path))$mtime
+    if (!is.na(.fi_mtime[1]) && .fi_mtime[1] >= .fi_mtime[2]) {
       .cached_mat <- readRDS(rds_path)
       assign(file_path, .cached_mat, envir = .matrix_memory_cache)
       return(.cached_mat)
@@ -292,7 +219,7 @@ read_count_matrix <- function(file_path) {
     # Use logical mask directly — skip unnecessary which() allocation. O(ncol).
     non_num_mask <- !vapply(data, is.numeric, logical(1))
     if (any(non_num_mask)) {
-      data[non_num_mask] <- lapply(data[non_num_mask], function(x) suppressWarnings(as.numeric(x)))
+      data[non_num_mask] <- suppressWarnings(lapply(data[non_num_mask], as.numeric))
     }
     data_matrix <- as.matrix(data)
     data_matrix[is.na(data_matrix)] <- 0
@@ -363,14 +290,6 @@ read_gene_list_from_file <- function(gene_list_file) {
     cat("Error reading gene list:", e$message, "\n")
     return(NULL)
   })
-}
-
-truncate_labels <- function(labels, max_length = 25) {
-  labels <- as.character(labels)
-  labels[is.na(labels)] <- ""
-  too_long <- nchar(labels) > max_length
-  labels[too_long] <- paste0(substr(labels[too_long], 1, max_length - 3), "...")
-  labels
 }
 
 # ===============================================
@@ -764,9 +683,11 @@ load_gene_name_mapping <- function(gene_group, gene_groups_dir = GENE_GROUPS_DIR
 
   # Check cross-session RDS cache (keyed on CSV mtime to auto-invalidate on changes)
   .rds_cache_path <- paste0(csv_file, ".namemap.rds")
-  if (file.exists(.rds_cache_path)) {
+  # Single file.info() batch call replaces file.exists() + 2× file.mtime() = 3 stat syscalls → 1
+  .nm_mtime <- file.info(c(.rds_cache_path, csv_file))$mtime
+  if (!is.na(.nm_mtime[1])) {
     tryCatch({
-      if (file.mtime(.rds_cache_path) >= file.mtime(csv_file)) {
+      if (.nm_mtime[1] >= .nm_mtime[2]) {
         result <- readRDS(.rds_cache_path)
         .gene_name_mapping_cache[[cache_key]] <- result
         return(result)
@@ -862,18 +783,20 @@ convert_to_shortened_names <- function(counts_matrix, gene_group) {
       reverse_hits <- reverse_mapping[current_rownames[unmatched]]
       na_rev <- is.na(reverse_hits)
       if (any(na_rev)) {
-        hits2 <- reverse_mapping[base_one_level[unmatched[na_rev]]]
+        na_idx <- which(na_rev)  # Cache indices: avoids redundant which() per fallback tier
+        hits2 <- reverse_mapping[base_one_level[unmatched[na_idx]]]
         matched2 <- !is.na(hits2)
         if (any(matched2)) {
-          reverse_hits[which(na_rev)[matched2]] <- hits2[matched2]
+          reverse_hits[na_idx[matched2]] <- hits2[matched2]
           na_rev <- is.na(reverse_hits)
         }
       }
       if (any(na_rev)) {
-        hits3 <- reverse_mapping[base_double[unmatched[na_rev]]]
+        na_idx <- which(na_rev)  # Recompute after updates above
+        hits3 <- reverse_mapping[base_double[unmatched[na_idx]]]
         matched3 <- !is.na(hits3)
         if (any(matched3)) {
-          reverse_hits[which(na_rev)[matched3]] <- hits3[matched3]
+          reverse_hits[na_idx[matched3]] <- hits3[matched3]
         }
       }
       new_rownames[unmatched] <- reverse_hits
@@ -976,37 +899,6 @@ apply_labels <- function(counts_matrix, gene_group, gene_type, label_type) {
 # Maps organ names from CSV to biological tissue groups
 # Update this function when CSV organ names change
 
-map_tissue_to_group <- function(tissue_name) {
-  if (grepl("Root|Stem|Leaf|Leaves|Senescent", tissue_name, ignore.case = TRUE)) {
-    return("Vegetative")
-  }
-  if (grepl("Flower|Bud|Pistil|Stamen", tissue_name, ignore.case = TRUE)) {
-    return("Reproductive")
-  }
-  if (grepl("Fruit|peduncle", tissue_name, ignore.case = TRUE)) {
-    return("Fruit")
-  }
-  if (grepl("Radicle|Cotyledon", tissue_name, ignore.case = TRUE)) {
-    return("Seedling")
-  }
-  return("Other")
-}
-
-# Vectorized version using grepl on entire vector (avoids per-element sapply overhead)
-get_tissue_groups <- function(tissue_names) {
-  result <- rep("Other", length(tissue_names))
-  # Later matches override earlier ones, so check in reverse priority
-  mask_seedling     <- grepl("Radicle|Cotyledon", tissue_names, ignore.case = TRUE)
-  mask_fruit        <- grepl("Fruit|peduncle", tissue_names, ignore.case = TRUE)
-  mask_reproductive <- grepl("Flower|Bud|Pistil|Stamen", tissue_names, ignore.case = TRUE)
-  mask_vegetative   <- grepl("Root|Stem|Leaf|Leaves|Senescent", tissue_names, ignore.case = TRUE)
-  result[mask_seedling]     <- "Seedling"
-  result[mask_fruit]        <- "Fruit"
-  result[mask_reproductive] <- "Reproductive"
-  result[mask_vegetative]   <- "Vegetative"
-  result
-}
-
 # ===============================================
 # COLOR FUNCTIONS
 # ===============================================
@@ -1015,10 +907,6 @@ get_violet_color_scale <- function(n_breaks = 100) {
   # Light lavender to deep purple gradient (matching image palette)
   #colorRampPalette(c("#E8D5F0", "#D4B5E3", "#C095D6", "#AC75C9", "#9855BC", "#8435AF", "#6F1FA2", "#5A0F8F", "#45007C"))(n_breaks)
   colorRampPalette(c("#dab3ddff", "#d9afe0ff", "#c57fd1ff", "#ac44beff", "#8E24AA", "#6A1B9A", "#4A148C", "#2F1B69"))(n_breaks)
-}
-
-get_blue_red_color_scale <- function(n_breaks = 100) {
-  colorRampPalette(c("#2166AC", "#67A9CF", "#F7F7F7", "#EF8A62", "#B2182B"))(n_breaks)
 }
 
 get_cv_color_scale <- function(n_breaks = 100) {

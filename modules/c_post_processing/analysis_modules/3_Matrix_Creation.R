@@ -313,9 +313,9 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
           if (nzchar(.c) && file.exists(.c)) {
             # .rds sidecar cache: 5-10x faster reload vs TSV re-parsing
             .m4_rds <- paste0(.c, ".tx2gene.rds")
-            # Single file.info() call replaces file.exists() + 2x file.mtime() (3 stat → 1 stat)
-            .rds_info <- file.info(.m4_rds)
-            if (!is.na(.rds_info$mtime) && .rds_info$mtime >= file.mtime(.c)) {
+            # Batch file.info() for both files: 1 syscall instead of 2 (stat .rds + stat .c)
+            .both_info <- file.info(c(.m4_rds, .c))
+            if (!is.na(.both_info$mtime[1]) && .both_info$mtime[1] >= .both_info$mtime[2]) {
               .raw <- readRDS(.m4_rds)
               cat("  Loaded tx2gene from .rds cache:", basename(.m4_rds), "\n")
             } else {
@@ -427,7 +427,8 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
 # MAIN EXECUTION
 # ===============================================
 
-if (!interactive() && identical(environment(), globalenv())) {
+# Zero-argument entry point for batch_dispatcher.R (M1/M2 fallback path)
+run_matrix_creation_main <- function() {
   cat("\n", strrep("=", 60), "\n")
   cat("MATRIX CREATION MODULE\n")
   cat(strrep("=", 60), "\n\n")
@@ -468,4 +469,10 @@ if (!interactive() && identical(environment(), globalenv())) {
     sample_ids      = SAMPLE_IDS,
     gene_groups_dir = GENE_GROUPS_DIR
   )
+}
+
+# Run if executed directly (not sourced by batch_dispatcher.R)
+if (!interactive() && identical(environment(), globalenv()) &&
+    !isTRUE(get0(".BATCH_DISPATCHER_ACTIVE"))) {
+  run_matrix_creation_main()
 }

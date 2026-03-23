@@ -742,6 +742,12 @@ should_skip_existing <- function(output_path, overwrite) {
 # ===============================================
 # SECTION 5: INITIALIZATION (runs at load time)
 # ===============================================
+# Guard: skip redundant initialization when sourced multiple times in the same
+# R session (e.g., batch_dispatcher.R sources this once, then calls multiple
+# analysis functions). To force re-init: rm(.SHARED_CONFIG_INITIALIZED)
+# For switching methods within a batch session, use reinit_for_method() instead.
+
+if (!exists(".SHARED_CONFIG_INITIALIZED") || !isTRUE(.SHARED_CONFIG_INITIALIZED)) {
 
 # Initialize GPU detection — skip the (slow) nvidia-smi / nvcc probes when
 # the user has explicitly disabled GPU support, saving ~0.5-1s per script load.
@@ -787,4 +793,34 @@ SAMPLE_IDS <- names(SAMPLE_LABELS)
 if (length(SAMPLE_LABELS) == 0) {
   warning("No sample labels loaded from CSV files in: ", SRR_CSV_DIR,
           "\nEnsure CSV files have SRR_ID and Organ columns.")
+}
+
+.SHARED_CONFIG_INITIALIZED <- TRUE
+}  # end double-source guard
+
+# Re-initialize method-dependent state within a batch session (e.g., when the
+# dispatcher switches CURRENT_METHOD via Sys.setenv). Not needed for within-method
+# batching, but available for future cross-method batching.
+reinit_for_method <- function() {
+  CURRENT_METHOD  <<- Sys.getenv("CURRENT_METHOD", "UNKNOWN")
+  MASTER_REFERENCE <<- Sys.getenv("MASTER_REFERENCE", "")
+  COUNT_TYPES <<- get_count_types(CURRENT_METHOD)
+  # Re-derive output subdirectories (depend on MASTER_REFERENCE)
+  OUTPUT_SUBDIRS <<- list(
+    MATRIX_CREATION = file.path("0_Matrix_Creation", MASTER_REFERENCE),
+    BASIC_HEATMAP = file.path("I_Basic_Heatmap", MASTER_REFERENCE),
+    CV_HEATMAP = file.path("II_Heatmap_with_CV", MASTER_REFERENCE),
+    BAR_GRAPH = file.path("III_Bar_Graphs", MASTER_REFERENCE),
+    WGCNA = file.path("IV_Coexpression_WGCNA", MASTER_REFERENCE),
+    DEA = file.path("V_Differential_Expression", MASTER_REFERENCE),
+    GSEA = file.path("VI_Gene_Set_Enrichment", MASTER_REFERENCE),
+    DIM_REDUCTION = file.path("VII_PCA", MASTER_REFERENCE),
+    CORRELATION = file.path("VIII_Sample_Clustering", MASTER_REFERENCE),
+    TISSUE_SPEC = file.path("IX_Tissue_Specificity", MASTER_REFERENCE)
+  )
+  # Reload sample labels (may differ by method/dataset)
+  SAMPLE_LABELS <<- load_sample_labels_from_csv()
+  SAMPLE_IDS <<- names(SAMPLE_LABELS)
+  message("[CONFIG] reinit_for_method: ", CURRENT_METHOD, " -> Count types: ",
+          paste(COUNT_TYPES, collapse = ", "))
 }

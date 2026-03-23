@@ -210,10 +210,11 @@ run_matrix_saving <- function(results, output_dir, master_ref,
         if (gene_group %in% names(.gg_file_map)) {
           gf <- .gg_file_map[[gene_group]]
         } else {
-          gf <- file.path(gene_groups_dir, paste0(gene_group, ".csv"))
-          if (!file.exists(gf)) gf <- file.path(gene_groups_dir, paste0(gene_group, ".txt"))
+          .gf_candidates <- file.path(gene_groups_dir, paste0(gene_group, c(".csv", ".txt")))
+          .gf_exist <- file.exists(.gf_candidates)
+          gf <- if (any(.gf_exist)) .gf_candidates[which.max(.gf_exist)] else ""
         }
-        if (!file.exists(gf)) {
+        if (!nzchar(gf) || !file.exists(gf)) {
           cat("Gene group file not found:", gene_group, "\n")
           next
         }

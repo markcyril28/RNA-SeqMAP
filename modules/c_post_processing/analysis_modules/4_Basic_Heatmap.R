@@ -325,7 +325,8 @@ run_basic_heatmap <- function(config = NULL, matrices_dir = NULL) {
   cat("Output directory:", HEATMAP_OUT_DIR, "\n")
 }
 
-# Run if executed directly
-if (!interactive() && identical(environment(), globalenv())) {
+# Run if executed directly (not sourced by batch_dispatcher.R)
+if (!interactive() && identical(environment(), globalenv()) &&
+    !isTRUE(get0(".BATCH_DISPATCHER_ACTIVE"))) {
   run_basic_heatmap()
 }

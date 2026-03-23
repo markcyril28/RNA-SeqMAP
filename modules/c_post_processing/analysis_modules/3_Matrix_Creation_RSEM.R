@@ -9,9 +9,6 @@
 #   SRR_COMBINED_LIST_STR, GENE_GROUPS_STR, GENE_GROUPS_DIR,
 #   RSEM_GENERATE_GENE_LEVEL, RSEM_GENERATE_ISOFORM_LEVEL
 
-GENERATE_GENE_LEVEL    <- isTRUE(as.logical(Sys.getenv("RSEM_GENERATE_GENE_LEVEL",    "TRUE")))
-GENERATE_ISOFORM_LEVEL <- isTRUE(as.logical(Sys.getenv("RSEM_GENERATE_ISOFORM_LEVEL", "TRUE")))
-
 suppressPackageStartupMessages(library(tximport))
 
 SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", ".")
@@ -72,6 +69,10 @@ import_rsem <- function(quant_dir, sample_ids, level = "gene") {
 # MAIN
 # ===============================================
 
+run_rsem_matrix_creation <- function() {
+GENERATE_GENE_LEVEL    <- isTRUE(as.logical(Sys.getenv("RSEM_GENERATE_GENE_LEVEL",    "TRUE")))
+GENERATE_ISOFORM_LEVEL <- isTRUE(as.logical(Sys.getenv("RSEM_GENERATE_ISOFORM_LEVEL", "TRUE")))
+
 cat("\n", strrep("=", 60), "\n")
 cat("MATRIX CREATION - M5 RSEM/Bowtie2\n")
 cat(strrep("=", 60), "\n\n")
@@ -124,3 +125,10 @@ if (GENERATE_ISOFORM_LEVEL) {
 }
 
 run_matrix_saving(results, output_dir, MASTER_REFERENCE, count_label, GENE_GROUPS_DIR)
+}  # end run_rsem_matrix_creation
+
+# Run if executed directly (not sourced by batch_dispatcher.R)
+if (!interactive() && identical(environment(), globalenv()) &&
+    !isTRUE(get0(".BATCH_DISPATCHER_ACTIVE"))) {
+  run_rsem_matrix_creation()
+}
