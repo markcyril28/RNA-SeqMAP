@@ -13,13 +13,13 @@
 #   - viewer_manifest.json — pre-cached index of all figures
 #
 # Usage:
-#   bash run_html_viewer.sh                    # Generate viewer (default)
-#   bash run_html_viewer.sh --serve            # Generate + serve on localhost
-#   bash run_html_viewer.sh --serve --port 9090
-#   bash run_html_viewer.sh --manifest-only    # Only rebuild manifest JSON
-#   bash run_html_viewer.sh --open             # Generate + open in browser
-#   bash run_html_viewer.sh --output path.html # Custom output path
-#   bash run_html_viewer.sh --dry-run          # Show what would be done
+#   bash run_post_processing_html_viewer.sh                    # Generate viewer (default)
+#   bash run_post_processing_html_viewer.sh --serve            # Generate + serve on localhost
+#   bash run_post_processing_html_viewer.sh --serve --port 9090
+#   bash run_post_processing_html_viewer.sh --manifest-only    # Only rebuild manifest JSON
+#   bash run_post_processing_html_viewer.sh --open             # Generate + open in browser
+#   bash run_post_processing_html_viewer.sh --output path.html # Custom output path
+#   bash run_post_processing_html_viewer.sh --dry-run          # Show what would be done
 #
 # Output:
 #   3_POST_PROC/alignment_results_viewer.html
@@ -121,6 +121,14 @@ if ! command -v python3 &>/dev/null; then
     exit 1
 fi
 
+# Cache browser command once — avoids repeated command -v PATH lookups in open/serve blocks
+_BROWSER_CMD=""
+if   command -v xdg-open     &>/dev/null; then _BROWSER_CMD="xdg-open"
+elif command -v open         &>/dev/null; then _BROWSER_CMD="open"
+elif command -v wslview      &>/dev/null; then _BROWSER_CMD="wslview"
+elif command -v explorer.exe &>/dev/null; then _BROWSER_CMD="explorer.exe"
+fi
+
 # Count available figures
 _png_count=$(find "$POST_PROC_DIR" -name "*.png" 2>/dev/null | wc -l)
 log_info "Post-processing dir : $POST_PROC_DIR"
@@ -168,12 +176,14 @@ fi
 
 if [[ "$DO_OPEN" == true && "$DRY_RUN" == false && -f "$_html_out" ]]; then
     log_info "Opening viewer in browser..."
-    # Cross-platform open
-    if   command -v xdg-open  &>/dev/null; then xdg-open  "$_html_out" &
-    elif command -v open      &>/dev/null; then open       "$_html_out" &
-    elif command -v wslview   &>/dev/null; then wslview    "$_html_out" &
-    elif command -v explorer.exe &>/dev/null; then explorer.exe "$(wslpath -w "$_html_out" 2>/dev/null || echo "$_html_out")" &
-    else log_warn "Cannot auto-open browser — open manually: $_html_out"
+    if [[ -n "$_BROWSER_CMD" ]]; then
+        if [[ "$_BROWSER_CMD" == "explorer.exe" ]]; then
+            explorer.exe "$(wslpath -w "$_html_out" 2>/dev/null || echo "$_html_out")" &
+        else
+            "$_BROWSER_CMD" "$_html_out" &
+        fi
+    else
+        log_warn "Cannot auto-open browser — open manually: $_html_out"
     fi
 fi
 
@@ -187,7 +197,7 @@ if [[ "$DO_SERVE" == true ]]; then
         exit 1
     fi
 
-    _serve_url="http://localhost:${SERVE_PORT}/alignment_results_viewer.html"
+    _serve_url="http://localhost:${SERVE_PORT}/${_html_out##*/}"
 
     log_step "Serving Results Viewer"
     log_info "Directory : $POST_PROC_DIR"
@@ -195,15 +205,9 @@ if [[ "$DO_SERVE" == true ]]; then
     log_info "Stop      : Ctrl+C"
     log_info ""
 
-    # Auto-open after small delay so the server is ready
-    if [[ "$DO_OPEN" == false && "$DRY_RUN" == false ]]; then
-        (sleep 1
-         if   command -v xdg-open     &>/dev/null; then xdg-open     "$_serve_url"
-         elif command -v open         &>/dev/null; then open          "$_serve_url"
-         elif command -v wslview      &>/dev/null; then wslview       "$_serve_url"
-         elif command -v explorer.exe &>/dev/null; then explorer.exe  "$_serve_url"
-         fi
-        ) &>/dev/null &
+    # Auto-open after small delay so the server is ready (reuses cached _BROWSER_CMD)
+    if [[ "$DO_OPEN" == false && "$DRY_RUN" == false && -n "$_BROWSER_CMD" ]]; then
+        (sleep 1; "$_BROWSER_CMD" "$_serve_url") &>/dev/null &
     fi
 
     if [[ "$DRY_RUN" == true ]]; then
@@ -223,5 +227,5 @@ if [[ "$MANIFEST_ONLY" == true ]]; then
 else
     log_info "Open the viewer:"
     log_info "  File browser : $_html_out"
-    log_info "  Local server : bash run_html_viewer.sh --serve"
+    log_info "  Local server : bash run_post_processing_html_viewer.sh --serve"
 fi
