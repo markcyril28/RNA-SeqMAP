@@ -61,7 +61,7 @@ for (genome in CONCORDANCE_GENOMES) {
   }
 }
 stats_list <- stats_list[seq_len(stats_idx)]
-method_stats <- if (.use_dt) {
+method_stats <- if (.conc_use_dt) {
   data.table::setDF(data.table::rbindlist(stats_list, use.names = TRUE, fill = TRUE))
 } else {
   do.call(rbind, stats_list)

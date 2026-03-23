@@ -280,15 +280,14 @@ if (!is.finite(overall_median)) {
 }
 add("")
 
-# Most/least concordant pairs — reuse .sp_upper_masked from Section 2
+# Most/least concordant pairs — reuse sp_best_idx / sp_worst_idx from Section 2
+# (avoids redundant O(M^2) which() scan on same matrix with same values)
 if (is.finite(sp_full_max) && is.finite(sp_full_min)) {
-  best_pair <- which(.sp_upper_masked == sp_full_max, arr.ind = TRUE)
-  worst_pair <- which(.sp_upper_masked == sp_full_min, arr.ind = TRUE)
-  add("- **Most concordant pair:** ", rownames(.sp_upper_masked)[best_pair[1, 1]], " & ",
-      colnames(.sp_upper_masked)[best_pair[1, 2]],
+  add("- **Most concordant pair:** ", rownames(.sp_upper_masked)[sp_best_idx[1, 1]], " & ",
+      colnames(.sp_upper_masked)[sp_best_idx[1, 2]],
       " (rho = ", sprintf("%.3f", sp_full_max), ")")
-  add("- **Least concordant pair:** ", rownames(.sp_upper_masked)[worst_pair[1, 1]], " & ",
-      colnames(.sp_upper_masked)[worst_pair[1, 2]],
+  add("- **Least concordant pair:** ", rownames(.sp_upper_masked)[sp_worst_idx[1, 1]], " & ",
+      colnames(.sp_upper_masked)[sp_worst_idx[1, 2]],
       " (rho = ", sprintf("%.3f", sp_full_min), ")")
 } else {
   add("- Best/worst concordant pairs could not be determined (insufficient valid correlations)")

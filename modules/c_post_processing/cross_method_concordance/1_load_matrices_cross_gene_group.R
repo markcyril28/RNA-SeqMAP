@@ -163,7 +163,7 @@ if (length(tpm_matrices) < 2) {
 }
 
 # Use rbindlist when data.table available — avoids O(R²) copy overhead of do.call(rbind)
-method_stats <- if (exists(".use_dt") && .use_dt) {
+method_stats <- if (.conc_use_dt) {
   data.table::setDF(data.table::rbindlist(stats_list, use.names = TRUE, fill = TRUE))
 } else {
   do.call(rbind, stats_list)

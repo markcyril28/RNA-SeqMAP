@@ -516,6 +516,10 @@ load_sample_labels_from_csv <- function(srr_csv_dir = SRR_CSV_DIR) {
       if ("SRR_ID" %in% colnames(df) && "Organ" %in% colnames(df)) {
         df <- df[!is.na(df$SRR_ID) & nzchar(trimws(df$SRR_ID)), ]
         .label_parts[[.ci]] <- setNames(df$Organ, df$SRR_ID)
+      } else {
+        cat("[CONFIG] Warning: ", basename(csv_files[.ci]),
+            " missing required columns (need SRR_ID and Organ, found: ",
+            paste(colnames(df), collapse = ", "), ")\n", sep = "")
       }
     }, error = function(e) {
       cat("[CONFIG] Warning: Failed to read ", basename(csv_files[.ci]), " - ", e$message, "\n", sep = "")
