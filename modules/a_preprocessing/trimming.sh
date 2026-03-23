@@ -352,12 +352,13 @@ download_and_trim_srrs_parallel() {
 	}
 	export -f _parallel_worker
 	
-	printf "%s\n" "${SRR_LIST[@]}" | parallel \
+	parallel \
 		--env PATH --env CONDA_PREFIX \
 		-j "${JOBS:-2}" \
 		--halt soon,fail,1 \
 		--joblog "$TRIM_DIR_ROOT/parallel_trim_galore.log" \
-		_parallel_worker {}
+		_parallel_worker {} \
+		< <(printf "%s\n" "${SRR_LIST[@]}")
 	gzip_trimmed_fastq_files
 }
 
@@ -454,11 +455,12 @@ trim_srrs_trimmomatic_parallel() {
 	}
 	export -f _trimmomatic_parallel_worker
 
-	printf "%s\n" "${SRR_LIST[@]}" | parallel \
+	parallel \
 		--env PATH --env CONDA_PREFIX \
 		-j "${JOBS:-2}" \
 		--halt soon,fail,1 \
 		--joblog "$TRIM_DIR_ROOT/parallel_trimmomatic.log" \
-		_trimmomatic_parallel_worker {}
+		_trimmomatic_parallel_worker {} \
+		< <(printf "%s\n" "${SRR_LIST[@]}")
 	gzip_trimmed_fastq_files
 }
