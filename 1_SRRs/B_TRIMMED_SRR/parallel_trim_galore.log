@@ -1,4 +1,0 @@
-Seq	Host	Starttime	JobRuntime	Send	Receive	Exitval	Signal	Command
-1	:	1774163285.758	  5677.793	0	656	1	0	_parallel_worker SRR3884686
-3	:	1774163285.787	  5766.555	0	656	1	0	_parallel_worker SRR3884597
-2	:	1774163285.769	  6307.924	0	701	0	0	_parallel_worker SRR3884687
