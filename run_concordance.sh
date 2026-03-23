@@ -4,13 +4,12 @@
 #===============================================================================
 # Compares gene expression quantification across all 5 alignment/quantification
 # methods (M1-M5) for a given reference genome. Produces correlation matrices,
-# discordant gene lists, ranking stability analysis, and a unified report.
+# discordant gene lists, and a unified report.
 #
 # Steps:
 #   1. Load & harmonize TPM matrices from all methods
 #   2. Compute pairwise Spearman/Pearson correlations; identify discordant genes
-#   3. Assess ranking stability for gene groups of interest
-#   4. Generate unified Markdown report
+#   3. Generate unified Markdown report
 #
 # Usage:
 #   bash run_concordance.sh [config_file|config_cross|config_cross_dir]
@@ -97,8 +96,7 @@ if ! [[ -v ANALYSES && "${ANALYSES@a}" == *a* ]]; then
     ANALYSES=(
         "Load_Matrices"                 # Step 1: Load & harmonize matrices (required by all others)
         "Quantification_Concordance"    # Step 2: Compare quantification across methods
-        "Ranking_Stability"             # Step 3: Assess gene ranking stability
-        "Generate_Report"               # Step 4: Produce concordance report
+        "Generate_Report"               # Step 3: Produce concordance report
     )
 fi
 
@@ -622,7 +620,7 @@ METHOD_REF_DIRS[M4_Salmon_Saf]="${M4_REF_DIR:-$_transcript_ref}"
 METHOD_REF_DIRS[M5_RSEM_Bowtie2]="${M5_REF_DIR:-$_transcript_ref}"
 unset _genome_ref _transcript_ref
 
-# Gene groups for ranking stability (comma-separated basenames without .csv)
+# Gene groups for concordance analysis (comma-separated basenames without .csv)
 # If a sourced config set GENE_GROUPS as a bash array, join with commas
 # (the R concordance config expects comma-separated, not space-separated).
 # O(G) array join via IFS — avoids O(G²) string concatenation in a loop
@@ -789,65 +787,18 @@ if [[ -f "${OUTPUT_DIR}/.skip_sentinel" ]]; then
     exit 0
 fi
 
-# Steps 2 and 3 are independent (both read HARMONIZED_RDS, write separate outputs).
-# Run enabled steps in parallel to halve wall-clock time for this phase.
-_run_step2=false; _run_step3=false
-analysis_enabled "Quantification_Concordance" && _run_step2=true
-analysis_enabled "Ranking_Stability"          && _run_step3=true
-
-if [[ "$_run_step2" == true || "$_run_step3" == true ]]; then
-    _label=""
-    $_run_step2 && _label="Quantification Concordance"
-    $_run_step3 && _label="${_label:+${_label} & }Ranking Stability"
-    _parallel_note=""
-    [[ "$_run_step2" == true && "$_run_step3" == true ]] && _parallel_note=" (parallel)"
-    log_step "[STEPS 2+3] ${_label}${_parallel_note}"
-
-    _step2_log="${OUTPUT_DIR}/step2.log"
-    _step3_log="${OUTPUT_DIR}/step3.log"
-
-    # Ensure temp logs are cleaned up on early exit (SIGINT/SIGTERM)
-    _concordance_cleanup() { rm -f "$_step2_log" "$_step3_log"; }
-    trap '_concordance_cleanup' EXIT
-
-    _pid2=""; _pid3=""
-    if [[ "$_run_step2" == true ]]; then
-        Rscript "${CONCORDANCE_SCRIPT_DIR}/${STEP2_SCRIPT}" > "$_step2_log" 2>&1 &
-        _pid2=$!
-    fi
-    if [[ "$_run_step3" == true ]]; then
-        Rscript "${CONCORDANCE_SCRIPT_DIR}/3_ranking_stability.R" > "$_step3_log" 2>&1 &
-        _pid3=$!
-    fi
-
-    _step2_rc=0; _step3_rc=0
-    [[ -n "$_pid2" ]] && { wait "$_pid2" || _step2_rc=$?; }
-    [[ -n "$_pid3" ]] && { wait "$_pid3" || _step3_rc=$?; }
-
-    # Stream logs to stdout for visibility
-    cat "$_step2_log" "$_step3_log" 2>/dev/null
-    rm -f "$_step2_log" "$_step3_log"
-
-    _any_failed=0
-    if [[ $_step2_rc -ne 0 ]]; then
-        log_error "Step 2 (Quantification Concordance) failed (exit=$_step2_rc)!"
-        _any_failed=1
-    fi
-    if [[ $_step3_rc -ne 0 ]]; then
-        log_error "Step 3 (Ranking Stability) failed (exit=$_step3_rc)!"
-        _any_failed=1
-    fi
-    [[ $_any_failed -ne 0 ]] && exit 1
-    log_info "Steps 2+3 completed successfully"
+# Step 2: Quantification Concordance
+if analysis_enabled "Quantification_Concordance"; then
+    run_step 2 "Quantification Concordance"   "${STEP2_SCRIPT}"
 else
-    log_info "Skipping Steps 2+3 (Quantification_Concordance, Ranking_Stability)"
+    log_info "Skipping Step 2 (Quantification_Concordance)"
 fi
 
-# Step 4 reads outputs from both steps 2 and 3
+# Step 3: Generate Report
 if analysis_enabled "Generate_Report"; then
-    run_step 4 "Generate Report"              "4_generate_report.R"
+    run_step 3 "Generate Report"              "4_generate_report.R"
 else
-    log_info "Skipping Step 4 (Generate_Report)"
+    log_info "Skipping Step 3 (Generate_Report)"
 fi
 
 log_step "CONCORDANCE ANALYSIS COMPLETE (mode: ${CONCORDANCE_MODE})"
