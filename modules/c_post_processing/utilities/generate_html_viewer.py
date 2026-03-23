@@ -13,8 +13,10 @@ Path convention parsed (relative to post_proc_dir):
 """
 
 import argparse
+import hashlib
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -82,6 +84,66 @@ def build_manifest(records: list[dict]) -> dict:
     }
 
 
+def _win_long(p: Path) -> str:
+    """Return a string path with \\\\?\\ prefix on Windows for long path support."""
+    s = str(p)
+    if sys.platform == "win32" and not s.startswith("\\\\?\\"):
+        return "\\\\?\\" + s
+    return s
+
+
+def create_viewer_cache(post_proc_dir: Path, records: list[dict]) -> None:
+    """Create a flat cache of short-named hardlinks for file:// compatibility.
+
+    Windows has a 260-character MAX_PATH limit.  The pipeline's deep directory
+    structure routinely produces paths of 370-400+ characters, which prevents
+    browsers from loading images via ``file://`` URLs.
+
+    This function creates ``_viewer_cache/`` inside *post_proc_dir* containing
+    one hardlink (falling back to copy) per image, named by a 12-hex-digit MD5
+    of the original relative path.  Manifest records are updated in-place so
+    ``img.path`` points to the short path and ``img.original_path`` retains
+    the original for display / download filename purposes.
+    """
+    cache_dir = post_proc_dir / "_viewer_cache"
+
+    # Clean previous cache
+    if cache_dir.exists():
+        shutil.rmtree(cache_dir, ignore_errors=True)
+    cache_dir.mkdir(exist_ok=True)
+
+    used_names: set[str] = set()
+    for rec in records:
+        original_rel = rec["path"]  # e.g. "M1_.../file.png"
+        src = post_proc_dir / original_rel
+
+        # Deterministic short name from path hash
+        h = hashlib.md5(original_rel.encode("utf-8")).hexdigest()[:12]
+        short_name = f"{h}.png"
+
+        # Handle (very unlikely) hash collisions
+        if short_name in used_names:
+            for i in range(1, 1000):
+                short_name = f"{h}_{i}.png"
+                if short_name not in used_names:
+                    break
+        used_names.add(short_name)
+
+        dst = cache_dir / short_name
+
+        # Use \\?\ prefix on Windows to bypass 260-char MAX_PATH for source
+        src_s = _win_long(src)
+        dst_s = str(dst)
+        try:
+            os.link(src_s, dst_s)
+        except OSError:
+            # Hardlink may fail (cross-device, FAT32, permissions) — fall back
+            shutil.copy2(src_s, dst_s)
+
+        rec["original_path"] = original_rel
+        rec["path"] = f"_viewer_cache/{short_name}"
+
+
 # ── HTML template ─────────────────────────────────────────────────────────────
 
 HTML_TEMPLATE = r"""<!DOCTYPE html>
@@ -134,10 +196,10 @@ main { flex: 1; overflow: auto; padding: 16px; }
 
 /* ── Grid ── */
 .grid-wrap { overflow: auto; }
-table.grid { border-collapse: collapse; width: 100%; }
+table.grid { border-collapse: collapse; }
 table.grid th, table.grid td { border: 1px solid var(--border); }
 table.grid th { background: var(--surface); padding: 8px 12px; font-size: 12px; font-weight: 600; white-space: nowrap; color: var(--muted); text-align: center; }
-table.grid td { padding: 6px; vertical-align: top; min-width: 180px; max-width: 240px; background: var(--surface); }
+table.grid td { padding: 6px; vertical-align: top; background: var(--surface); overflow: hidden; }
 table.grid td.row-header { background: var(--surface2); padding: 8px 12px; font-size: 12px; font-weight: 600; white-space: nowrap; color: var(--text); min-width: 160px; }
 .method-label { display: flex; align-items: center; gap: 6px; }
 .method-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
@@ -186,6 +248,18 @@ table.grid td.row-header { background: var(--surface2); padding: 8px 12px; font-
 .tab { padding: 7px 16px; cursor: pointer; font-size: 13px; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; transition: all .15s; }
 .tab.active { color: var(--text); border-bottom-color: var(--accent2); }
 .tab:hover:not(.active) { color: var(--text); }
+
+/* ── Column resize ── */
+.col-resize-handle { position: absolute; right: -2px; top: 0; bottom: 0; width: 5px; cursor: col-resize; z-index: 10; }
+.col-resize-handle:hover, .col-resize-handle.active { background: rgba(31,111,235,0.6); }
+body.col-resizing { cursor: col-resize !important; user-select: none; }
+body.col-resizing * { cursor: col-resize !important; }
+
+/* ── Zoom controls ── */
+.zoom-controls { display: flex; align-items: center; gap: 4px; }
+.zoom-btn { background: var(--surface2); border: 1px solid var(--border); color: var(--text); width: 26px; height: 26px; border-radius: var(--radius); cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center; }
+.zoom-btn:hover { background: var(--hover); }
+#zoom-level { font-size: 11px; color: var(--muted); min-width: 36px; text-align: center; }
 </style>
 </head>
 <body>
@@ -195,6 +269,12 @@ table.grid td.row-header { background: var(--surface2); padding: 8px 12px; font-
   <span class="badge" id="img-count">0 images</span>
   <div class="spacer"></div>
   <span id="stats"></span>
+  <div class="zoom-controls">
+    <button class="zoom-btn" onclick="setZoom(state._zoom - 10)" title="Zoom out">&#8722;</button>
+    <span id="zoom-level">100%</span>
+    <button class="zoom-btn" onclick="setZoom(state._zoom + 10)" title="Zoom in">&#43;</button>
+    <button class="zoom-btn" onclick="setZoom(100)" title="Reset zoom" style="font-size:11px;">1:1</button>
+  </div>
   <button id="refresh-btn" onclick="location.reload()">&#8635; Refresh</button>
 </header>
 
@@ -314,6 +394,8 @@ const state = {
   row_orientations_active:  new Set(),
   sort_orders_active:       new Set(),
   hide_empty_cols:          false,
+  _colWidths:               {},
+  _zoom:                    100,
 };
 
 // Cell image navigation state (per cell: method×reference)
@@ -330,12 +412,11 @@ document.addEventListener("DOMContentLoaded", () => {
   // All filters start as null (no restriction) so every method is visible.
   // User can narrow down using the sidebar toggles.
 
-  // Warn when opened via file:// (some browsers need a local server for
-  // relative image paths across subdirectories)
+  // Info banner when opened via file:// (cached short paths should work fine)
   if (location.protocol === "file:") {
     const banner = document.createElement("div");
-    banner.style.cssText = "background:#6e401c;color:#ffa657;padding:7px 16px;font-size:12px;text-align:center;position:sticky;top:53px;z-index:99;";
-    banner.textContent = "⚠ Opened via file:// — if images are blank, serve with: bash run_html_viewer.sh --serve";
+    banner.style.cssText = "background:#1c3a6e;color:#79c0ff;padding:7px 16px;font-size:12px;text-align:center;position:sticky;top:53px;z-index:99;";
+    banner.textContent = "Opened via file:// — for best experience you can also serve with: bash run_html_viewer.sh --serve";
     document.body.insertBefore(banner, document.querySelector(".layout"));
   }
 
@@ -349,6 +430,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("img-count").textContent =
     MANIFEST.total_images + " images";
+
+  // Ctrl+scroll to zoom the grid
+  document.getElementById("grid-wrap").addEventListener("wheel", e => {
+    if (e.ctrlKey) {
+      e.preventDefault();
+      setZoom(state._zoom + (e.deltaY < 0 ? 10 : -10));
+    }
+  }, { passive: false });
 
   render();
 });
@@ -474,6 +563,24 @@ function render() {
 
   const table = document.createElement("table");
   table.className = "grid";
+  table.style.tableLayout = "fixed";
+
+  // Build colgroup for column width control (enables drag-to-resize)
+  const _colgroup = document.createElement("colgroup");
+  const _colM = document.createElement("col");
+  _colM.style.width = state._colWidths["__method__"] || "160px";
+  _colM.dataset.colKey = "__method__";
+  _colgroup.appendChild(_colM);
+  cols.forEach(ag => {
+    ggPerAccession[ag.id].forEach(gg => {
+      const _col = document.createElement("col");
+      const _ck = ag.id + "||" + gg;
+      _col.style.width = state._colWidths[_ck] || "200px";
+      _col.dataset.colKey = _ck;
+      _colgroup.appendChild(_col);
+    });
+  });
+  table.appendChild(_colgroup);
 
   // ── Header: 3 rows — Category / Accession / Gene Group ──
   const thead = table.createTHead();
@@ -545,6 +652,64 @@ function render() {
 
   wrap.innerHTML = "";
   wrap.appendChild(table);
+  initColumnResize();
+  if (state._zoom !== 100) table.style.zoom = state._zoom / 100;
+}
+
+// ── Column resize ─────────────────────────────────────────────────────────
+function initColumnResize() {
+  const table = document.querySelector("table.grid");
+  if (!table || !table.tHead) return;
+  const colEls = table.querySelectorAll("colgroup col");
+
+  // Corner th (Method label) — first cell of first header row
+  addResizeHandle(table.tHead.rows[0].cells[0], colEls[0]);
+
+  // Gene group header row — last header row; cells map to col indices 1+
+  const ggRow = table.tHead.rows[table.tHead.rows.length - 1];
+  for (let i = 0; i < ggRow.cells.length; i++) {
+    addResizeHandle(ggRow.cells[i], colEls[i + 1]);
+  }
+}
+
+function addResizeHandle(th, col) {
+  if (!th || !col) return;
+  th.style.position = "relative";
+  th.style.overflow = "hidden";
+  const handle = document.createElement("div");
+  handle.className = "col-resize-handle";
+  th.appendChild(handle);
+
+  handle.addEventListener("mousedown", e => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.pageX;
+    const startW = th.offsetWidth;
+    handle.classList.add("active");
+    document.body.classList.add("col-resizing");
+
+    const onMove = ev => {
+      const w = Math.max(60, startW + ev.pageX - startX);
+      col.style.width = w + "px";
+      if (col.dataset.colKey) state._colWidths[col.dataset.colKey] = w + "px";
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      handle.classList.remove("active");
+      document.body.classList.remove("col-resizing");
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+
+// ── Zoom ──────────────────────────────────────────────────────────────────
+function setZoom(level) {
+  state._zoom = Math.max(25, Math.min(300, level));
+  const table = document.querySelector("table.grid");
+  if (table) table.style.zoom = state._zoom / 100;
+  document.getElementById("zoom-level").textContent = state._zoom + "%";
 }
 
 function buildCellHTML(cellKey, cs) {
@@ -586,8 +751,8 @@ function showModalAt(idx) {
   const img = modalImages[idx];
   document.getElementById("modal-img").src = img.path;
   document.getElementById("modal-download").href = img.path;
-  document.getElementById("modal-download").download = img.path.split("/").pop();
-  document.getElementById("modal-title").textContent = img.path.split("/").pop().replace(/_/g," ").replace(".png","");
+  document.getElementById("modal-download").download = (img.original_path || img.path).split("/").pop();
+  document.getElementById("modal-title").textContent = (img.original_path || img.path).split("/").pop().replace(/_/g," ").replace(".png","");
   const tags = document.getElementById("modal-tags");
   tags.innerHTML = ["method","analysis","reference","gene_group","processing_level","count_type","norm_scheme","row_orientation","sort_order"]
     .map(k => `<span class="modal-tag">${prettyLabel(k)}: ${prettyLabel(img[k])}</span>`)
@@ -659,6 +824,11 @@ def main():
     records = scan_figures(post_proc_dir)
     if not records:
         print("WARNING: No PNG files found under Figure_Outputs/", file=sys.stderr)
+
+    # Build short-path cache so file:// works on Windows (MAX_PATH = 260)
+    if records:
+        print(f"Creating viewer cache ({len(records)} images) …", file=sys.stderr)
+        create_viewer_cache(post_proc_dir, records)
 
     manifest = build_manifest(records)
     print(f"Found {len(records)} images across {len(manifest['dimensions']['methods'])} methods, "

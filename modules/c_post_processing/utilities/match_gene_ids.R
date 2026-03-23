@@ -7,8 +7,7 @@
 # version suffixes common in eggplant IDs (e.g., SMEL4.1_06g023900.1.01).
 #
 # Used by: tximport_salmon_to_matrices.R, tximport_star_to_matrices.R,
-#          tximport_rsem_to_matrices.R, 3_ranking_stability.R,
-#          3_Matrix_Creation_utils.R
+#          tximport_rsem_to_matrices.R, 3_Matrix_Creation_utils.R
 
 match_gene_ids <- function(gene_list, data_rownames) {
   if (is.null(gene_list) || length(gene_list) == 0) return(character(0))
