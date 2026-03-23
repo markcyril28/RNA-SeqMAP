@@ -192,9 +192,12 @@ for (level_name in names(processing_levels)) {
     file.path(INPUT_FASTAS_DIR, "fasta", "reference_genome", paste0(MASTER_REFERENCE, ".fasta.gene_trans_map"))
   )
 
+  # Vectorized candidate check: single batch stat instead of sequential loop  O(1) syscall batch
   tx2gene_file <- NULL
-  for (.cand in tx2gene_candidates) {
-    if (nzchar(.cand) && file.exists(.cand)) { tx2gene_file <- .cand; break }
+  .nonempty <- nzchar(tx2gene_candidates)
+  if (any(.nonempty)) {
+    .found <- .nonempty & file.exists(tx2gene_candidates)
+    if (any(.found)) tx2gene_file <- tx2gene_candidates[which(.found)[1L]]
   }
   # Lazy fallback: only recurse directory tree if direct paths failed
   if (is.null(tx2gene_file) && nzchar(INPUT_FASTAS_DIR)) {
@@ -204,7 +207,7 @@ for (level_name in names(processing_levels)) {
     ref_maps <- all_maps[grepl(paste0("(^|[/\\\\])", MASTER_REFERENCE, "\\."), all_maps)]
     if (length(ref_maps) > 0) tx2gene_file <- ref_maps[1]
   }
-  rm(.cand)
+  rm(list = intersect(c(".nonempty", ".found"), ls()))
 
   if (level_config$tx_out == FALSE) {
     # Gene-level: need tx2gene mapping
@@ -458,7 +461,7 @@ for (level_name in names(processing_levels)) {
         }
         trimws(gl)
       }, error = function(e) {
-        cat("    Error reading file:", e$message, "\n")
+        cat("    Error reading file:", conditionMessage(e), "\n")
         character(0)
       })
 
