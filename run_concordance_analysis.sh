@@ -778,7 +778,7 @@ run_step() {
     local step_name="$2"
     local script="$3"
 
-    log_step "[STEP ${step_num}/4] ${step_name}"
+    log_step "[STEP ${step_num}/3] ${step_name}"
 
     if ! Rscript "${CONCORDANCE_SCRIPT_DIR}/${script}"; then
         log_error "Step ${step_num} (${step_name}) failed!"
@@ -786,7 +786,7 @@ run_step() {
     fi
 }
 
-# Step 1 must complete first (produces HARMONIZED_RDS consumed by steps 2-4)
+# Step 1 must complete first (produces HARMONIZED_RDS consumed by steps 2-3)
 if analysis_enabled "Load_Matrices"; then
     run_step 1 "Load & Harmonize Matrices"    "${STEP1_SCRIPT}"
 else
