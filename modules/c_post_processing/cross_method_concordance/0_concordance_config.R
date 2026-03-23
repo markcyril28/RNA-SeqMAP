@@ -121,7 +121,8 @@ if (nzchar(GENOME_GENE_GROUPS_MAP_STR)) {
     }
   }
   # Guard: .genome/.csvs are only assigned when at least one entry has a valid "=" separator
-  rm(list = intersect(c(".ggm_pairs", ".ggm_kv", ".kv", ".genome", ".csvs"), ls(all.names = TRUE)))
+  # suppressWarnings avoids "object not found" if var was never assigned; skips ls() env scan
+  suppressWarnings(rm(".ggm_pairs", ".ggm_kv", ".kv", ".genome", ".csvs"))
 }
 if (length(GENOME_GENE_GROUPS_MAP) > 0) {
   cat("[CONCORDANCE CONFIG] Genome gene groups map:\n")

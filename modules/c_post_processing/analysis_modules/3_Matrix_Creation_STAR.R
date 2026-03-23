@@ -75,6 +75,8 @@ if (sum(file.exists(.resolved_quant_files)) == 0 && dir.exists(quant_dir)) {
     .resolved_quant_files[SAMPLE_IDS[.idx]] <- .all_candidates[cbind(.hits[.idx], .idx)]
   }
 }
+# Materialize resolved existence once — avoids 3× redundant O(S) file.exists() below.
+.resolved_exists <- file.exists(.resolved_quant_files)
 
 # ----- Gene-level (requires tx2gene mapping) --------------------------------
 if (GENERATE_GENE_LEVEL) {
@@ -155,13 +157,13 @@ if (GENERATE_GENE_LEVEL) {
       colnames(tx2gene) <- c("TXNAME", "GENEID")
       tx2gene$TXNAME <- trimws(tx2gene$TXNAME)
       tx2gene$GENEID <- trimws(tx2gene$GENEID)
-      # Use pre-resolved quant files (tissue scan already done once above)
+      # Use pre-resolved quant files + cached existence check (avoids redundant stat)
       quant_files <- .resolved_quant_files
-      missing_qf <- quant_files[!file.exists(quant_files)]
+      missing_qf <- quant_files[!.resolved_exists]
       if (length(missing_qf) > 0) {
         cat("  Warning: Missing quant.sf for", length(missing_qf), "samples:",
             paste(names(missing_qf), collapse = ", "), "\n")
-        quant_files <- quant_files[file.exists(quant_files)]
+        quant_files <- quant_files[.resolved_exists]
       }
       if (length(quant_files) < 2) {
         cat("  Error: Need >= 2 quant.sf files for gene-level import\n")
@@ -223,8 +225,8 @@ if (GENERATE_GENE_LEVEL) {
 
 # ----- Isoform-level (transcript-level, no tx2gene needed) -------------------
 if (GENERATE_ISOFORM_LEVEL) {
-  # Use pre-resolved quant files (tissue scan already done once above)
-  quant_files <- .resolved_quant_files[file.exists(.resolved_quant_files)]
+  # Use pre-resolved quant files + cached existence check (avoids redundant stat)
+  quant_files <- .resolved_quant_files[.resolved_exists]
   if (length(quant_files) < 2) {
     cat("  Error: Need >= 2 quant.sf files for isoform-level import\n")
   } else {

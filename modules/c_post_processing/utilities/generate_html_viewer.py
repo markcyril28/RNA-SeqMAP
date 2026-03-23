@@ -13,6 +13,7 @@ Path convention parsed (relative to post_proc_dir):
 """
 
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -67,7 +68,7 @@ def unique_sorted(records: list[dict], key: str) -> list[str]:
 
 def build_manifest(records: list[dict]) -> dict:
     return {
-        "generated": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
+        "generated": datetime.datetime.now().isoformat(timespec="seconds"),
         "total_images": len(records),
         "dimensions": {
             "methods": unique_sorted(records, "method"),
@@ -109,7 +110,10 @@ def create_viewer_cache(post_proc_dir: Path, records: list[dict]) -> None:
 
     # Clean previous cache
     if cache_dir.exists():
-        shutil.rmtree(cache_dir, ignore_errors=True)
+        try:
+            shutil.rmtree(cache_dir)
+        except OSError as e:
+            print(f"WARNING: Could not fully clean cache dir: {e}", file=sys.stderr)
     cache_dir.mkdir(exist_ok=True)
 
     used_names: set[str] = set()
@@ -127,18 +131,24 @@ def create_viewer_cache(post_proc_dir: Path, records: list[dict]) -> None:
                 short_name = f"{h}_{i}.png"
                 if short_name not in used_names:
                     break
+            else:
+                raise RuntimeError(f"Could not resolve hash collision for {original_rel}")
         used_names.add(short_name)
 
         dst = cache_dir / short_name
 
-        # Use \\?\ prefix on Windows to bypass 260-char MAX_PATH for source
+        # Use \\?\ prefix on Windows to bypass 260-char MAX_PATH
         src_s = _win_long(src)
-        dst_s = str(dst)
+        dst_s = _win_long(dst)
         try:
             os.link(src_s, dst_s)
         except OSError:
             # Hardlink may fail (cross-device, FAT32, permissions) — fall back
-            shutil.copy2(src_s, dst_s)
+            try:
+                shutil.copy2(src_s, dst_s)
+            except OSError as e:
+                print(f"WARNING: Could not cache {original_rel}: {e}", file=sys.stderr)
+                continue
 
         rec["original_path"] = original_rel
         rec["path"] = f"_viewer_cache/{short_name}"
@@ -416,7 +426,7 @@ document.addEventListener("DOMContentLoaded", () => {
   if (location.protocol === "file:") {
     const banner = document.createElement("div");
     banner.style.cssText = "background:#1c3a6e;color:#79c0ff;padding:7px 16px;font-size:12px;text-align:center;position:sticky;top:53px;z-index:99;";
-    banner.textContent = "Opened via file:// — for best experience you can also serve with: bash run_html_viewer.sh --serve";
+    banner.textContent = "Opened via file:// — for best experience you can also serve with: bash run_post_processing_html_viewer.sh --serve";
     document.body.insertBefore(banner, document.querySelector(".layout"));
   }
 
@@ -752,10 +762,10 @@ function showModalAt(idx) {
   document.getElementById("modal-img").src = img.path;
   document.getElementById("modal-download").href = img.path;
   document.getElementById("modal-download").download = (img.original_path || img.path).split("/").pop();
-  document.getElementById("modal-title").textContent = (img.original_path || img.path).split("/").pop().replace(/_/g," ").replace(".png","");
+  document.getElementById("modal-title").textContent = (img.original_path || img.path).split("/").pop().replace(/_/g," ").replace(/\.png$/i,"");
   const tags = document.getElementById("modal-tags");
   tags.innerHTML = ["method","analysis","reference","gene_group","processing_level","count_type","norm_scheme","row_orientation","sort_order"]
-    .map(k => `<span class="modal-tag">${prettyLabel(k)}: ${prettyLabel(img[k])}</span>`)
+    .map(k => `<span class="modal-tag">${escHTML(prettyLabel(k))}: ${escHTML(prettyLabel(img[k]))}</span>`)
     .join("");
   document.getElementById("modal-pos").textContent = (idx+1) + " / " + modalImages.length;
   document.getElementById("modal-prev").disabled = idx === 0;
@@ -783,12 +793,12 @@ document.getElementById("modal").addEventListener("click", e => {
 });
 
 // ── Util ───────────────────────────────────────────────────────────────────
+function escHTML(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
 function prettyLabel(s) {
   if (!s) return "";
   return s.replace(/_/g," ").replace(/([a-z])([A-Z])/g,"$1 $2");
-}
-function prettyRef(r) {
-  return r.replace(/_/g," ");
 }
 // Shorten gene group label for the column header (strip dataset suffix)
 function prettyGeneGroup(gg) {
@@ -803,6 +813,8 @@ function prettyGeneGroup(gg) {
 
 def generate_html(manifest: dict) -> str:
     json_str = json.dumps(manifest, separators=(",", ":"))
+    # Escape </ sequences to prevent </script> breakout in inline JSON
+    json_str = json_str.replace("</", r"<\/")
     return HTML_TEMPLATE.replace("__MANIFEST_JSON__", json_str)
 
 

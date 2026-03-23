@@ -207,7 +207,7 @@ for (level_name in names(processing_levels)) {
     ref_maps <- all_maps[grepl(paste0("(^|[/\\\\])", MASTER_REFERENCE, "\\."), all_maps)]
     if (length(ref_maps) > 0) tx2gene_file <- ref_maps[1]
   }
-  rm(list = intersect(c(".nonempty", ".found"), ls()))
+  suppressWarnings(rm(".nonempty", ".found"))
 
   if (level_config$tx_out == FALSE) {
     # Gene-level: need tx2gene mapping
@@ -295,11 +295,10 @@ for (level_name in names(processing_levels)) {
     txi_rds_dir <- file.path(output_dir, level_name)
     dir.create(txi_rds_dir, recursive = TRUE, showWarnings = FALSE)
     rds_name <- if (level_config$tx_out) "tximport_isoform_level.rds" else "tximport_gene_level.rds"
-    tryCatch(
-      saveRDS(txi, file.path(txi_rds_dir, rds_name)),
-      error = function(e) cat("  Warning: Failed to save tximport RDS:", e$message, "\n")
-    )
-    cat("Saved tximport RDS for DESeq2:", rds_name, "\n\n")
+    tryCatch({
+      saveRDS(txi, file.path(txi_rds_dir, rds_name))
+      cat("Saved tximport RDS for DESeq2:", rds_name, "\n\n")
+    }, error = function(e) cat("  Warning: Failed to save tximport RDS:", e$message, "\n"))
   }
 
   # ===============================================

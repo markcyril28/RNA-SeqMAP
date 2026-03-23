@@ -321,17 +321,25 @@ detect_gpu <- function() {
 # -----------------------------------------------
 
 # Detect quantification method type from CURRENT_METHOD
+# Memoized: caches result per method string to avoid 4× grepl per call.
+# Called 50+ times per Rscript session with the same CURRENT_METHOD.  O(1) after first call.
+.method_type_cache <- new.env(parent = emptyenv())
 get_method_type <- function(method = CURRENT_METHOD) {
-  if (grepl("HISAT2|StringTie|M1_|M2_|^M1$|^M2$", method, ignore.case = TRUE)) {
-    return("stringtie")
+  cached <- .method_type_cache[[method]]
+  if (!is.null(cached)) return(cached)
+  result <- if (grepl("HISAT2|StringTie|M1_|M2_|^M1$|^M2$", method, ignore.case = TRUE)) {
+    "stringtie"
   } else if (grepl("Salmon|M4_|^M4$", method, ignore.case = TRUE)) {
-    return("salmon")
+    "salmon"
   } else if (grepl("RSEM|M5_|^M5$", method, ignore.case = TRUE)) {
-    return("rsem")
+    "rsem"
   } else if (grepl("STAR|M3_|^M3$", method, ignore.case = TRUE)) {
-    return("star")
+    "star"
+  } else {
+    "unknown"
   }
-  return("unknown")
+  .method_type_cache[[method]] <- result
+  result
 }
 
 # Get method-specific quant directory (relative path within the method's alignment folder)

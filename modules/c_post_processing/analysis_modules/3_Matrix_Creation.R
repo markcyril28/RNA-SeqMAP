@@ -386,8 +386,9 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
           }
         }
       }
-      rm(list = intersect(c(".input_fastas_dir", ".base_dir_fb", ".cands", ".c",
-                             ".raw", ".all_maps", ".hits", ".tx2gene_m4"), ls(all.names = TRUE)))
+      # suppressWarnings avoids "object not found" if var was never assigned; skips ls() env scan
+      suppressWarnings(rm(".input_fastas_dir", ".base_dir_fb", ".cands", ".c",
+                          ".raw", ".all_maps", ".hits", ".tx2gene_m4"))
     }
     if (GENERATE_ISOFORM_LEVEL) {
       txi_iso <- tryCatch(

@@ -16,8 +16,8 @@ source(file.path(SCRIPT_DIR, "0_shared_config.R"))
 source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
 source(file.path(SCRIPT_DIR, "3_Matrix_Creation_utils.R"))
 
-# Cache data.table availability for fread fast paths below
-.use_dt_salmon <- requireNamespace("data.table", quietly = TRUE)
+# data.table availability: reuse .HAS_DATATABLE from 0_shared_config.R (already sourced above)
+# Avoids redundant requireNamespace() PATH scan per Rscript invocation.
 
 # ===============================================
 # SALMON IMPORT
@@ -91,7 +91,7 @@ if (is.null(.tx2gene_file) && nzchar(.input_fastas_dir)) {
 
 .tx2gene <- if (!is.null(.tx2gene_file)) {
   tryCatch({
-    .t2g <- if (.use_dt_salmon) {
+    .t2g <- if (.HAS_DATATABLE) {
       data.table::fread(.tx2gene_file, header = FALSE, sep = "\t",
                         strip.white = TRUE, showProgress = FALSE, data.table = FALSE)
     } else {
@@ -111,8 +111,9 @@ if (is.null(.tx2gene_file) && nzchar(.input_fastas_dir)) {
   NULL
 }
 
-rm(list = intersect(c(".base_dir", ".input_fastas_dir", ".candidates",
-                       ".tx2gene_file", ".nonempty", ".found", ".all_maps", ".hits"), ls(all.names = TRUE)))
+# suppressWarnings avoids "object not found" if var was never assigned; skips ls() env scan
+suppressWarnings(rm(".base_dir", ".input_fastas_dir", ".candidates",
+                    ".tx2gene_file", ".nonempty", ".found", ".all_maps", ".hits"))
 
 cat("\n", strrep("=", 60), "\n")
 cat("MATRIX CREATION - M4 Salmon\n")
@@ -166,7 +167,7 @@ if (GENERATE_GENE_LEVEL) {
         }
       }
     }
-    rm(list = intersect(c(".sample_qsf", ".qsf_ids", ".match_rate"), ls(all.names = TRUE)))
+    suppressWarnings(rm(".sample_qsf", ".qsf_ids", ".match_rate"))
     txi <- tryCatch(
       import_salmon(quant_dir, SAMPLE_IDS, tx2gene = .tx2gene),
       error = function(e) { cat("  Gene-level import error:", e$message, "\n"); NULL })

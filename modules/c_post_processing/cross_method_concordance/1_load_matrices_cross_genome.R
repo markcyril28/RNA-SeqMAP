@@ -252,7 +252,8 @@ if (length(GENOME_GENE_GROUPS_MAP) >= 2) {
     }
 
     # Guard: .common_labels is only assigned if the mapping loop completes successfully (line 210)
-    rm(list = intersect(c("ortho_map", ".common_labels"), ls(all.names = TRUE)))
+    # Keep .common_labels alive — it is reused at line 372 to build ortho_gene_ids/ortho_short_names
+    suppressWarnings(rm("ortho_map"))
   }
 }
 
@@ -368,7 +369,8 @@ ortho_gene_groups <- NULL
 if (.use_positional_mapping && exists(".gene_chunks") && exists(".label_chunks")) {
   ortho_gene_ids <- list()
   ortho_short_names <- list()
-  .all_labels <- unlist(.label_chunks, use.names = FALSE)
+  # Reuse .common_labels (computed at line 210) — avoids redundant O(N) unlist()
+  .all_labels <- .common_labels
   for (.genome in names(.gene_chunks)) {
     .all_ids <- unlist(.gene_chunks[[.genome]], use.names = FALSE)
     ortho_gene_ids[[.genome]] <- setNames(.all_ids, .all_labels)

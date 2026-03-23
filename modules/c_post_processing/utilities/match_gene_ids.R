@@ -30,7 +30,6 @@ match_gene_ids <- function(gene_list, data_rownames) {
     data_rownames[idx]
   }
   # Use %in% on data_rownames directly instead of building a second env
-  # (match_gene_ids.R:59 was the only user of rowname_set)
 
   # Vectorized: exact matches first
   exact_mask <- gene_list %in% data_rownames
@@ -48,7 +47,7 @@ match_gene_ids <- function(gene_list, data_rownames) {
         ne_results[[i]] <- hits
       } else {
         # Reverse: strip suffix from gene_list ID to match base-level row IDs
-        # Use same double-suffix regex as line 18 for consistency
+        # Use same double-suffix regex as base_ids above for consistency
         gene_base <- sub("(\\.[0-9]+){1,2}$", "", gene)
         if (gene_base != gene) {
           hits2 <- .resolve_rows(gene_base)
