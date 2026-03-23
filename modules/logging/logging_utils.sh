@@ -683,9 +683,12 @@ rotate_old_logs() {
 # GPU LOGGING FUNCTIONS
 # ==============================================================================
 
-# Cache nvidia-smi availability once (avoids repeated PATH lookups in GPU log functions)
-_HAS_NVIDIA_SMI=false
-command -v nvidia-smi &>/dev/null && _HAS_NVIDIA_SMI=true
+# Cache nvidia-smi availability once (avoids repeated PATH lookups in GPU log functions).
+# Guard: skip if already cached by gpu_utils.sh to avoid overwriting its result.
+if [[ -z "${_HAS_NVIDIA_SMI+x}" ]]; then
+    _HAS_NVIDIA_SMI=false
+    command -v nvidia-smi &>/dev/null && _HAS_NVIDIA_SMI=true
+fi
 
 log_gpu() {
 	# Log GPU-related message to GPU log file
