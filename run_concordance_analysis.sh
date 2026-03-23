@@ -216,10 +216,19 @@ fi
 [[ -n "${__CONCORDANCE_OVERRIDE_RUN_ALL_GENE_GROUP_COMBINATIONS:-}" ]] && RUN_ALL_GENE_GROUP_COMBINATIONS="${__CONCORDANCE_OVERRIDE_RUN_ALL_GENE_GROUP_COMBINATIONS}"
 
 sanitize_tag() {
-    # Pure bash: replace separators with _, strip non-alnum (avoids 3 subshell spawns)
-    local clean="${1//[,|\/[:space:]]/_}"
-    clean="${clean//[^[:alnum:]_.-]/}"
-    [[ -n "$clean" ]] && printf "%s" "$clean" || printf "combo"
+    # Pure bash via nameref: replace separators with _, strip non-alnum.
+    # Nameref avoids $(sanitize_tag ...) subshell fork — caller passes output variable name.
+    # Usage: sanitize_tag "input_string" result_var
+    local -n _st_out=$2
+    _st_out="${1//[,|\/[:space:]]/_}"
+    _st_out="${_st_out//[^[:alnum:]_.-]/}"
+    [[ -z "$_st_out" ]] && _st_out="combo"
+}
+
+# Join array elements with a custom separator via nameref — avoids $(IFS=...) subshell fork.
+# Usage: _join_with result_var "separator" "${array[@]}"
+_join_with() {
+    local -n _jw_out=$1; local IFS="$2"; shift 2; _jw_out="$*"
 }
 
 #===============================================================================
@@ -410,7 +419,7 @@ if [[ "${RUN_ALL_METHOD_COMBINATIONS^^}" == "TRUE" ]]; then
             _throttle_pids _combo_pids
             # Single-pass: replace both comma and pipe separators with space
             _methods="${_combo//[,|]/ }"
-            _combo_tag="$(sanitize_tag "$_combo")"
+            sanitize_tag "$_combo" _combo_tag
             log_step "Launching concordance for methods: ${_methods}"
             printf -v _child_run_id '%(%Y%m%d_%H%M%S)T' -1 2>/dev/null || _child_run_id=$(date +%Y%m%d_%H%M%S)
             _child_run_id="${_child_run_id}_methods_${_combo_tag}"
@@ -459,7 +468,7 @@ if [[ "${RUN_ALL_GENE_GROUP_COMBINATIONS^^}" == "TRUE" ]]; then
         for _combo in "${GENE_GROUP_COMBINATIONS[@]}"; do
             _throttle_pids _gg_combo_pids
             _groups="${_combo//|/,}"
-            _combo_tag="$(sanitize_tag "$_combo")"
+            sanitize_tag "$_combo" _combo_tag
             log_step "Launching concordance for gene groups: ${_groups}"
             printf -v _child_run_id '%(%Y%m%d_%H%M%S)T' -1 2>/dev/null || _child_run_id=$(date +%Y%m%d_%H%M%S)
             _child_run_id="${_child_run_id}_genes_${_combo_tag}"
@@ -625,22 +634,18 @@ unset _genome_ref _transcript_ref
 # (the R concordance config expects comma-separated, not space-separated).
 # O(G) array join via IFS — avoids O(G²) string concatenation in a loop
 if [[ -v GENE_GROUPS && "${GENE_GROUPS@a}" == *a* ]]; then
-    _gg_joined="$(IFS=','; printf '%s' "${GENE_GROUPS[*]}")"
+    _join_with _gg_joined ',' "${GENE_GROUPS[@]}"
     unset GENE_GROUPS
     GENE_GROUPS="$_gg_joined"
     unset _gg_joined
 fi
 GENE_GROUPS="${GENE_GROUPS:-SmelDMPs_v5_with_18s_and_HAP2,Selected_SmelGRF-GIF_with_two_GIF}"
 
-# Helper: check if an analysis is enabled
-analysis_enabled() {
-    local target="$1"
-    local a
-    for a in "${ANALYSES[@]}"; do
-        [[ "$a" == "$target" ]] && return 0
-    done
-    return 1
-}
+# Helper: check if an analysis is enabled — O(1) associative array lookup
+declare -A _ANALYSES_SET=()
+for _a in "${ANALYSES[@]}"; do _ANALYSES_SET["$_a"]=1; done
+unset _a
+analysis_enabled() { [[ -n "${_ANALYSES_SET[$1]:-}" ]]; }
 
 # Gene groups directory (reference-specific — strip _genome/_transcripts suffix to match dir name)
 _GG_REF_TAG="${MASTER_REFERENCE%%_genome*}"
@@ -662,9 +667,18 @@ THREADS="${THREADS:-$(nproc 2>/dev/null || echo 12)}"
 ENABLE_GPU="${ENABLE_GPU:-FALSE}"
 if [[ -z "${AVAILABLE_RAM_GB:-}" ]]; then
     if [[ -f /proc/meminfo ]]; then
-        AVAILABLE_RAM_GB=$(awk '/MemAvailable/ {printf "%d", $2/1048576}' /proc/meminfo)
+        # Pure bash: avoids awk fork.  O(1) — reads ~25 lines then breaks.
+        while IFS=' ' read -r _key _val _; do
+            if [[ "$_key" == "MemAvailable:" ]]; then
+                AVAILABLE_RAM_GB=$(( _val / 1048576 ))
+                break
+            fi
+        done < /proc/meminfo
+        unset _key _val
     elif command -v sysctl &>/dev/null; then
-        AVAILABLE_RAM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1/1073741824}')
+        _raw_bytes=$(sysctl -n hw.memsize 2>/dev/null)
+        AVAILABLE_RAM_GB=$(( _raw_bytes / 1073741824 ))
+        unset _raw_bytes
     fi
 fi
 # Fallback covers both unset and empty (e.g., MemAvailable line missing from /proc/meminfo)
@@ -683,7 +697,7 @@ for method in ${METHODS}; do
     ref_dir="${METHOD_REF_DIRS[$method]:-}"
     [[ -n "$ref_dir" ]] && _mrd_parts+=("${method}=${ref_dir}")
 done
-METHOD_REF_DIRS_STR="$(IFS=';'; printf '%s' "${_mrd_parts[*]}")"
+_join_with METHOD_REF_DIRS_STR ';' "${_mrd_parts[@]}"
 unset _mrd_parts
 
 # Concordance mode: cross_method (default), cross_genome, cross_gene_group
@@ -695,7 +709,7 @@ FIXED_METHOD="${FIXED_METHOD:-}"
 # O(G) array join via IFS — avoids O(G²) string concatenation
 CONCORDANCE_GENOMES_STR=""
 if [[ -v CONCORDANCE_GENOMES && "${CONCORDANCE_GENOMES@a}" == *a* ]]; then
-    CONCORDANCE_GENOMES_STR="$(IFS=';'; printf '%s' "${CONCORDANCE_GENOMES[*]}")"
+    _join_with CONCORDANCE_GENOMES_STR ';' "${CONCORDANCE_GENOMES[@]}"
     unset CONCORDANCE_GENOMES
 fi
 
@@ -818,16 +832,21 @@ if [[ -d "${CONCORDANCE_LOG_BASE}" ]]; then
         # Child mode: copy only files matching this child's RUN_ID to avoid race.
         # Log files live in subdirectories (log_files/, time_logs/, etc.), so iterate
         # over each subdirectory and copy matching files preserving structure.
+        # Batch cp per subdirectory: collect matching files, mkdir once, cp once.
+        # Saves N-1 mkdir syscalls + reduces N cp forks to 1 per subdir.
         for _subdir in "${CONCORDANCE_LOG_BASE}"/*/; do
             [[ -d "$_subdir" ]] || continue
             _subname="${_subdir%/}"; _subname="${_subname##*/}"
+            _matched=()
             for _lf in "$_subdir"*"${RUN_ID}"*; do
-                [[ -f "$_lf" ]] || continue
-                mkdir -p "${OUTPUT_DIR}/logs/${_subname}"
-                cp "$_lf" "${OUTPUT_DIR}/logs/${_subname}/" 2>/dev/null || true
+                [[ -f "$_lf" ]] && _matched+=("$_lf")
             done
+            if [[ ${#_matched[@]} -gt 0 ]]; then
+                mkdir -p "${OUTPUT_DIR}/logs/${_subname}"
+                cp "${_matched[@]}" "${OUTPUT_DIR}/logs/${_subname}/" 2>/dev/null || true
+            fi
         done
-        unset _lf _subdir _subname
+        unset _lf _subdir _subname _matched
     else
         # Single-config or parent mode: safe to copy everything
         cp -r "${CONCORDANCE_LOG_BASE}/." "${OUTPUT_DIR}/logs/" 2>/dev/null || true
