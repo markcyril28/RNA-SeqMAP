@@ -108,7 +108,7 @@ log_step "Concordance Viewer — Orchestrator"
 
 if [[ ! -d "$CONCORDANCE_DIR" ]]; then
     log_error "4_CONCORDANCE_ANALYSIS directory not found: $CONCORDANCE_DIR"
-    log_error "Run the concordance pipeline first: bash run_concordance.sh"
+    log_error "Run the concordance pipeline first: bash run_concordance_analysis.sh"
     exit 1
 fi
 
@@ -122,11 +122,16 @@ if ! command -v python3 &>/dev/null; then
     exit 1
 fi
 
-# Count available outputs
-_png_count=$(find "$CONCORDANCE_DIR" -name "*.png" 2>/dev/null | wc -l)
-_csv_count=$(find "$CONCORDANCE_DIR" -path "*/tables/*.csv" 2>/dev/null | wc -l)
-_md_count=$(find "$CONCORDANCE_DIR" -name "concordance_report.md" 2>/dev/null | wc -l)
-_mode_count=$(find "$CONCORDANCE_DIR" -maxdepth 1 -type d ! -name "logs" ! -name "_viewer_cache" ! -name "4_CONCORDANCE_ANALYSIS" 2>/dev/null | wc -l)
+# Count available outputs — single find pass for files (3 traversals → 1)
+read -r _png_count _csv_count _md_count < <(
+    find "$CONCORDANCE_DIR" \( -name "*.png" -o -path "*/tables/*.csv" -o -name "concordance_report.md" \) -print0 2>/dev/null \
+    | awk -v RS='\0' '
+        /\.png$/                       { png++ }
+        /\/tables\/[^\/]+\.csv$/       { csv++ }
+        /concordance_report\.md$/      { md++  }
+        END { print png+0, csv+0, md+0 }
+    ')
+_mode_count=$(find "$CONCORDANCE_DIR" -mindepth 1 -maxdepth 1 -type d ! -name "logs" ! -name "_viewer_cache" 2>/dev/null | wc -l)
 
 log_info "Concordance dir   : $CONCORDANCE_DIR"
 log_info "Concordance modes : $_mode_count"
@@ -136,7 +141,7 @@ log_info "Reports found     : $_md_count Markdown"
 
 if [[ "$_png_count" -eq 0 && "$_csv_count" -eq 0 && "$_md_count" -eq 0 ]]; then
     log_warn "No concordance outputs found — viewer will be empty."
-    log_warn "Run the concordance pipeline first: bash run_concordance.sh"
+    log_warn "Run the concordance pipeline first: bash run_concordance_analysis.sh"
 fi
 
 #===============================================================================

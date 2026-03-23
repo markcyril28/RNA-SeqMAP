@@ -12,7 +12,7 @@
 #   3. Generate unified Markdown report
 #
 # Usage:
-#   bash run_concordance.sh [config_file|config_cross|config_cross_dir]
+#   bash run_concordance_analysis.sh [config_file|config_cross|config_cross_dir]
 #
 #   If no config_file is provided, uses internal defaults for GPE001970.
 #
@@ -815,11 +815,19 @@ log_info "Report:  ${REPORT_BASE}/${_report_prefix}_concordance_report.md"
 if [[ -d "${CONCORDANCE_LOG_BASE}" ]]; then
     mkdir -p "${OUTPUT_DIR}/logs"
     if [[ -n "${__CONCORDANCE_OVERRIDE_SINGLE_CONFIG:-}" && -n "${RUN_ID:-}" ]]; then
-        # Child mode: copy only files matching this child's RUN_ID to avoid race
-        for _lf in "${CONCORDANCE_LOG_BASE}"/*"${RUN_ID}"*; do
-            [[ -f "$_lf" ]] && cp "$_lf" "${OUTPUT_DIR}/logs/" 2>/dev/null || true
+        # Child mode: copy only files matching this child's RUN_ID to avoid race.
+        # Log files live in subdirectories (log_files/, time_logs/, etc.), so iterate
+        # over each subdirectory and copy matching files preserving structure.
+        for _subdir in "${CONCORDANCE_LOG_BASE}"/*/; do
+            [[ -d "$_subdir" ]] || continue
+            _subname="${_subdir%/}"; _subname="${_subname##*/}"
+            for _lf in "$_subdir"*"${RUN_ID}"*; do
+                [[ -f "$_lf" ]] || continue
+                mkdir -p "${OUTPUT_DIR}/logs/${_subname}"
+                cp "$_lf" "${OUTPUT_DIR}/logs/${_subname}/" 2>/dev/null || true
+            done
         done
-        unset _lf
+        unset _lf _subdir _subname
     else
         # Single-config or parent mode: safe to copy everything
         cp -r "${CONCORDANCE_LOG_BASE}/." "${OUTPUT_DIR}/logs/" 2>/dev/null || true

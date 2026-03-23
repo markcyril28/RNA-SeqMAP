@@ -72,7 +72,7 @@ if [[ -n "${__PP_SINGLE_CONFIG:-}" ]]; then
     # sentinels for GNU Parallel subshells, but child processes started via
     # `bash "$0"` need to re-source the files since function definitions don't
     # survive across process boundaries.)
-    unset PIPELINE_UTILS_SOURCED LOGGING_UTILS_SOURCED _TOML_PARSER_SOURCED
+    unset PIPELINE_UTILS_SOURCED LOGGING_UTILS_SOURCED _TOML_PARSER_SOURCED LOGGING_INITIALIZED
 else
 
 PIPELINE_CONFIGS=(
@@ -216,6 +216,8 @@ fi
 # All functions and environment are inherited via the child bash process.
 # Big O: O(ceil(C/P) × T_config) wall-clock instead of O(C × T_config).
 
+_TOTAL_CONFIGS=${#PIPELINE_CONFIGS[@]}
+
 if [[ "$PARALLEL_CONFIGS" -gt 1 && ${#PIPELINE_CONFIGS[@]} -gt 1 ]]; then
     log_step "Parallel Config Dispatch (${#PIPELINE_CONFIGS[@]} configs, max $PARALLEL_CONFIGS concurrent)"
 
@@ -343,6 +345,7 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
     [[ ${#METHODS[@]} -eq 0 ]]            && { log_error "No methods in $CONFIG_FILE"; continue; }
     [[ ${#GENE_GROUPS[@]} -eq 0 ]]        && { log_error "No gene groups in $CONFIG_FILE"; continue; }
     [[ ${#SRR_COMBINED_LIST[@]} -eq 0 ]]  && { log_error "No SRR samples loaded from $CONFIG_FILE"; continue; }
+    [[ ${#ANALYSES[@]} -eq 0 ]]           && { log_error "No analyses in $CONFIG_FILE"; continue; }
 
     # Clear output folders if requested (rm -rf + mkdir is faster than find -delete on deep trees)
     if [[ "$CLEAR_OUTPUT_FOLDER" == "TRUE" ]]; then
@@ -416,16 +419,6 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
         fi
     done
 
-    # Pre-build method×analysis Cartesian product for Phase 3 (config-level)
-    PARALLEL_TASKS=()
-    if [[ ${#FIGURE_ANALYSES[@]} -gt 0 ]]; then
-        for method in "${METHODS[@]}"; do
-            for analysis in "${FIGURE_ANALYSES[@]}"; do
-                PARALLEL_TASKS+=("${method}"$'\t'"${analysis}")
-            done
-        done
-    fi
-
     # Process each dataset (reuse cached CSV parse — avoids redundant file I/O)
     for dataset in "${SRR_DATASETS[@]}"; do
         if [[ -z "${_CACHED_SRR_LISTS[$dataset]+x}" ]]; then
@@ -446,11 +439,12 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
         # ── Phase 1: Preprocessing (parallel across methods when possible) ──
         if [[ ${#METHODS[@]} -gt 1 && "$ENABLE_GNU_PARALLEL" == "TRUE" ]] && $_HAS_PARALLEL; then
             log_info "Phase 1: Preprocessing (parallel across ${#METHODS[@]} methods)"
-            printf '%s\n' "${METHODS[@]}" | parallel \
+            parallel \
                 -j "${#METHODS[@]}" \
                 --halt soon,fail,30% \
                 --joblog "$LOG_DIR/parallel_preproc_${dataset}.log" \
                 run_method_preprocessing {} "$MASTER_REFERENCE" \
+                < <(printf '%s\n' "${METHODS[@]}") \
                 || log_warn "Phase 1: Some preprocessing tasks failed for dataset '$dataset' (see joblog)"
         else
             log_info "Phase 1: Preprocessing (sequential, all threads)"
@@ -479,47 +473,52 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
                     local _method="$1" _ref="$2"
                     shift 2
                     export THREADS="$_threads_per_method"
-                    for _analysis in "$@"; do
-                        run_single_analysis "$_method" "$_ref" "$_analysis"
-                    done
+                    run_batched_analyses "$_method" "$_ref" "$@"
                 }
                 export -f _run_heavy_for_method
                 export _threads_per_method
-                printf '%s\n' "${METHODS[@]}" | parallel \
+                parallel \
                     -j "$_n_methods" \
                     --halt soon,fail,30% \
                     --joblog "$LOG_DIR/parallel_heavy_${dataset}.log" \
                     _run_heavy_for_method {} "$MASTER_REFERENCE" "${HEAVY_ANALYSES[@]}" \
+                    < <(printf '%s\n' "${METHODS[@]}") \
                     || log_warn "Phase 2: Some heavy analyses failed for dataset '$dataset' (see joblog)"
             else
-                log_info "Phase 2: Heavy analyses (sequential): ${HEAVY_ANALYSES[*]}"
+                log_info "Phase 2: Heavy analyses (sequential, batched): ${HEAVY_ANALYSES[*]}"
                 for method in "${METHODS[@]}"; do
                     log_step "Processing Method (heavy): $method"
-                    for analysis in "${HEAVY_ANALYSES[@]}"; do
-                        run_single_analysis "$method" "$MASTER_REFERENCE" "$analysis"
-                    done
+                    run_batched_analyses "$method" "$MASTER_REFERENCE" "${HEAVY_ANALYSES[@]}"
                 done
             fi
         fi
 
         # ── Phase 3: Figure generation (parallelisable — lightweight per job) ──
-        # PARALLEL_TASKS array was pre-built above (config-level, not per-dataset)
         if [[ ${#FIGURE_ANALYSES[@]} -gt 0 ]]; then
             if [[ "$ENABLE_GNU_PARALLEL" == "TRUE" && $JOBS -gt 1 ]] && $_HAS_PARALLEL; then
-                log_info "Phase 3: Figure generation (GNU Parallel, $JOBS jobs): ${FIGURE_ANALYSES[*]}"
-                printf '%s\n' "${PARALLEL_TASKS[@]}" | parallel \
+                log_info "Phase 3: Figure generation (GNU Parallel, $JOBS jobs, batched per method): ${FIGURE_ANALYSES[*]}"
+                # Batch figure analyses per method: each parallel worker runs all
+                # figure analyses in a single R session, saving ~2-3s startup per
+                # additional analysis. Parallelism unit = method (not method×analysis).
+                # Export array as string (bash arrays can't be exported to parallel subshells)
+                export _FIGURE_ANALYSES_STR="${FIGURE_ANALYSES[*]}"
+                _run_figures_for_method() {
+                    local -a _figs=()
+                    IFS=' ' read -ra _figs <<< "$_FIGURE_ANALYSES_STR"
+                    run_batched_analyses "$1" "$2" "${_figs[@]}"
+                }
+                export -f _run_figures_for_method
+                parallel \
                     -j "$JOBS" \
-                    --colsep '\t' \
                     --halt soon,fail,30% \
                     --joblog "$LOG_DIR/parallel_figures_${dataset}.log" \
-                    run_single_analysis {1} "$MASTER_REFERENCE" {2} \
+                    _run_figures_for_method {} "$MASTER_REFERENCE" \
+                    < <(printf '%s\n' "${METHODS[@]}") \
                     || log_warn "Phase 3: Some figure tasks failed for dataset '$dataset' (see joblog)"
             else
-                log_info "Phase 3: Figure generation (sequential): ${FIGURE_ANALYSES[*]}"
+                log_info "Phase 3: Figure generation (sequential, batched): ${FIGURE_ANALYSES[*]}"
                 for method in "${METHODS[@]}"; do
-                    for analysis in "${FIGURE_ANALYSES[@]}"; do
-                        run_single_analysis "$method" "$MASTER_REFERENCE" "$analysis"
-                    done
+                    run_batched_analyses "$method" "$MASTER_REFERENCE" "${FIGURE_ANALYSES[@]}"
                 done
             fi
         fi
@@ -564,7 +563,7 @@ fi
 #===============================================================================
 
 log_step "All Configs Complete"
-log_info "Configs run: ${#PIPELINE_CONFIGS[@]} | Log: $LOG_FILE | Time: $TIME_FILE"
+log_info "Configs run: ${_TOTAL_CONFIGS} | Log: $LOG_FILE | Time: $TIME_FILE"
 # O(1) bash builtin — avoids $(date) subprocess fork
 _final_ts=""; printf -v _final_ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _final_ts=$(date '+%Y-%m-%d %H:%M:%S')
 log_step "Pipeline completed at $_final_ts"

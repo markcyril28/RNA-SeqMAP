@@ -214,14 +214,17 @@ eval "$(conda shell.bash hook)"
 
 # Returns a space-separated list of package names missing from the environment
 check_packages_installed() {
-    local installed_pkgs
-    installed_pkgs=$(${PKG_MGR} list -n "${ENV_NAME}" --export 2>/dev/null \
-        | cut -d'=' -f1 | sort -u)
+    # Build associative array for O(1) lookup (avoids echo|grep fork per package)
+    local -A _installed_set=()
+    local _line
+    while IFS= read -r _line; do
+        [[ -n "$_line" ]] && _installed_set["${_line%%=*}"]=1
+    done < <(${PKG_MGR} list -n "${ENV_NAME}" --export 2>/dev/null)
 
     local missing=()
     for pkg in "${ALL_PACKAGES[@]}"; do
         local pkg_name="${pkg%%[><=]*}"   # strip version constraint for comparison
-        if ! echo "$installed_pkgs" | grep -qxF "$pkg_name"; then
+        if [[ -z "${_installed_set[$pkg_name]+x}" ]]; then
             missing+=("$pkg_name")
         fi
     done
