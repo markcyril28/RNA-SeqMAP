@@ -47,6 +47,22 @@ REPORT_BASE="${REPORT_BASE:-${BASE_DIR}/4_CONCORDANCE_ANALYSIS}"
 # so we must always run the hook. Skip only when PATH is already configured.
 # O(1) string match avoids ~0.3-0.5s conda hook overhead per child process.
 if [[ "${CONDA_DEFAULT_ENV:-}" != "gea" ]] || ! command -v Rscript &>/dev/null; then
+    # In non-interactive shells (e.g. WSL2 child processes), conda is not in PATH
+    # because ~/.bashrc is not sourced. Bootstrap it from known install locations.
+    if ! command -v conda &>/dev/null; then
+        for _conda_prefix in \
+            "${HOME}/miniconda3" \
+            "${HOME}/anaconda3" \
+            "/opt/conda" \
+            "/opt/miniconda3" \
+            "/opt/anaconda3"; do
+            if [[ -f "${_conda_prefix}/etc/profile.d/conda.sh" ]]; then
+                # shellcheck source=/dev/null
+                source "${_conda_prefix}/etc/profile.d/conda.sh"
+                break
+            fi
+        done
+    fi
     eval "$(conda shell.bash hook 2>/dev/null)" 2>/dev/null || true
     conda activate gea 2>/dev/null || true
 fi
@@ -81,7 +97,7 @@ if ! [[ -v ANALYSES && "${ANALYSES@a}" == *a* ]]; then
     ANALYSES=(
         "Load_Matrices"                 # Step 1: Load & harmonize matrices (required by all others)
         "Quantification_Concordance"    # Step 2: Compare quantification across methods
-        #"Ranking_Stability"             # Step 3: Assess gene ranking stability
+        "Ranking_Stability"             # Step 3: Assess gene ranking stability
         "Generate_Report"               # Step 4: Produce concordance report
     )
 fi
