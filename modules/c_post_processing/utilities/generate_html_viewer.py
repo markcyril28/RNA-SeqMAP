@@ -39,26 +39,32 @@ from pathlib import Path
 def scan_figures(post_proc_dir: Path) -> list[dict]:
     """Walk post_proc_dir and return list of parsed image records."""
     records = []
-    for png in sorted(post_proc_dir.rglob("*.png")):
-        rel = png.relative_to(post_proc_dir)
-        parts = rel.parts
-        if len(parts) < 12 or parts[1] != "Figure_Outputs":
+    # Walk only method subdirectories, skipping _viewer_cache/ which can contain
+    # thousands of hardlinked PNGs that would all be discarded by the filter below.
+    # On WSL2, each stat() for files in _viewer_cache costs 5-20ms.
+    for subdir in sorted(post_proc_dir.iterdir()):
+        if not subdir.is_dir() or subdir.name.startswith("_"):
             continue
-        records.append(
-            {
-                "path": rel.as_posix(),
-                "method": parts[0],
-                "analysis": parts[2],
-                "reference": parts[3],
-                "gene_group": parts[4],
-                "processing_level": parts[5],
-                "count_type": parts[6],
-                "label_type": parts[7],
-                "norm_scheme": parts[8],
-                "row_orientation": parts[9],
-                "sort_order": parts[10],
-            }
-        )
+        for png in sorted(subdir.rglob("*.png")):
+            rel = png.relative_to(post_proc_dir)
+            parts = rel.parts
+            if len(parts) < 12 or parts[1] != "Figure_Outputs":
+                continue
+            records.append(
+                {
+                    "path": rel.as_posix(),
+                    "method": parts[0],
+                    "analysis": parts[2],
+                    "reference": parts[3],
+                    "gene_group": parts[4],
+                    "processing_level": parts[5],
+                    "count_type": parts[6],
+                    "label_type": parts[7],
+                    "norm_scheme": parts[8],
+                    "row_orientation": parts[9],
+                    "sort_order": parts[10],
+                }
+            )
     return records
 
 
@@ -846,6 +852,7 @@ function prettyLabel(s) {
 }
 // Shorten gene group label for the column header (strip dataset suffix)
 function prettyGeneGroup(gg) {
+  if (!gg) return "";
   // Strip trailing "_in_PRJNA…" dataset suffix to keep headers compact
   return gg.replace(/_in_PRJ[A-Z0-9]+(_\w+)?$/, "").replace(/_/g," ");
 }
@@ -892,7 +899,7 @@ def main():
 
     # Write manifest JSON (used by viewer for caching)
     manifest_path = post_proc_dir / "viewer_manifest.json"
-    with open(manifest_path, "w") as f:
+    with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
     print(f"Manifest written: {manifest_path}", file=sys.stderr)
 

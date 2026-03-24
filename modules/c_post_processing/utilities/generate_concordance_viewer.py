@@ -406,6 +406,7 @@ document.addEventListener("DOMContentLoaded", () => {
 // ── Helpers ───────────────────────────────────────────────────────────────
 function prettyLabel(s) { return s ? s.replace(/_/g, " ") : ""; }
 function prettyGeneGroup(s) {
+  if (!s) return "";
   return s.replace(/_in_PRJ[A-Z0-9]+(_\w+)?$/, "").replace(/_/g, " ");
 }
 
@@ -755,7 +756,6 @@ function parseCSVRow(line) {
 
 function sortDataTable(th, colIdx) {
   const table = th.closest("table");
-  const tbody = table.querySelector("tbody") || table;
   const headerRow = table.rows[0];
   const rows = Array.from(table.rows).slice(1);
 
@@ -768,17 +768,22 @@ function sortDataTable(th, colIdx) {
   th.querySelector(".sort-arrow").textContent = newDir === "asc" ? " \u25B2" : " \u25BC";
   th.dataset.sortDir = newDir;
 
-  rows.sort((a, b) => {
-    let va = a.cells[colIdx] ? a.cells[colIdx].textContent.trim() : "";
-    let vb = b.cells[colIdx] ? b.cells[colIdx].textContent.trim() : "";
-    const na = parseFloat(va), nb = parseFloat(vb);
-    if (!isNaN(na) && !isNaN(nb)) {
-      return newDir === "asc" ? na - nb : nb - na;
-    }
-    return newDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
+  // Pre-parse sort keys once O(n) — avoids O(n log n) parseFloat calls inside comparator
+  const keys = rows.map(r => {
+    const text = r.cells[colIdx] ? r.cells[colIdx].textContent.trim() : "";
+    const num = parseFloat(text);
+    return { row: r, text, num, isNum: !isNaN(num) && text !== "" };
   });
 
-  rows.forEach(r => table.appendChild(r));
+  keys.sort((a, b) => {
+    if (a.isNum && b.isNum) return newDir === "asc" ? a.num - b.num : b.num - a.num;
+    return newDir === "asc" ? a.text.localeCompare(b.text) : b.text.localeCompare(a.text);
+  });
+
+  // Batch DOM append via DocumentFragment — single reflow instead of N reflows
+  const frag = document.createDocumentFragment();
+  keys.forEach(k => frag.appendChild(k.row));
+  table.appendChild(frag);
 }
 
 // ── Modal ─────────────────────────────────────────────────────────────────
