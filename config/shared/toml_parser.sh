@@ -124,42 +124,45 @@ load_toml() {
                     [[ -n "$after_bracket" ]] && _toml_parse_array_elements "$after_bracket" array_values
                 fi
             else
-                # Scalar value
-                value="$(_toml_parse_scalar "$value")"
+                # Scalar value — nameref avoids subshell fork
+                _toml_parse_scalar "$value" value
                 eval "${key}=\"\${value}\""
             fi
         fi
     done < "$toml_file"
 }
 
-# _toml_parse_scalar <raw_value>
+# _toml_parse_scalar <raw_value> <result_varname>
 # Strips quotes, inline comments, and converts booleans.
+# Uses nameref to write result directly — avoids $() subshell fork per scalar.
+# O(1) string ops; called ~20 times per config file × 3-5 configs = 60-100 forks saved.
 _toml_parse_scalar() {
-    local val="$1"
+    local _tsv="$1"
+    local -n _scalar_ref=$2
 
     # Strip inline comment (only if # is outside quotes)
-    if [[ "$val" == '"'* ]]; then
+    if [[ "$_tsv" == '"'* ]]; then
         # Quoted string — extract content between quotes
-        val="${val#\"}"
-        val="${val%%\"*}"
-    elif [[ "$val" == "'"* ]]; then
+        _tsv="${_tsv#\"}"
+        _tsv="${_tsv%%\"*}"
+    elif [[ "$_tsv" == "'"* ]]; then
         # Single-quoted string (literal)
-        val="${val#\'}"
-        val="${val%%\'*}"
+        _tsv="${_tsv#\'}"
+        _tsv="${_tsv%%\'*}"
     else
         # Unquoted — strip inline comment
-        val="${val%%\#*}"
+        _tsv="${_tsv%%\#*}"
         # Trim trailing whitespace
-        val="${val%"${val##*[![:space:]]}"}"
+        _tsv="${_tsv%"${_tsv##*[![:space:]]}"}"
 
         # Convert TOML booleans to pipeline convention
-        case "$val" in
-            true)  val="TRUE" ;;
-            false) val="FALSE" ;;
+        case "$_tsv" in
+            true)  _tsv="TRUE" ;;
+            false) _tsv="FALSE" ;;
         esac
     fi
 
-    printf '%s' "$val"
+    _scalar_ref="$_tsv"
 }
 
 # _toml_parse_array_elements <line> <array_name_ref>
