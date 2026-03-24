@@ -8,7 +8,10 @@
 #
 # Output: REPORT_BASE/concordance_report.md (or POST_PROC_BASE fallback)
 
-source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
+# Skip re-sourcing when running under concordance_batch_dispatcher.R (already loaded)
+if (!exists(".CONC_BATCH_CONFIG_LOADED") || !isTRUE(.CONC_BATCH_CONFIG_LOADED)) {
+  source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
+}
 
 cat("\n=== STEP 4: Generating Concordance Report ===\n\n")
 
@@ -307,7 +310,7 @@ add("")
   # cross_equivalent_gene mode: per-gene correlations across genome pairs
   add("## 2. Equivalent-Gene Concordance")
   add("")
-  gene_cors <- concordance$gene_correlations
+  gene_cors <- concordance$per_pair_cors
   pair_labels <- concordance$pair_labels
   if (!is.null(gene_cors) && length(gene_cors) > 0) {
     add("Per-gene Spearman correlations between equivalent genes across genome pairs.")

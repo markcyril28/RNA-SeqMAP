@@ -19,16 +19,19 @@
 #   - figures/equivalent_gene_concordance_heatmap.png
 #   - figures/equivalent_gene_scatter.png
 
-source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
+# Skip re-sourcing when running under concordance_batch_dispatcher.R (already loaded)
+if (!exists(".CONC_BATCH_CONFIG_LOADED") || !isTRUE(.CONC_BATCH_CONFIG_LOADED)) {
+  source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
 
-suppressPackageStartupMessages({
-  library(ComplexHeatmap)
-  library(circlize)
-  library(grid)
-})
+  suppressPackageStartupMessages({
+    library(ComplexHeatmap)
+    library(circlize)
+    library(grid)
+  })
+}
 
-# Cache matrixStats availability once (avoids repeated requireNamespace probes)
-.HAS_MATRIXSTATS <- requireNamespace("matrixStats", quietly = TRUE)
+# Reuse cached probe from 1_utility_functions.R when available; fall back to requireNamespace
+if (!exists(".HAS_MATRIXSTATS")) .HAS_MATRIXSTATS <- requireNamespace("matrixStats", quietly = TRUE)
 
 cat("\n=== STEP 2: Equivalent-Gene Concordance Across Genomes ===\n\n")
 
@@ -131,7 +134,8 @@ for (pi in seq_along(genome_pairs)) {
   r1c <- r1 - r1_mean; r1c[is.na(r1c)] <- 0
   r2c <- r2 - r2_mean; r2c[is.na(r2c)] <- 0
   num <- rowSums(r1c * r2c)
-  den <- sqrt(rowSums(r1c^2) * rowSums(r2c^2))
+  # r*r avoids ^ S3 method dispatch on matrix
+  den <- sqrt(rowSums(r1c*r1c) * rowSums(r2c*r2c))
   den[den == 0] <- 1
   cors <- setNames(num / den, common_genes)
   cors[too_few] <- NA_real_
@@ -235,6 +239,15 @@ if (n_genomes == 2) {
 
   cat("--- Generating per-gene-group figures (", length(group_names), "groups ) ---\n")
 
+  # Hoist color palette outside loop — colorRampPalette() does interpolation
+  # setup once; palette(100) generates 100 colors. Both are loop-invariant.
+  .pal_100 <- colorRampPalette(c("#D73027", "#F46D43", "#FDAE61", "#FEE090",
+                                   "#FFFFBF",
+                                   "#E0F3F8", "#ABD9E9", "#74ADD1", "#4575B4"))(100)
+
+  # Cache FIXED_METHOD short name — loop-invariant, avoids G get_short_name() calls
+  .fixed_method_short <- get_short_name(FIXED_METHOD)
+
   # Shared rank helper — .HAS_MATRIXSTATS set at module load (line 31)
   .rank_rows <- function(m) {
     if (.HAS_MATRIXSTATS) {
@@ -268,7 +281,8 @@ if (n_genomes == 2) {
     r1 <- .rank_rows(mat1)
     r2 <- .rank_rows(mat2)
     num <- gpu_matmult(r1, t(r2))
-    den <- sqrt(rowSums(r1^2)) %o% sqrt(rowSums(r2^2))
+    # r*r avoids ^ S3 method dispatch on matrix
+    den <- sqrt(rowSums(r1*r1)) %o% sqrt(rowSums(r2*r2))
     den[den == 0] <- 1
     gene_gene_cor <- num / den
     rownames(gene_gene_cor) <- row_labels
@@ -284,14 +298,9 @@ if (n_genomes == 2) {
     }
     rm(.gg_out)
 
-    # Color scale
+    # Color scale — uses pre-computed .pal_100 (hoisted above loop)
     .abs_lim <- max(abs(range(gene_gene_cor, na.rm = TRUE)), 0.5)
-    col_fun <- colorRamp2(
-      seq(-.abs_lim, .abs_lim, length.out = 100),
-      colorRampPalette(c("#D73027", "#F46D43", "#FDAE61", "#FEE090",
-                          "#FFFFBF",
-                          "#E0F3F8", "#ABD9E9", "#74ADD1", "#4575B4"))(100)
-    )
+    col_fun <- colorRamp2(seq(-.abs_lim, .abs_lim, length.out = 100), .pal_100)
 
     # Capture gene_gene_cor in cell_fun closure
     .local_cor <- gene_gene_cor
@@ -338,7 +347,7 @@ if (n_genomes == 2) {
     # Figure title: gene group + method
     .grp_display <- gsub("_", " ", .grp)
     .fig_title <- paste0(.grp_display, "\nEquivalent Gene Concordance (",
-                         get_short_name(FIXED_METHOD), ")")
+                         .fixed_method_short, ")")
 
     # Compute final pixel dimensions from total padding
     .extra_w_px <- ceiling(15 / 10 * FIGURE_DPI / 2.54)
@@ -384,8 +393,9 @@ if (n_genomes == 2) {
       .pt_col <- adjustcolor("#4575B4", 0.7)
 
       for (gene in .grp_genes) {
-        lx <- log2(tpm_matrices[[g1]][gene, common_samples] + 1)
-        ly <- log2(tpm_matrices[[g2]][gene, common_samples] + 1)
+        # Reuse pre-computed log2_matrices (line 87) instead of redundant log2(tpm+1)
+        lx <- log2_matrices[[g1]][gene, common_samples]
+        ly <- log2_matrices[[g2]][gene, common_samples]
         rho <- precomputed_cors[gene]
         rho_str <- if (is.finite(rho)) sprintf("rho=%.2f", rho) else "rho=N/A"
 
@@ -414,8 +424,8 @@ if (n_genomes == 2) {
       remaining <- (n_cols_sc * n_rows_sc) - .n_grp
       if (remaining > 0) for (i in seq_len(remaining)) plot.new()
 
-      mtext(paste0(gsub("_", " ", .grp), ": ", short_names[g1], " vs ", short_names[g2],
-                    " (", get_short_name(FIXED_METHOD), ")"),
+      mtext(paste0(.grp_display, ": ", short_names[g1], " vs ", short_names[g2],
+                    " (", .fixed_method_short, ")"),
             outer = TRUE, cex = 1.1, font = 2)
 
       dev.off(); .dev_open <- FALSE

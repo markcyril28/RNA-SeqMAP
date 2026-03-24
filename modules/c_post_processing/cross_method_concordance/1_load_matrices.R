@@ -19,11 +19,16 @@
 #   $common_samples - character vector of samples present in all methods
 #   $method_stats  - data.frame with per-method stats (n_genes, n_samples, etc.)
 
-source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
+# Skip re-sourcing when running under concordance_batch_dispatcher.R (already loaded)
+if (!exists(".CONC_BATCH_CONFIG_LOADED") || !isTRUE(.CONC_BATCH_CONFIG_LOADED)) {
+  source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
+}
 # Source shared method loaders — provides .use_dt, .use_parallel, .n_cores,
 # .par_lapply, .fast_read_tsv, .assemble_tpm_matrix (with double-source guard).
 # Eliminates ~75 lines of duplicated helper definitions.
-source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_method_loaders.R"))
+if (!exists(".METHOD_LOADERS_SOURCED") || !isTRUE(.METHOD_LOADERS_SOURCED)) {
+  source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_method_loaders.R"))
+}
 
 cat("\n=== STEP 1: Loading Expression Matrices ===\n\n")
 

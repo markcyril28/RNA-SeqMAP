@@ -16,13 +16,16 @@
 #   - tables/median_correlation_matrix_spearman.csv
 #   - figures/method_concordance_heatmap_spearman.png
 
-source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
+# Skip re-sourcing when running under concordance_batch_dispatcher.R (already loaded)
+if (!exists(".CONC_BATCH_CONFIG_LOADED") || !isTRUE(.CONC_BATCH_CONFIG_LOADED)) {
+  source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
 
-suppressPackageStartupMessages({
-  library(ComplexHeatmap)
-  library(circlize)
-  library(grid)
-})
+  suppressPackageStartupMessages({
+    library(ComplexHeatmap)
+    library(circlize)
+    library(grid)
+  })
+}
 
 cat("\n=== STEP 2: Quantification Concordance ===\n\n")
 
@@ -114,8 +117,9 @@ for (i in seq_along(method_pairs)) {
     # NaN propagation through the entire column during centering.
     cm1[!is.finite(cm1)] <- 0
     cm2[!is.finite(cm2)] <- 0
-    r1_centered <- t(t(r1) - cm1)
-    r2_centered <- t(t(r2) - cm2)
+    # sweep(MARGIN=2) avoids two intermediate G×S transpose allocations per variable
+    r1_centered <- sweep(r1, 2, cm1, "-")
+    r2_centered <- sweep(r2, 2, cm2, "-")
     # NOTE: Zeroing NAs biases correlation vs pairwise-complete Spearman when
     # many genes are unexpressed in one method. Acceptable for cross-method
     # concordance ranking (relative, not absolute) but not for formal inference.
@@ -123,7 +127,8 @@ for (i in seq_along(method_pairs)) {
     r2_centered[is.na(r2_centered)] <- 0
 
     num <- colSums(r1_centered * r2_centered)
-    den <- sqrt(colSums(r1_centered^2) * colSums(r2_centered^2))
+    # Explicit multiply avoids ^ S3 dispatch overhead on matrix operand
+    den <- sqrt(colSums(r1_centered * r1_centered) * colSums(r2_centered * r2_centered))
     den[den == 0] <- 1  # guard against zero-variance
     spearman_per_sample[valid_samples, i] <- num / den
   }
@@ -189,10 +194,12 @@ print(round(median_spearman, 3))
 cat("\n--- Generating Median Spearman concordance heatmap ---\n")
 
 # Replace any NaN/Inf values in the correlation matrix with NA before visualization
-median_spearman[!is.finite(median_spearman) & row(median_spearman) != col(median_spearman)] <- NA
-min_cor <- min(median_spearman, na.rm = TRUE)
+# Compute off-diagonal mask once — avoids 2× O(M²) row()/col() allocations
+.off_diag <- row(median_spearman) != col(median_spearman)
+median_spearman[!is.finite(median_spearman) & .off_diag] <- NA
+min_cor <- min(median_spearman[.off_diag], na.rm = TRUE)
 if (!is.finite(min_cor) || min_cor >= 1) min_cor <- 0.9
-if (all(is.na(median_spearman[row(median_spearman) != col(median_spearman)]))) {
+if (all(is.na(median_spearman[.off_diag]))) {
   cat("  WARNING: All pairwise correlations are NA — check input data quality\n")
 }
 col_fun <- colorRamp2(

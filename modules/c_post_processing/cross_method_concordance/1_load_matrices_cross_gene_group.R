@@ -14,8 +14,13 @@
 #   $method_stats    - data.frame with per-group stats
 #   $gene_group_sizes - named integer vector of gene counts per group
 
-source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
-source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_method_loaders.R"))
+# Skip re-sourcing when running under concordance_batch_dispatcher.R (already loaded)
+if (!exists(".CONC_BATCH_CONFIG_LOADED") || !isTRUE(.CONC_BATCH_CONFIG_LOADED)) {
+  source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
+}
+if (!exists(".METHOD_LOADERS_SOURCED") || !isTRUE(.METHOD_LOADERS_SOURCED)) {
+  source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_method_loaders.R"))
+}
 
 cat("\n=== STEP 1: Loading Expression Matrices (Cross-Gene-Group Mode) ===\n\n")
 
@@ -40,7 +45,8 @@ cat("Gene groups to compare:", paste(CONCORDANCE_GENE_GROUPS, collapse = ", "), 
 .gene_group_csv_basenames <- basename(.gene_group_csv_cache)
 
 # matrixStats::colMedians is a C-level column-wise median — ~3x faster than apply(x, 2, median)
-.HAS_MATRIXSTATS <- requireNamespace("matrixStats", quietly = TRUE)
+# Reuse cached probe from 1_utility_functions.R when available; fall back to requireNamespace
+if (!exists(".HAS_MATRIXSTATS")) .HAS_MATRIXSTATS <- requireNamespace("matrixStats", quietly = TRUE)
 
 # -----------------------------------------------
 # Load the full TPM matrix for the fixed method

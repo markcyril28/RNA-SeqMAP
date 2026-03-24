@@ -13,8 +13,13 @@
 #   $common_samples - character vector of samples present in all genomes
 #   $method_stats  - data.frame with per-genome stats
 
-source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
-source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_method_loaders.R"))
+# Skip re-sourcing when running under concordance_batch_dispatcher.R (already loaded)
+if (!exists(".CONC_BATCH_CONFIG_LOADED") || !isTRUE(.CONC_BATCH_CONFIG_LOADED)) {
+  source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
+}
+if (!exists(".METHOD_LOADERS_SOURCED") || !isTRUE(.METHOD_LOADERS_SOURCED)) {
+  source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_method_loaders.R"))
+}
 
 cat("\n=== STEP 1: Loading Expression Matrices (Cross-Genome Mode) ===\n\n")
 
@@ -213,8 +218,11 @@ if (length(GENOME_GENE_GROUPS_MAP) >= 2) {
 
     # Single concatenation: O(N_total) vs O(G² / 2) from incremental c()
     .common_labels <- unlist(.label_chunks, use.names = FALSE)
+    # Cache per-genome unlist results — reused at line ~382 for ortho_gene_ids
+    .gene_chunks_flat <- list()
     for (.genome in .mapped_genomes) {
-      ortho_map[[.genome]] <- unlist(.gene_chunks[[.genome]], use.names = FALSE)
+      .gene_chunks_flat[[.genome]] <- unlist(.gene_chunks[[.genome]], use.names = FALSE)
+      ortho_map[[.genome]] <- .gene_chunks_flat[[.genome]]
     }
 
     if (.mapping_ok && length(.common_labels) > 0) {
@@ -228,13 +236,16 @@ if (length(GENOME_GENE_GROUPS_MAP) >= 2) {
         .genome_ids <- ortho_map[[.genome]]
         # Keep only genes that exist in the matrix
         .present <- .genome_ids %in% rownames(mat)
-        if (sum(.present) == 0) {
+        # Cache sum once — avoids 2× O(G) logical scans
+        .n_present <- sum(.present)
+        if (.n_present == 0L) {
           cat("  [WARN] No mapped genes found in matrix for:", .genome, "\n")
           .use_positional_mapping <- FALSE
           break
         }
-        if (sum(!.present) > 0) {
-          cat("  [INFO]", sum(!.present), "mapped gene(s) missing from", .genome_short_names[.genome],
+        .n_missing <- length(.present) - .n_present
+        if (.n_missing > 0L) {
+          cat("  [INFO]", .n_missing, "mapped gene(s) missing from", .genome_short_names[.genome],
               "matrix — excluded from analysis\n")
         }
         # Subset matrix and rename rows to common labels
@@ -379,7 +390,12 @@ if (.use_positional_mapping && exists(".gene_chunks") && exists(".label_chunks")
   # Reuse .common_labels (computed at line 210) — avoids redundant O(N) unlist()
   .all_labels <- .common_labels
   for (.genome in names(.gene_chunks)) {
-    .all_ids <- unlist(.gene_chunks[[.genome]], use.names = FALSE)
+    # Reuse cached flat result from line ~217 if available, else unlist
+    .all_ids <- if (exists(".gene_chunks_flat") && !is.null(.gene_chunks_flat[[.genome]])) {
+      .gene_chunks_flat[[.genome]]
+    } else {
+      unlist(.gene_chunks[[.genome]], use.names = FALSE)
+    }
     ortho_gene_ids[[.genome]] <- setNames(.all_ids, .all_labels)
     .all_short <- unlist(.shortname_chunks[[.genome]], use.names = FALSE)
     ortho_short_names[[.genome]] <- setNames(.all_short, .all_labels)

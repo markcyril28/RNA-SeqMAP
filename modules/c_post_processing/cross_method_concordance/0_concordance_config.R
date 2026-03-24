@@ -258,7 +258,8 @@ get_concordance_title <- function() {
 # Shared fast CSV reader (used by gene group loading in multiple scripts)
 # data.table::fread is 10-50x faster than read.csv for larger files
 # -----------------------------------------------
-.conc_use_dt <- requireNamespace("data.table", quietly = TRUE)
+# Reuse .HAS_DATATABLE from 0_shared_config.R when available; fall back to requireNamespace
+.conc_use_dt <- if (exists(".HAS_DATATABLE")) .HAS_DATATABLE else requireNamespace("data.table", quietly = TRUE)
 
 .fast_read_csv <- function(path, ...) {
   if (.conc_use_dt) {

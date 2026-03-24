@@ -15,13 +15,16 @@
 #   - tables/gene_correlation_matrix_<group>.csv
 #   - figures/gene_concordance_heatmap_<group>.png
 
-source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
+# Skip re-sourcing when running under concordance_batch_dispatcher.R (already loaded)
+if (!exists(".CONC_BATCH_CONFIG_LOADED") || !isTRUE(.CONC_BATCH_CONFIG_LOADED)) {
+  source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
 
-suppressPackageStartupMessages({
-  library(ComplexHeatmap)
-  library(circlize)
-  library(grid)
-})
+  suppressPackageStartupMessages({
+    library(ComplexHeatmap)
+    library(circlize)
+    library(grid)
+  })
+}
 
 cat("\n=== STEP 2: Gene-vs-Gene Concordance (Within Gene Groups) ===\n\n")
 
@@ -54,6 +57,9 @@ all_cor_matrices <- list()
 # for O(1) lookup per gene group instead of O(C) vectorized == scan.
 .gene_group_csv_basenames <- basename(.gene_group_csv_cache)
 .gene_group_csv_by_name <- split(.gene_group_csv_cache, .gene_group_csv_basenames)
+
+# Hoist palette outside loop — the 100-color interpolation is constant across gene groups
+.gg_palette <- colorRampPalette(c("#D73027", "#FEE090", "#E0F3F8", "#91BFDB", "#4575B4"))(100)
 
 for (gg_name in groups) {
   cat("\n--- Processing gene group:", gg_name, "---\n")
@@ -126,13 +132,16 @@ for (gg_name in groups) {
 
   # Save correlation matrix
   safe_name <- gsub("[^[:alnum:]_.-]", "_", gg_name)
-  .cor_out <- data.frame(Gene = rownames(cor_mat), cor_mat, check.names = FALSE)
+  # Use as.data.table(keep.rownames=) when available — avoids O(G²) data.frame() copy
+  .cor_csv_path <- file.path(TABLES_DIR, paste0("gene_correlation_matrix_", safe_name, ".csv"))
   if (.conc_use_dt) {
-    data.table::fwrite(.cor_out, file.path(TABLES_DIR, paste0("gene_correlation_matrix_", safe_name, ".csv")))
+    .cor_out <- data.table::as.data.table(cor_mat, keep.rownames = "Gene")
+    data.table::fwrite(.cor_out, .cor_csv_path)
   } else {
-    write.csv(.cor_out, file.path(TABLES_DIR, paste0("gene_correlation_matrix_", safe_name, ".csv")), row.names = FALSE)
+    .cor_out <- data.frame(Gene = rownames(cor_mat), cor_mat, check.names = FALSE)
+    write.csv(.cor_out, .cor_csv_path, row.names = FALSE)
   }
-  rm(.cor_out)
+  rm(.cor_out, .cor_csv_path)
 
   # Compute off-diagonal mask once — reused for range stats, NA cleanup, and min_cor.
   # Avoids 4 redundant O(G²) row()/col() calls (was computed 4× independently).
@@ -155,7 +164,7 @@ for (gg_name in groups) {
 
   col_fun <- colorRamp2(
     seq(min_cor, 1, length.out = 100),
-    colorRampPalette(c("#D73027", "#FEE090", "#E0F3F8", "#91BFDB", "#4575B4"))(100)
+    .gg_palette
   )
 
   # Only show cell values if the matrix is small enough to be readable
@@ -169,8 +178,9 @@ for (gg_name in groups) {
     NULL
   }
 
-  # Scale heatmap size with gene count
-  hm_size <- unit(max(10, min(30, n_genes * 0.6)), "cm")
+  # Scale heatmap size with gene count — compute once, reuse for unit() and layout
+  .hm_body_val <- max(10, min(30, n_genes * 0.6))
+  hm_size <- unit(.hm_body_val, "cm")
   font_size <- max(6, 13 - n_genes / 5)
 
   # Pre-compute distance matrix for clustering — gpu_dist() offloads the O(G²×G)
@@ -202,8 +212,7 @@ for (gg_name in groups) {
     height = hm_size
   )
 
-  # Auto-calculate figure dimensions from content
-  .hm_body_val <- max(10, min(30, n_genes * 0.6))
+  # Auto-calculate figure dimensions from content (reuses .hm_body_val computed above)
   .fig_layout <- calc_figure_layout(
     row_labels = rownames(cor_mat),
     col_labels = colnames(cor_mat),
