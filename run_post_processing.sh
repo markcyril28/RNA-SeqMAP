@@ -129,18 +129,6 @@ fi
 # FUNCTIONS
 #===============================================================================
 
-# Map analysis name to output folder name.
-# Uses case statement (not associative array) so the function works correctly
-# when exported to GNU Parallel subshells (bash cannot export associative arrays).
-get_output_folder_name() {
-    case "$1" in
-        "Matrix_Creation")                echo "0_Matrix_Creation" ;;
-        "Basic_Heatmap")                  echo "I_Basic_Heatmap" ;;
-        "Heatmap_with_CV")               echo "II_Heatmap_with_CV" ;;
-        *)                                echo "" ;;
-    esac
-}
-
 #===============================================================================
 # INITIALIZATION
 #===============================================================================
@@ -440,6 +428,38 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
         export -f _run_figures_for_method
     fi
 
+    # Pre-compute Phase 1 & 2 parallelism limits once per config (not per dataset).
+    # METHODS, AVAILABLE_RAM_GB, and THREADS are config-level constants.
+    if [[ ${#METHODS[@]} -gt 1 && "$ENABLE_GNU_PARALLEL" == "TRUE" ]] && $_HAS_PARALLEL; then
+        # Phase 1 RAM cap: preprocessing R scripts use ~1-2GB each
+        _preproc_mem_per_method=1536  # ~1.5GB per preprocessing R process
+        _p1_max_by_ram=$(( AVAILABLE_RAM_GB * 1024 * 75 / 100 / _preproc_mem_per_method ))
+        (( _p1_max_by_ram < 1 )) && _p1_max_by_ram=1
+        _p1_n_methods=${#METHODS[@]}
+        (( _p1_n_methods > _p1_max_by_ram )) && _p1_n_methods=$_p1_max_by_ram
+        export _p1_n_methods
+
+        # Phase 2 thread/RAM calculation
+        if [[ ${#HEAVY_ANALYSES[@]} -gt 0 ]]; then
+            _n_methods=${#METHODS[@]}
+            _heavy_mem_per_method=3072  # ~3GB per heavy R analysis
+            _max_by_ram=$(( AVAILABLE_RAM_GB * 1024 * 75 / 100 / _heavy_mem_per_method ))
+            (( _max_by_ram < 1 )) && _max_by_ram=1
+            (( _n_methods > _max_by_ram )) && _n_methods=$_max_by_ram
+            _threads_per_method=$(( THREADS / _n_methods ))
+            (( _threads_per_method < 1 )) && _threads_per_method=1
+            # Worker function: run all heavy analyses for one method with reduced thread count
+            _run_heavy_for_method() {
+                local _method="$1" _ref="$2"
+                shift 2
+                export THREADS="$_threads_per_method"
+                run_batched_analyses "$_method" "$_ref" "$@"
+            }
+            export -f _run_heavy_for_method
+            export _threads_per_method _n_methods
+        fi
+    fi
+
     # Process each dataset (reuse cached CSV parse — avoids redundant file I/O)
     for dataset in "${SRR_DATASETS[@]}"; do
         if [[ -z "${_CACHED_SRR_LISTS[$dataset]+x}" ]]; then
@@ -459,9 +479,9 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
 
         # ── Phase 1: Preprocessing (parallel across methods when possible) ──
         if [[ ${#METHODS[@]} -gt 1 && "$ENABLE_GNU_PARALLEL" == "TRUE" ]] && $_HAS_PARALLEL; then
-            log_info "Phase 1: Preprocessing (parallel across ${#METHODS[@]} methods)"
+            log_info "Phase 1: Preprocessing (parallel across ${_p1_n_methods} methods, RAM-capped)"
             parallel \
-                -j "${#METHODS[@]}" \
+                -j "$_p1_n_methods" \
                 --halt soon,fail,30% \
                 --joblog "$LOG_DIR/parallel_preproc_${dataset}.log" \
                 run_method_preprocessing {} "$MASTER_REFERENCE" \
@@ -475,29 +495,11 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
         fi
 
         # ── Phase 2: Thread-heavy analyses (sequential — needs full threads) ──
+        # _n_methods, _threads_per_method, and _run_heavy_for_method are hoisted
+        # to config-level above the dataset loop to avoid per-dataset re-declaration.
         if [[ ${#HEAVY_ANALYSES[@]} -gt 0 ]]; then
             if [[ ${#METHODS[@]} -gt 1 && "$ENABLE_GNU_PARALLEL" == "TRUE" ]] && $_HAS_PARALLEL; then
-                # Each method's heavy analyses are independent of other methods.
-                # Run methods in parallel, each getting THREADS/N_METHODS cores.
-                # Memory guard: DESeq2/WGCNA/GSEA use ~2-4GB per R process;
-                # cap concurrent methods so total < 75% of RAM
-                _n_methods=${#METHODS[@]}
-                _heavy_mem_per_method=3072  # ~3GB per heavy R analysis
-                _max_by_ram=$(( AVAILABLE_RAM_GB * 1024 * 75 / 100 / _heavy_mem_per_method ))
-                (( _max_by_ram < 1 )) && _max_by_ram=1
-                (( _n_methods > _max_by_ram )) && _n_methods=$_max_by_ram
-                _threads_per_method=$(( THREADS / _n_methods ))
-                (( _threads_per_method < 1 )) && _threads_per_method=1
                 log_info "Phase 2: Heavy analyses (parallel across ${_n_methods} methods, ${_threads_per_method} threads each): ${HEAVY_ANALYSES[*]}"
-                # Worker function: run all heavy analyses for one method with reduced thread count
-                _run_heavy_for_method() {
-                    local _method="$1" _ref="$2"
-                    shift 2
-                    export THREADS="$_threads_per_method"
-                    run_batched_analyses "$_method" "$_ref" "$@"
-                }
-                export -f _run_heavy_for_method
-                export _threads_per_method
                 parallel \
                     -j "$_n_methods" \
                     --halt soon,fail,30% \

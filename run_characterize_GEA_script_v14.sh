@@ -327,7 +327,7 @@ for config_file in "${CONFIG_FILES[@]}"; do
 	ALL_FASTA_FILES=()
 	PIPELINE_STAGES=()
 	SRR_COMBINED_LIST=()
-	unset gtf_file STAR_TRANSCRIPTOME_FASTA decoy DECOY KEEP_BAM_GLOBAL STAR_READ_LENGTH HISAT2_STRANDNESS
+	unset gtf_file STAR_TRANSCRIPTOME_FASTA decoy DECOY KEEP_BAM_GLOBAL STAR_READ_LENGTH HISAT2_STRANDNESS SRR_DATASETS
 	load_toml "$config_file" || { log_error "Failed to load config: $config_file"; exit 1; }
 	# Export STAR_READ_LENGTH if set by config
 	[[ -n "${STAR_READ_LENGTH:-}" ]] && export STAR_READ_LENGTH
@@ -378,7 +378,9 @@ for config_file in "${CONFIG_FILES[@]}"; do
 	# Only switch log stage if logging is already initialized (first config handled by run_all).
 	[[ "${LOGGING_INITIALIZED:-}" == "true" ]] && switch_log_stage "1_SRRs"
 
-	[[ $RUN_MAMBA_INSTALLATION == "TRUE" ]] && mamba_install
+	if [[ "${RUN_MAMBA_INSTALLATION:-}" == "TRUE" ]]; then
+		log_warn "MAMBA_INSTALLATION stage is not available — use 'bash setup_conda_gea.sh' instead. Continuing with remaining stages."
+	fi
 	if [[ $RUN_GZIP_TRIMMED_FILES == "TRUE" ]]; then
 		log_step "Gzipping trimmed FASTQ files"
 		gzip_trimmed_fastq_files
