@@ -23,12 +23,27 @@ Example:
 """
 
 import sys
+
+# Pre-compiled regex patterns for GFF3 attribute extraction.
+# Avoids re.compile() + re.escape() on every get_attr() call.
+# Called 7× per GFF3 feature line — for a 200k-line GFF3, this
+# eliminates ~1.4M regex compilations. O(L) total vs O(L×K×compile).
 import re
+_ATTR_PATTERNS: dict[str, re.Pattern] = {}
+
+
+def _get_attr_pattern(key: str) -> re.Pattern:
+    """Return cached compiled pattern for a GFF3 attribute key."""
+    pat = _ATTR_PATTERNS.get(key)
+    if pat is None:
+        pat = re.compile(r'(?:^|;)\s*' + re.escape(key) + r'=([^;]+)')
+        _ATTR_PATTERNS[key] = pat
+    return pat
 
 
 def get_attr(attr_string, key):
     """Extract a value from a GFF3 attribute string (key=value pairs)."""
-    match = re.search(r'(?:^|;)\s*' + re.escape(key) + r'=([^;]+)', attr_string)
+    match = _get_attr_pattern(key).search(attr_string)
     return match.group(1).strip() if match else ""
 
 
