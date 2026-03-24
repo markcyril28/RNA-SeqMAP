@@ -74,8 +74,8 @@ MATRICES_OUTPUT_DIR <- if (nzchar(BASE_DIR)) {
 GENERATE_GENE_LEVEL <- isTRUE(as.logical(Sys.getenv("SALMON_GENERATE_GENE_LEVEL", unset = "TRUE")))
 GENERATE_ISOFORM_LEVEL <- isTRUE(as.logical(Sys.getenv("SALMON_GENERATE_ISOFORM_LEVEL", unset = "TRUE")))
 
-# Cache data.table availability once (used for fast tx2gene and gene list reading)
-.use_dt <- requireNamespace("data.table", quietly = TRUE)
+# Reuse .HAS_DATATABLE from 0_shared_config.R (sourced above) — avoids redundant PATH scan
+.use_dt <- .HAS_DATATABLE
 
 # Use SAMPLE_IDS from shared config (0_shared_config.R)
 # Override here if needed for method-specific samples

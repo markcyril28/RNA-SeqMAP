@@ -314,8 +314,8 @@ for (level_name in names(processing_levels)) {
     cat("Found", length(gene_group_files), "gene group files\n\n")
     
     # CURRENT_DATASET already loaded in Step 6 above
-    # Cache requireNamespace probe once before loop (avoids per-iteration PATH scan)
-    .use_dt <- requireNamespace("data.table", quietly = TRUE)
+    # Reuse .HAS_DATATABLE from 0_shared_config.R (sourced at line 15) — avoids redundant PATH scan
+    .use_dt <- .HAS_DATATABLE
 
     for (gene_group_file in gene_group_files) {
       gene_group_name <- tools::file_path_sans_ext(basename(gene_group_file))

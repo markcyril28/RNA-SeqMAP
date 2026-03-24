@@ -208,7 +208,8 @@ for (level_name in names(processing_levels)) {
 
     # Detect column order: tximport needs c(TXNAME, GENEID)
     # O(N) where N = tx2gene rows (50K-200K for full transcriptomes); fread is 10-50x faster
-    .use_dt_tx2gene <- requireNamespace("data.table", quietly = TRUE)
+    # Reuse .HAS_DATATABLE from 0_shared_config.R (sourced at line 27) — avoids redundant PATH scan
+    .use_dt_tx2gene <- .HAS_DATATABLE
     raw <- if (.use_dt_tx2gene) {
       data.table::fread(tx2gene_file, header = FALSE, colClasses = "character",
                         data.table = FALSE)
@@ -238,8 +239,12 @@ for (level_name in names(processing_levels)) {
     cat("Loaded tx2gene:", nrow(tx2gene), "entries\n\n")
 
     # Validate tx2gene transcript IDs match quant.sf transcript IDs
-    sample_qf <- read.delim(files[1], header = TRUE, nrows = 100,
-                             stringsAsFactors = FALSE)
+    # Use fread when available (5-10x faster for header-only sampling)
+    sample_qf <- if (.use_dt_tx2gene) {
+      data.table::fread(files[1], header = TRUE, nrows = 100, data.table = FALSE)
+    } else {
+      read.delim(files[1], header = TRUE, nrows = 100, stringsAsFactors = FALSE)
+    }
     qf_ids <- sample_qf$Name
     tx_ids <- tx2gene$TXNAME
     # Use %in% instead of intersect(): avoids allocating the intersection vector,
@@ -397,8 +402,8 @@ for (level_name in names(processing_levels)) {
     cat("Found", length(gene_group_files), "gene group file(s)\n\n")
 
     successful_groups <- 0
-    # Cache requireNamespace probe once before loop (avoids per-iteration PATH scan)
-    .use_dt <- requireNamespace("data.table", quietly = TRUE)
+    # Reuse .HAS_DATATABLE from 0_shared_config.R — avoids redundant PATH scan
+    .use_dt <- .HAS_DATATABLE
 
     for (gene_group_file in gene_group_files) {
       gene_group_name  <- tools::file_path_sans_ext(basename(gene_group_file))
