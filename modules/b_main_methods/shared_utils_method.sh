@@ -174,10 +174,6 @@ create_sample_metadata() {
 HELPERS_DIR="${MODULES_DIR:+${MODULES_DIR}/c_post_processing/preprocessing}"
 if [[ -z "$HELPERS_DIR" ]]; then HELPERS_DIR="${BASH_SOURCE[0]%/*}/../c_post_processing/preprocessing"; fi
 
-# Run tximport using method-specific R helper script
-# Usage: run_tximport <method> <quant_dir> <metadata_file> [output_dir]
-# run_tximport() — removed (dead code; pipeline uses generate_tximport_script instead)
-
 # Generate tximport R script (copies method-specific helper to output location)
 generate_tximport_script() {
 	local method="$1"
@@ -283,10 +279,13 @@ export -f _get_available_ram_mb
 # samtools sort -m VALUE is per-thread (not total), so total RAM = VALUE x (threads + 1).
 # Queries available system RAM and divides by active sorting threads,
 # reserving headroom for the aligner and other processes.
-# Usage: _samtools_sort_mem <num_threads> [parallel_jobs]
+# Usage: _samtools_sort_mem <num_threads> <parallel_jobs> <result_varname>
+# Uses nameref to write result directly — avoids $() subshell fork per call.
+# Called 5 times across M1/M2 methods (some in per-sample loops), saving 50-700 forks.
 _samtools_sort_mem() {
 	local sort_threads="${1:-4}"
 	local parallel_jobs="${2:-1}"
+	local -n _ssm_ref=$3
 	local total_slots=$(( (sort_threads + 1) * parallel_jobs ))
 	[[ $total_slots -lt 1 ]] && total_slots=1
 
@@ -309,7 +308,7 @@ _samtools_sort_mem() {
 		[[ $per_thread_mb -lt 256 ]] && per_thread_mb=256
 	fi
 
-	echo "${per_thread_mb}M"
+	_ssm_ref="${per_thread_mb}M"
 }
 export -f _samtools_sort_mem
 

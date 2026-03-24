@@ -104,7 +104,7 @@ hisat2_de_novo_pipeline() {
 				local _det_sort_threads=$(( THREADS < 4 ? THREADS : 4 ))
 				(( _det_sort_threads < 1 )) && _det_sort_threads=1
 				local _det_sort_mem _det_wi_flag=""
-				_det_sort_mem=$(_samtools_sort_mem "$_det_sort_threads" 1)
+				_samtools_sort_mem "$_det_sort_threads" 1 _det_sort_mem
 				_samtools_has_write_index && _det_wi_flag="--write-index"
 
 				if [[ -n "$_det_t2" && -f "$_det_t2" ]]; then
@@ -204,7 +204,7 @@ hisat2_de_novo_pipeline() {
 				local sort_threads=$(( threads_per_job < 4 ? threads_per_job : 4 ))
 				(( sort_threads < 1 )) && sort_threads=1
 				local sort_mem _sort_wi_flag=""
-				sort_mem=$(_samtools_sort_mem "$sort_threads" "$parallel_jobs")
+				_samtools_sort_mem "$sort_threads" "$parallel_jobs" sort_mem
 				_samtools_has_write_index && _sort_wi_flag="--write-index"
 				local _align_log="$HISAT2_DIR/${SRR}_${fasta_tag}_alignment_summary.txt"
 				if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
@@ -282,7 +282,7 @@ hisat2_de_novo_pipeline() {
 		local _seq_sort_threads=$(( THREADS < 4 ? THREADS : 4 ))
 		(( _seq_sort_threads < 1 )) && _seq_sort_threads=1
 		local _seq_sort_mem _seq_sort_wi_flag=""
-		_seq_sort_mem=$(_samtools_sort_mem "$_seq_sort_threads" 1)
+		_samtools_sort_mem "$_seq_sort_threads" 1 _seq_sort_mem
 		_samtools_has_write_index && _seq_sort_wi_flag="--write-index"
 		local _seq_failures=0
 		for SRR in "${rnaseq_list[@]}"; do

@@ -44,9 +44,11 @@ _STAR_READ_CMD="$_PIGZ_DC"
 # Calculate total RAM budget (bytes) for STAR's internal BAM sorting.
 # Used with --limitBAMsortRAM when --outSAMtype BAM SortedByCoordinate.
 # Reserves 30% of available RAM for STAR alignment + OS, gives the rest to sorting.
-# Usage: _star_sort_ram [parallel_jobs]
+# Usage: _star_sort_ram <parallel_jobs> <result_varname>
+# Uses nameref to write result directly — avoids $() subshell fork per call.
 _star_sort_ram() {
 	local parallel_jobs="${1:-1}"
+	local -n _ssr_ref=$2
 	local avail_mb
 	avail_mb=$(_get_available_ram_mb)
 
@@ -59,7 +61,7 @@ _star_sort_ram() {
 	[[ $per_job_mb -gt 32768 ]] && per_job_mb=32768
 
 	# STAR wants bytes
-	echo $(( per_job_mb * 1048576 ))
+	_ssr_ref=$(( per_job_mb * 1048576 ))
 }
 
 # REPRODUCIBILITY NOTE: Salmon's EM algorithm convergence is thread-schedule dependent.
@@ -519,7 +521,7 @@ star_alignment_pipeline() {
 	# STAR sorts in-process when --outSAMtype BAM SortedByCoordinate, avoiding
 	# a separate samtools sort step (saves one full BAM read+write pass).
 	local _star_sort_ram_bytes
-	_star_sort_ram_bytes=$(_star_sort_ram "$parallel_jobs")
+	_star_sort_ram "$parallel_jobs" _star_sort_ram_bytes
 	export _star_sort_ram_bytes
 
 	# Use cached parallel availability (set at module load) to avoid per-invocation command -v
@@ -658,7 +660,7 @@ star_alignment_pipeline() {
 	else
 		# Sequential fallback — recompute RAM budget for a single concurrent job
 		# (the initial _star_sort_ram was computed for parallel_jobs instances)
-		_star_sort_ram_bytes=$(_star_sort_ram 1)
+		_star_sort_ram 1 _star_sort_ram_bytes
 
 		# Pre-flight checks: disk space and write permissions (once, not per sample)
 		mkdir -p "$star_genome_dir"

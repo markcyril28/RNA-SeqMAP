@@ -486,7 +486,7 @@ hisat2_ref_guided_pipeline() {
 				local sort_threads=$(( threads_per_job < 4 ? threads_per_job : 4 ))
 				(( sort_threads < 1 )) && sort_threads=1
 				local sort_mem _sort_wi_flag=""
-				sort_mem=$(_samtools_sort_mem "$sort_threads" "$parallel_jobs")
+				_samtools_sort_mem "$sort_threads" "$parallel_jobs" sort_mem
 				_samtools_has_write_index && _sort_wi_flag="--write-index"
 				if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
 					hisat2 -p "$threads_per_job" --dta $hisat2_strand_opts -x "$index_prefix" \
@@ -576,7 +576,7 @@ hisat2_ref_guided_pipeline() {
 		local _seq_sort_threads=$(( THREADS < 4 ? THREADS : 4 ))
 		(( _seq_sort_threads < 1 )) && _seq_sort_threads=1
 		local _seq_sort_mem _seq_sort_wi_flag=""
-		_seq_sort_mem=$(_samtools_sort_mem "$_seq_sort_threads" 1)
+		_samtools_sort_mem "$_seq_sort_threads" 1 _seq_sort_mem
 		_samtools_has_write_index && _seq_sort_wi_flag="--write-index"
 		for SRR in "${rnaseq_list[@]}"; do
 			local HISAT2_DIR="$HISAT2_REF_GUIDED_ROOT/$SRR"
