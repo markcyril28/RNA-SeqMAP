@@ -134,13 +134,10 @@ def main(gene_names_file, sample_files_list):
         sample_gene_values.append(resolved)
 
     # Stream output line-by-line (avoids buffering entire matrix in memory)
+    # O(G) write calls instead of O(G×S) — batch each row with join()
     write = sys.stdout.write
     for gene in gene_names:
-        write(gene)
-        for resolved in sample_gene_values:
-            write(',')
-            write(resolved.get(gene, '0'))
-        write('\n')
+        write(','.join([gene] + [r.get(gene, '0') for r in sample_gene_values]) + '\n')
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:

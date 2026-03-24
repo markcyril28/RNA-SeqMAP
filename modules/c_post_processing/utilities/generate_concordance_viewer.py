@@ -111,20 +111,23 @@ def scan_concordance(base_dir: Path) -> tuple[list, list, list]:
     return figures, tables, reports
 
 
-def unique_sorted(items: list[dict], key: str) -> list[str]:
-    return sorted({i[key] for i in items})
-
-
 def build_manifest(figures, tables, reports) -> dict:
+    # Single O(F) pass extracts all 3 dimension sets simultaneously
+    # (was 3x O(F) with separate unique_sorted calls per key)
+    dim_keys = ("mode", "analysis_type", "gene_group")
+    dims: dict[str, set[str]] = {k: set() for k in dim_keys}
+    for f in figures:
+        for k in dim_keys:
+            dims[k].add(f[k])
     return {
         "generated": datetime.datetime.now().isoformat(timespec="seconds"),
         "total_figures": len(figures),
         "total_tables": len(tables),
         "total_reports": len(reports),
         "dimensions": {
-            "modes":          unique_sorted(figures, "mode") if figures else [],
-            "analysis_types": unique_sorted(figures, "analysis_type") if figures else [],
-            "gene_groups":    unique_sorted(figures, "gene_group") if figures else [],
+            "modes":          sorted(dims["mode"]),
+            "analysis_types": sorted(dims["analysis_type"]),
+            "gene_groups":    sorted(dims["gene_group"]),
         },
         "figures": figures,
         "tables": tables,
@@ -538,22 +541,24 @@ function renderFigures() {
   // O(n) Map build — avoids O(n²) .indexOf() scan inside render loop
   const figIndexMap = new Map(figs.map((f, i) => [f, i]));
 
-  let html = "";
+  // O(F) array accumulation + single .join('') — avoids O(F²) worst-case string concat
+  const _parts = [];
   for (const mode of Object.keys(byMode).sort()) {
-    html += '<div class="mode-section">';
-    html += '<div class="mode-title">' + mode + '</div>';
-    html += '<div class="fig-gallery">';
+    _parts.push('<div class="mode-section">');
+    _parts.push('<div class="mode-title">' + mode + '</div>');
+    _parts.push('<div class="fig-gallery">');
     byMode[mode].forEach((f, i) => {
       const globalIdx = figIndexMap.get(f);
-      html += '<div class="fig-card" onclick="openModal(' + globalIdx + ')">';
-      html += '<img src="' + f.path + '" alt="" loading="lazy">';
-      html += '<div class="fig-card-meta">';
-      html += '<div class="fig-card-type">' + f.analysis_type + '</div>';
-      if (f.gene_group !== "\u2014") html += '<div class="fig-card-gg">' + prettyGeneGroup(f.gene_group) + '</div>';
-      html += '</div></div>';
+      _parts.push('<div class="fig-card" onclick="openModal(' + globalIdx + ')">');
+      _parts.push('<img src="' + f.path + '" alt="" loading="lazy">');
+      _parts.push('<div class="fig-card-meta">');
+      _parts.push('<div class="fig-card-type">' + f.analysis_type + '</div>');
+      if (f.gene_group !== "\u2014") _parts.push('<div class="fig-card-gg">' + prettyGeneGroup(f.gene_group) + '</div>');
+      _parts.push('</div></div>');
     });
-    html += '</div></div>';
+    _parts.push('</div></div>');
   }
+  const html = _parts.join('');
 
   wrap.innerHTML = html;
   if (state._zoom !== 100) {
@@ -575,18 +580,21 @@ function renderReports() {
     wrap.innerHTML = '<div class="no-results"><h2>No reports match the selected mode</h2></div>';
     return;
   }
-  let html = "";
+  // O(R) array accumulation + single .join('')
+  const _rParts = [];
   reports.forEach(r => {
-    html += '<div class="mode-section"><div class="mode-title">' + r.mode + '</div>';
-    html += '<div class="report-wrap">' + mdToHtml(r.content, r.mode_id) + '</div></div>';
+    _rParts.push('<div class="mode-section"><div class="mode-title">' + r.mode + '</div>');
+    _rParts.push('<div class="report-wrap">' + mdToHtml(r.content, r.mode_id) + '</div></div>');
   });
-  wrap.innerHTML = html;
+  wrap.innerHTML = _rParts.join('');
 }
 
 // ── Minimal Markdown → HTML ──────────────────────────────────────────────
 function mdToHtml(md, modeId) {
   const lines = md.split("\n");
-  let html = "", inTable = false, inList = false, tableRows = [];
+  // O(L) array accumulation + single .join('') — avoids O(L²) worst-case string concat
+  const _p = [];
+  let inTable = false, inList = false, tableRows = [];
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -595,14 +603,14 @@ function mdToHtml(md, modeId) {
     // Headers
     const hm = trimmed.match(/^(#{1,4})\s+(.+)/);
     if (hm) {
-      if (inList) { html += "</ul>\n"; inList = false; }
+      if (inList) { _p.push("</ul>\n"); inList = false; }
       const lvl = hm[1].length;
-      html += "<h" + lvl + ">" + mdInline(hm[2]) + "</h" + lvl + ">\n";
+      _p.push("<h" + lvl + ">" + mdInline(hm[2]) + "</h" + lvl + ">\n");
       continue;
     }
 
     // HR
-    if (/^---+$/.test(trimmed)) { html += "<hr>\n"; continue; }
+    if (/^---+$/.test(trimmed)) { _p.push("<hr>\n"); continue; }
 
     // Table row
     if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
@@ -611,7 +619,7 @@ function mdToHtml(md, modeId) {
       tableRows.push(trimmed);
       const next = (i + 1 < lines.length) ? lines[i + 1].trim() : "";
       if (!next.startsWith("|")) {
-        html += mdTable(tableRows);
+        _p.push(mdTable(tableRows));
         inTable = false;
         tableRows = [];
       }
@@ -620,10 +628,10 @@ function mdToHtml(md, modeId) {
 
     // List
     if (/^[-*]\s/.test(trimmed)) {
-      if (!inList) { html += "<ul>\n"; inList = true; }
-      html += "<li>" + mdInline(trimmed.replace(/^[-*]\s+/, "")) + "</li>\n";
+      if (!inList) { _p.push("<ul>\n"); inList = true; }
+      _p.push("<li>" + mdInline(trimmed.replace(/^[-*]\s+/, "")) + "</li>\n");
       const next = (i + 1 < lines.length) ? lines[i + 1].trim() : "";
-      if (!/^[-*]\s/.test(next)) { html += "</ul>\n"; inList = false; }
+      if (!/^[-*]\s/.test(next)) { _p.push("</ul>\n"); inList = false; }
       continue;
     }
 
@@ -633,7 +641,7 @@ function mdToHtml(md, modeId) {
       // Rewrite path: figures/X.png → modeId/figures/X.png
       let src = imgM[2];
       if (src.startsWith("figures/")) src = modeId + "/" + src;
-      html += '<div class="md-img-wrap"><img src="' + src + '" alt="' + imgM[1] + '" class="md-img" onclick="openModalSingle(this.src)"></div>\n';
+      _p.push('<div class="md-img-wrap"><img src="' + src + '" alt="' + imgM[1] + '" class="md-img" onclick="openModalSingle(this.src)"></div>\n');
       continue;
     }
 
@@ -641,11 +649,11 @@ function mdToHtml(md, modeId) {
     if (trimmed === "") { continue; }
 
     // Paragraph
-    if (inList) { html += "</ul>\n"; inList = false; }
-    html += "<p>" + mdInline(trimmed) + "</p>\n";
+    if (inList) { _p.push("</ul>\n"); inList = false; }
+    _p.push("<p>" + mdInline(trimmed) + "</p>\n");
   }
-  if (inList) html += "</ul>\n";
-  return html;
+  if (inList) _p.push("</ul>\n");
+  return _p.join('');
 }
 
 function mdInline(t) {
@@ -686,21 +694,23 @@ function renderTables() {
   const byMode = {};
   tables.forEach(t => { if (!byMode[t.mode]) byMode[t.mode] = []; byMode[t.mode].push(t); });
 
-  let html = "", tblIdx = 0;
+  // O(T) array accumulation + single .join('')
+  const _tParts = [];
+  let tblIdx = 0;
   for (const mode of Object.keys(byMode).sort()) {
-    html += '<div class="mode-section"><div class="mode-title">' + mode + '</div>';
+    _tParts.push('<div class="mode-section"><div class="mode-title">' + mode + '</div>');
     byMode[mode].forEach(t => {
       const id = "tbl-body-" + (tblIdx++);
-      html += '<div class="tbl-section">';
-      html += '<div class="tbl-header" onclick="toggleTable(\'' + id + '\',this)">';
-      html += '<h4>' + prettyLabel(t.filename.replace(".csv", "")) + '</h4>';
-      html += '<span class="tbl-toggle">&#9654;</span></div>';
-      html += '<div class="tbl-body" id="' + id + '">' + csvToHtmlTable(t.content, t.filename) + '</div>';
-      html += '</div>';
+      _tParts.push('<div class="tbl-section">');
+      _tParts.push('<div class="tbl-header" onclick="toggleTable(\'' + id + '\',this)">');
+      _tParts.push('<h4>' + prettyLabel(t.filename.replace(".csv", "")) + '</h4>');
+      _tParts.push('<span class="tbl-toggle">&#9654;</span></div>');
+      _tParts.push('<div class="tbl-body" id="' + id + '">' + csvToHtmlTable(t.content, t.filename) + '</div>');
+      _tParts.push('</div>');
     });
-    html += '</div>';
+    _tParts.push('</div>');
   }
-  wrap.innerHTML = html;
+  wrap.innerHTML = _tParts.join('');
 }
 
 function toggleTable(id, headerEl) {
@@ -716,12 +726,13 @@ function csvToHtmlTable(csv, filename) {
   const isCorr = /correlation|spearman/i.test(filename);
   const rows = lines.map(l => parseCSVRow(l));
 
-  let html = '<table class="data-table">';
+  // O(R×C) array accumulation + single .join('') — avoids O(R²×C²) worst-case string concat
+  const _cp = ['<table class="data-table">'];
   rows.forEach((cells, ri) => {
-    html += "<tr>";
+    _cp.push("<tr>");
     cells.forEach((c, ci) => {
       if (ri === 0) {
-        html += '<th onclick="sortDataTable(this,' + ci + ')">' + c + ' <span class="sort-arrow"></span></th>';
+        _cp.push('<th onclick="sortDataTable(this,' + ci + ')">' + c + ' <span class="sort-arrow"></span></th>');
       } else {
         const num = parseFloat(c);
         const isNum = !isNaN(num) && c.trim() !== "";
@@ -732,12 +743,13 @@ function csvToHtmlTable(csv, filename) {
         } else if (isNum) {
           style = ' class="num-cell"';
         }
-        html += "<td" + style + ">" + c + "</td>";
+        _cp.push("<td" + style + ">" + c + "</td>");
       }
     });
-    html += "</tr>";
+    _cp.push("</tr>");
   });
-  return html + "</table>";
+  _cp.push("</table>");
+  return _cp.join('');
 }
 
 function parseCSVRow(line) {

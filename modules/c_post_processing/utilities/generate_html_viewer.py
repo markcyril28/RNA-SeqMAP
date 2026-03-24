@@ -68,24 +68,29 @@ def scan_figures(post_proc_dir: Path) -> list[dict]:
     return records
 
 
-def unique_sorted(records: list[dict], key: str) -> list[str]:
-    return sorted({r[key] for r in records})
-
-
 def build_manifest(records: list[dict]) -> dict:
+    # Single O(R) pass extracts all 9 dimension sets simultaneously
+    # (was 9× O(R) with separate unique_sorted calls per key)
+    dim_keys = ("method", "analysis", "reference", "gene_group",
+                "processing_level", "count_type", "norm_scheme",
+                "row_orientation", "sort_order")
+    dims: dict[str, set[str]] = {k: set() for k in dim_keys}
+    for r in records:
+        for k in dim_keys:
+            dims[k].add(r[k])
     return {
         "generated": datetime.datetime.now().isoformat(timespec="seconds"),
         "total_images": len(records),
         "dimensions": {
-            "methods": unique_sorted(records, "method"),
-            "analyses": unique_sorted(records, "analysis"),
-            "references": unique_sorted(records, "reference"),
-            "gene_groups": unique_sorted(records, "gene_group"),
-            "processing_levels": unique_sorted(records, "processing_level"),
-            "count_types": unique_sorted(records, "count_type"),
-            "norm_schemes": unique_sorted(records, "norm_scheme"),
-            "row_orientations": unique_sorted(records, "row_orientation"),
-            "sort_orders": unique_sorted(records, "sort_order"),
+            "methods": sorted(dims["method"]),
+            "analyses": sorted(dims["analysis"]),
+            "references": sorted(dims["reference"]),
+            "gene_groups": sorted(dims["gene_group"]),
+            "processing_levels": sorted(dims["processing_level"]),
+            "count_types": sorted(dims["count_type"]),
+            "norm_schemes": sorted(dims["norm_scheme"]),
+            "row_orientations": sorted(dims["row_orientation"]),
+            "sort_orders": sorted(dims["sort_order"]),
         },
         "images": records,
     }
