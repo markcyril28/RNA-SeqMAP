@@ -242,7 +242,9 @@ for (level_name in names(processing_levels)) {
                              stringsAsFactors = FALSE)
     qf_ids <- sample_qf$Name
     tx_ids <- tx2gene$TXNAME
-    overlap <- length(intersect(qf_ids, tx_ids))
+    # Use %in% instead of intersect(): avoids allocating the intersection vector,
+    # calling unique(), and length(). Both use match() internally with same hash cost.
+    overlap <- sum(qf_ids %in% tx_ids)
     match_rate <- if (length(qf_ids) > 0) overlap / length(qf_ids) else 0
     if (match_rate < 0.5) {
       cat("ERROR: tx2gene transcript IDs poorly match quant.sf IDs!\n")

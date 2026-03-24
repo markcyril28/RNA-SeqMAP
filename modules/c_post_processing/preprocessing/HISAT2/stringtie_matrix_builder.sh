@@ -199,13 +199,16 @@ log_info "Using ${#SAMPLE_IDS[@]} samples"
 # ===============================================
 
 # Generate combined output folder name: GeneGroup_in_Dataset
+# Usage: get_output_folder_name <gene_group> <result_varname>
+# Uses nameref to write result directly — avoids $() subshell fork per call.
 get_output_folder_name() {
-    local gene_group="$1"
+    local _gofn_gg="$1"
+    local -n _gofn_ref=$2
     local dataset="${CURRENT_DATASET:-}"
     if [[ -n "$dataset" ]]; then
-        echo "${gene_group}_in_${dataset}"
+        _gofn_ref="${_gofn_gg}_in_${dataset}"
     else
-        echo "$gene_group"
+        _gofn_ref="$_gofn_gg"
     fi
 }
 
@@ -216,7 +219,7 @@ merge_group_counts() {
     local gene_group="$1"
     local ref_csv="$2"
     local group_name
-    group_name=$(get_output_folder_name "$gene_group")
+    get_output_folder_name "$gene_group" group_name
 
     log_info "Processing gene group: $gene_group -> Output: $group_name"
 
@@ -397,7 +400,7 @@ merge_group_counts() {
 
 build_full_transcriptome_matrix() {
     local group_name
-    group_name=$(get_output_folder_name "$MASTER_REFERENCE")
+    get_output_folder_name "$MASTER_REFERENCE" group_name
     log_info "========================================"
     log_info "Building full-transcriptome matrix: $group_name"
 
