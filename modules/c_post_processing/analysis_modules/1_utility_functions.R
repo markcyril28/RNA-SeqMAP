@@ -739,21 +739,16 @@ convert_to_shortened_names <- function(counts_matrix, gene_group) {
   
   current_rownames <- rownames(counts_matrix)
 
-  # Vectorized multi-level suffix stripping: compute all variants at once,
-  # then cascade matches (exact → strip .XX → strip .X.XX → strip .X → reverse lookup)
-  # NOTE: base_one_level strips only the last suffix (e.g., .1.01 → .1), which is
-  # critical for M5 RSEM where gene_id = "SMEL4.1_*.1.01" but CSV key = "SMEL4.1_*.1"
-  base_one_level <- sub("\\.[0-9]+$", "", current_rownames)
-  base_double <- sub("\\.[0-9]+\\.[0-9]+$", "", current_rownames)
-  base_single <- sub("\\.[0-9]+$", "", base_double)
-
   # Cascade: first match wins. Use which() to track unmatched positions —
   # avoids O(n) is.na() scan on the full vector at each step; only checks
   # the shrinking set of unmatched positions. O(n) total instead of O(4n).
+  # Suffix-stripping regex is computed lazily — only on unmatched subsets,
+  # skipping O(G) allocations when 100% match exactly on first lookup.
   new_rownames <- mapping[current_rownames]
   unmatched <- which(is.na(new_rownames))
   if (length(unmatched) > 0L) {
-    hits <- mapping[base_one_level[unmatched]]
+    # Strip last .XX suffix (e.g., .1.01 → .1) — critical for M5 RSEM
+    hits <- mapping[sub("\\.[0-9]+$", "", current_rownames[unmatched])]
     matched <- !is.na(hits)
     if (any(matched)) {
       new_rownames[unmatched[matched]] <- hits[matched]
@@ -761,7 +756,8 @@ convert_to_shortened_names <- function(counts_matrix, gene_group) {
     }
   }
   if (length(unmatched) > 0L) {
-    hits <- mapping[base_double[unmatched]]
+    # Strip double suffix .X.XX in one pass
+    hits <- mapping[sub("\\.[0-9]+\\.[0-9]+$", "", current_rownames[unmatched])]
     matched <- !is.na(hits)
     if (any(matched)) {
       new_rownames[unmatched[matched]] <- hits[matched]
@@ -769,7 +765,9 @@ convert_to_shortened_names <- function(counts_matrix, gene_group) {
     }
   }
   if (length(unmatched) > 0L) {
-    hits <- mapping[base_single[unmatched]]
+    # Strip double suffix then single: .X.XX → base, then base.X → base
+    base_double <- sub("\\.[0-9]+\\.[0-9]+$", "", current_rownames[unmatched])
+    hits <- mapping[sub("\\.[0-9]+$", "", base_double)]
     matched <- !is.na(hits)
     if (any(matched)) {
       new_rownames[unmatched[matched]] <- hits[matched]
@@ -794,7 +792,7 @@ convert_to_shortened_names <- function(counts_matrix, gene_group) {
       na_rev <- is.na(reverse_hits)
       if (any(na_rev)) {
         na_idx <- which(na_rev)  # Cache indices: avoids redundant which() per fallback tier
-        hits2 <- reverse_mapping[base_one_level[unmatched[na_idx]]]
+        hits2 <- reverse_mapping[sub("\\.[0-9]+$", "", current_rownames[unmatched[na_idx]])]
         matched2 <- !is.na(hits2)
         if (any(matched2)) {
           reverse_hits[na_idx[matched2]] <- hits2[matched2]
@@ -803,7 +801,7 @@ convert_to_shortened_names <- function(counts_matrix, gene_group) {
       }
       if (any(na_rev)) {
         na_idx <- which(na_rev)  # Recompute after updates above
-        hits3 <- reverse_mapping[base_double[unmatched[na_idx]]]
+        hits3 <- reverse_mapping[sub("\\.[0-9]+\\.[0-9]+$", "", current_rownames[unmatched[na_idx]])]
         matched3 <- !is.na(hits3)
         if (any(matched3)) {
           reverse_hits[na_idx[matched3]] <- hits3[matched3]
@@ -850,19 +848,18 @@ apply_labels <- function(counts_matrix, gene_group, gene_type, label_type) {
       # Group column indices by base organ name for O(1) lookup per organ.
       col_groups <- split(seq_along(base_cols), base_cols)
       # Track consumption position within each group
-      group_pos <- integer(length(col_groups))
-      names(group_pos) <- names(col_groups)
+      group_pos <- setNames(integer(length(col_groups)), names(col_groups))
       matched_indices <- integer(length(ordered_organs))
       n_matched <- 0L
       # O(O) where O = ordered organs; uses pre-split group indices for O(1) position tracking
       for (organ in ordered_organs) {
         if (!is.null(col_groups[[organ]])) {
-          pos <- group_pos[[organ]] + 1L
+          pos <- group_pos[organ] + 1L
           indices <- col_groups[[organ]]
           if (pos <= length(indices)) {
             n_matched <- n_matched + 1L
             matched_indices[n_matched] <- indices[pos]
-            group_pos[[organ]] <- pos
+            group_pos[organ] <- pos
           }
         }
       }
