@@ -49,9 +49,11 @@ source "$MODULES_DIR/b_main_methods/methods_loader.sh"
 # ==============================================================================
 # AVAILABLE FUNCTIONS (for reference)
 # ==============================================================================
-# Preprocessing: download_srrs, download_srrs_parallel, trim_srrs,
-#                trim_srrs_trimmomatic, download_and_trim_srrs,
-#                run_quality_control, run_quality_control_all
+# Preprocessing: download_srrs, download_srrs_parallel,
+#                trim_srrs_trimmomatic, trim_srrs_trimmomatic_parallel,
+#                download_and_trim_srrs, download_and_trim_srrs_parallel,
+#                run_quality_control, run_quality_control_all,
+#                run_quality_control_parallel
 #
 # Methods: hisat2_ref_guided_pipeline (M1), hisat2_de_novo_pipeline (M2),
 #          star_alignment_pipeline (M3), salmon_saf_pipeline (M4),
