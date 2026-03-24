@@ -505,11 +505,14 @@ if (length(common_samples) < CONCORDANCE_MIN_SAMPLES) {
 
 cat("\n--- Subsetting to common features ---\n")
 
-for (method in names(tpm_matrices)) {
-  tpm_matrices[[method]] <- tpm_matrices[[method]][common_genes, common_samples, drop = FALSE]
-  cat("  ", short_names_map[method], ":", nrow(tpm_matrices[[method]]), "x",
-      ncol(tpm_matrices[[method]]), "\n")
-}
+# Use lapply to avoid O(M²) list-spine copies from in-loop [[<- assignment.
+# lapply builds a fresh list without copy-on-modify overhead.
+.method_names <- names(tpm_matrices)
+tpm_matrices <- setNames(lapply(.method_names, function(method) {
+  mat <- tpm_matrices[[method]][common_genes, common_samples, drop = FALSE]
+  cat("  ", short_names_map[method], ":", nrow(mat), "x", ncol(mat), "\n")
+  mat
+}), .method_names)
 
 # Update stats with harmonized counts — vectorized via precomputed maps.
 # O(M) vapply replaces O(M) sapply with per-element function dispatch.

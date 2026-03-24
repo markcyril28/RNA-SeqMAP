@@ -24,9 +24,6 @@ suppressPackageStartupMessages({
   library(grid)
 })
 
-# matrixStats::colRanks is a C-level column-wise rank — ~3x faster than apply(x, 2, rank)
-.HAS_MATRIXSTATS <- requireNamespace("matrixStats", quietly = TRUE)
-
 cat("\n=== STEP 2: Quantification Concordance ===\n\n")
 
 # Load harmonized data
@@ -68,9 +65,8 @@ spearman_per_sample <- matrix(NA, nrow = length(common_samples), ncol = length(m
 # O(methods × genes × samples) total — done once, reused across all pairs
 log2_matrices <- lapply(tpm_matrices, function(mat) log2(mat + 1))
 
-# Pre-compute per-method nonzero masks and counts — O(methods × genes × samples).
-# Reused across O(methods²) pairs, avoiding redundant colSums per pair.
-nonzero_masks <- lapply(log2_matrices, function(mat) mat > 0)
+# Nonzero masks computed on-demand per pair below — avoids storing M full G×S
+# logical matrices simultaneously (only 2 needed at a time).
 
 for (i in seq_along(method_pairs)) {
   m1 <- method_pairs[[i]][1]
@@ -78,8 +74,8 @@ for (i in seq_along(method_pairs)) {
   mat1 <- log2_matrices[[m1]]
   mat2 <- log2_matrices[[m2]]
 
-  # Combine pre-computed per-method masks (O(genes × samples) bitwise OR)
-  nonzero_mask <- nonzero_masks[[m1]] | nonzero_masks[[m2]]
+  # On-demand nonzero mask for this pair — O(G×S) bitwise OR, no persistent storage
+  nonzero_mask <- (mat1 > 0) | (mat2 > 0)
   nonzero_per_sample <- colSums(nonzero_mask)
 
   # Vectorized skip detection — O(S) logical mask replaces O(S log S) setdiff
@@ -101,12 +97,11 @@ for (i in seq_along(method_pairs)) {
     m2_valid[!nz_valid] <- NA
 
     # Column-wise rank transform (each sample ranked independently)
-    # O(genes × samples × log(genes)) per matrix. matrixStats::colRanks uses C-level
-    # implementation (~3x faster than apply + rank); fallback to base R apply().
-    # Use base R rank() for consistent NA handling across all environments.
-    # matrixStats::colRanks assigns ranks to NA positions (no na.last="keep"),
-    # producing different rank values for non-NA entries vs base R, which changes
-    # correlation results. Base R apply+rank is slower but correct.
+    # O(genes × samples × log(genes)) per matrix.
+    # IMPORTANT: must use base R rank(na.last="keep") here — colRanks includes NA
+    # positions in ranking, inflating non-NA rank values. Post-hoc NA masking would
+    # remove NA ranks but non-NA ranks remain wrong (ranked 1..N instead of 1..K
+    # where K = non-NA count). This changes Spearman correlation results.
     r1 <- apply(m1_valid, 2, rank, na.last = "keep")
     r2 <- apply(m2_valid, 2, rank, na.last = "keep")
 

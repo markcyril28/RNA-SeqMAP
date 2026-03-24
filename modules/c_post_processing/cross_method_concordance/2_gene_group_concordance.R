@@ -93,17 +93,17 @@ for (gg_name in groups) {
 
   # Use Shortened_Name labels if available from the gene group CSV
   gene_labels <- rownames(cor_mat)
+  # Check hash map first (O(1)) before falling back to file.exists probes.
+  # On WSL2, each file.exists() costs 5-20ms due to cross-filesystem stat().
   gg_file <- NULL
-  candidates <- c(
-    file.path(GENE_GROUPS_DIR, paste0(gg_name, ".csv")),
-    file.path(GENE_GROUPS_DIR, gg_name)
-  )
-  # O(1) hash lookup via pre-built name→paths map (replaces O(C) vectorized == scan)
   found <- .gene_group_csv_by_name[[paste0(gg_name, ".csv")]]
-  if (is.null(found)) found <- character(0)
-  candidates <- c(candidates, found)
-  for (cand in candidates) {
-    if (file.exists(cand)) { gg_file <- cand; break }
+  if (!is.null(found) && length(found) > 0L && file.exists(found[1L])) {
+    gg_file <- found[1L]
+  } else {
+    for (cand in c(file.path(GENE_GROUPS_DIR, paste0(gg_name, ".csv")),
+                   file.path(GENE_GROUPS_DIR, gg_name))) {
+      if (file.exists(cand)) { gg_file <- cand; break }
+    }
   }
   if (!is.null(gg_file)) {
     gg_df <- .fast_read_csv(gg_file)

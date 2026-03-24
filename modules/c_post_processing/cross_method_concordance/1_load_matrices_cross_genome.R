@@ -325,11 +325,13 @@ if (length(common_samples) < CONCORDANCE_MIN_SAMPLES) {
 
 cat("\n--- Subsetting to common features ---\n")
 
-for (genome in names(tpm_matrices)) {
-  tpm_matrices[[genome]] <- tpm_matrices[[genome]][common_genes, common_samples, drop = FALSE]
-  cat("  ", .genome_short_names[genome], ":", nrow(tpm_matrices[[genome]]), "x",
-      ncol(tpm_matrices[[genome]]), "\n")
-}
+# Use lapply to avoid O(M²) list-spine copies from in-loop [[<- assignment.
+.genome_keys <- names(tpm_matrices)
+tpm_matrices <- setNames(lapply(.genome_keys, function(genome) {
+  mat <- tpm_matrices[[genome]][common_genes, common_samples, drop = FALSE]
+  cat("  ", .genome_short_names[genome], ":", nrow(mat), "x", ncol(mat), "\n")
+  mat
+}), .genome_keys)
 
 .nrow_map <- vapply(tpm_matrices, nrow, integer(1))
 .ncol_map <- vapply(tpm_matrices, ncol, integer(1))
