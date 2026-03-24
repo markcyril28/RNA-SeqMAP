@@ -10,7 +10,7 @@
 # ==============================================================================
 
 # Runtime
-threads = 32
+threads = 64
 jobs = 8
 optimal_threads_per_job = 4
 use_gnu_parallel = true
