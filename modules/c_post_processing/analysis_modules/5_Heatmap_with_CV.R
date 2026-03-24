@@ -56,7 +56,8 @@ calculate_cv <- function(data_matrix, is_log_scale = FALSE, margin = 1) {
     # O(G×S) for rowMeans + O(G×S) for rowSums = 2 passes over the matrix total.
     rm <- rowMeans(data_matrix, na.rm = TRUE)
     n_c <- ncol(data_matrix)
-    row_sds <- sqrt(rowSums((data_matrix - rm)^2, na.rm = TRUE) / (n_c - 1))
+    .centered <- data_matrix - rm
+    row_sds <- sqrt(rowSums(.centered * .centered, na.rm = TRUE) / (n_c - 1))
     if (is_log_scale) {
       row_sds[!is.finite(row_sds)] <- NA
       return(row_sds)
@@ -79,7 +80,8 @@ calculate_cv <- function(data_matrix, is_log_scale = FALSE, margin = 1) {
       matrixStats::colSds(data_matrix, na.rm = TRUE)
     } else {
       # sweep() creates 1 O(G×S) centered matrix; colSums on it is O(G×S). Total: 1 temp.
-      sqrt(colSums(sweep(data_matrix, 2, cm)^2, na.rm = TRUE) / (nrow(data_matrix) - 1))
+      .col_centered <- sweep(data_matrix, 2, cm)
+      sqrt(colSums(.col_centered * .col_centered, na.rm = TRUE) / (nrow(data_matrix) - 1))
     }
     if (is_log_scale) {
       col_sds[!is.finite(col_sds)] <- NA
@@ -129,19 +131,12 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
 
     # Sort by mean expression when sort_by_expression is TRUE
     if (sort_by_expression) {
-      if (transpose) {
-        # Organs_as_Rows: genes are columns, sort columns so high expression is LEFT (near row labels)
-        col_means <- colMeans(data_matrix, na.rm = TRUE)
-        sort_order <- order(col_means, decreasing = TRUE)
-        data_matrix <- data_matrix[, sort_order, drop = FALSE]
-        col_cv <- col_cv[sort_order]
-      } else {
-        # Genes_as_Rows: sort columns (organs) so high expression is RIGHT — genes keep original row order
-        col_means <- colMeans(data_matrix, na.rm = TRUE)
-        sort_order <- order(col_means, decreasing = FALSE)
-        data_matrix <- data_matrix[, sort_order, drop = FALSE]
-        col_cv <- col_cv[sort_order]
-      }
+      # Hoist colMeans outside branch — O(genes × samples) computed once, not twice.
+      col_means <- colMeans(data_matrix, na.rm = TRUE)
+      # Organs_as_Rows (transpose): high expression LEFT; Genes_as_Rows: high expression RIGHT
+      sort_order <- order(col_means, decreasing = transpose)
+      data_matrix <- data_matrix[, sort_order, drop = FALSE]
+      col_cv <- col_cv[sort_order]
     }
     
     # Color scale with quantile-based range for better visibility
@@ -313,7 +308,7 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
       cluster_columns = FALSE,
       show_row_dend = FALSE,
       show_column_dend = FALSE,
-      show_row_names = nrow(data_matrix) <= 50,
+      show_row_names = n_rows <= 50,
       show_column_names = TRUE,
       row_labels = clean_row_labels,
       column_labels = clean_col_labels,
@@ -341,7 +336,7 @@ generate_heatmap_with_cv <- function(data_matrix, output_path, title,
     )
 
     # Row CV annotation: color strip + numeric text (right side of heatmap)
-    if (length(row_cv) == nrow(data_matrix)) {
+    if (length(row_cv) == n_rows) {
       row_cv_text <- ifelse(is.na(row_cv), "N/A", sprintf("%.1f", row_cv))
 
       cv_row_anno <- rowAnnotation(

@@ -45,13 +45,15 @@ fits_in_gpu_vram <- function(nrow, ncol, safety_factor = 0.7) {
 # so the rank transform runs on CPU (cheap O(n×p×log n)) and the expensive
 # O(p²×n) matrix multiply runs on GPU.
 gpu_cor <- function(x, method = "pearson") {
-  gpu_eligible <- GPU_AVAILABLE && nrow(x) >= 100 &&
-                  fits_in_gpu_vram(nrow(x), ncol(x)) &&
+  # Cache dimensions once — avoids 3× nrow() + 2× ncol() O(1) function calls
+  .nr <- nrow(x); .nc <- ncol(x)
+  gpu_eligible <- GPU_AVAILABLE && .nr >= 100 &&
+                  fits_in_gpu_vram(.nr, .nc) &&
                   method %in% c("pearson", "spearman")
   if (!gpu_eligible) {
     if (GPU_AVAILABLE && !method %in% c("pearson", "spearman")) {
       message("[GPU] ", method, " correlation not supported on GPU, using CPU")
-    } else if (GPU_AVAILABLE && !fits_in_gpu_vram(nrow(x), ncol(x))) {
+    } else if (GPU_AVAILABLE && !fits_in_gpu_vram(.nr, .nc)) {
       message("[GPU] Matrix too large for ", GPU_VRAM_GB, "GB VRAM, using CPU")
     }
     return(cor(x, method = method, use = "pairwise.complete.obs"))
@@ -118,8 +120,9 @@ gpu_cor <- function(x, method = "pearson") {
 
 # GPU-accelerated matrix multiplication (for large TOM calculations in WGCNA)
 gpu_matmult <- function(A, B) {
-  # Check if matrices fit in GPU VRAM
-  if (!GPU_AVAILABLE || nrow(A) < 100 || !fits_in_gpu_vram(nrow(A), ncol(B))) {
+  # Cache dimension once — avoids 2× nrow() calls
+  .nrA <- nrow(A)
+  if (!GPU_AVAILABLE || .nrA < 100 || !fits_in_gpu_vram(.nrA, ncol(B))) {
     return(A %*% B)
   }
   
@@ -148,8 +151,9 @@ gpu_matmult <- function(A, B) {
 
 # GPU-accelerated Euclidean distance matrix (for clustering)
 gpu_dist <- function(x, method = "euclidean") {
-  # Only GPU-accelerate Euclidean distance; fallback for other methods
-  if (!GPU_AVAILABLE || method != "euclidean" || nrow(x) < 50 || !fits_in_gpu_vram(nrow(x), ncol(x))) {
+  # Cache dimensions once — avoids 2× nrow() + 2× ncol() calls
+  .nr <- nrow(x); .nc <- ncol(x)
+  if (!GPU_AVAILABLE || method != "euclidean" || .nr < 50 || !fits_in_gpu_vram(.nr, .nc)) {
     return(dist(x, method = method))
   }
   
@@ -312,6 +316,9 @@ read_gene_list_from_file <- function(gene_list_file) {
 # Big O: O(n + m) where n=length(data_rownames), m=length(gene_list).
 # Hash-based lookup via environment avoids O(n×m) brute-force matching.
 match_gene_ids <- function(gene_list, data_rownames) {
+  if (is.null(gene_list) || length(gene_list) == 0) return(character(0))
+  if (is.null(data_rownames) || length(data_rownames) == 0) return(character(0))
+
   # Precompute base IDs by stripping version suffixes — single-pass regex
   # handles both .X and .X.XX suffixes. O(n) vs prior 2 × O(n).
   base_ids <- sub("(\\.[0-9]+){1,2}$", "", data_rownames)
@@ -443,10 +450,15 @@ preprocess_for_zscore_row <- function(data_matrix, count_type, .log2_cache = NUL
   data_norm <- if (!is.null(.log2_cache)) .log2_cache else preprocess_for_count_type_normalized(data_matrix, count_type)
   if (nrow(data_norm) > 1 && ncol(data_norm) > 1) {
     # Row-wise z-score (each gene normalized independently)
-    # Vectorized SD: avoid apply() loop using matrix arithmetic
     row_means <- rowMeans(data_norm, na.rm = TRUE)
-    n_c <- ncol(data_norm)
-    row_sds <- sqrt(rowSums((data_norm - row_means)^2, na.rm = TRUE) / (n_c - 1))
+    # matrixStats::rowSds is single-pass C-level (no G×S intermediate centered matrix)
+    row_sds <- if (.HAS_MATRIXSTATS) {
+      matrixStats::rowSds(data_norm, na.rm = TRUE)
+    } else {
+      n_c <- ncol(data_norm)
+      .centered <- data_norm - row_means
+      sqrt(rowSums(.centered * .centered, na.rm = TRUE) / (n_c - 1))
+    }
     row_sds[row_sds == 0 | !is.finite(row_sds)] <- 1  # Avoid division by zero
     data_zscore <- (data_norm - row_means) / row_sds
     data_zscore[!is.finite(data_zscore)] <- 0
@@ -497,10 +509,9 @@ preprocess_for_deseq2_normalized <- function(data_matrix, count_type = "expected
   # Exclude genes with any zeros from size factor estimation (matches DESeq2 behavior).
   # DESeq2 computes geometric means only for genes with nonzero counts in ALL samples;
   # including zero-containing genes would inflate geometric means via pseudocounts.
-  data_clean <- data_matrix
-  data_clean[is.na(data_clean)] <- 0
-  has_zero <- rowSums(data_clean == 0) > 0
-  nonzero_genes <- data_clean[!has_zero, , drop = FALSE]
+  # Identify rows with any NA or zero — avoids O(G×S) full matrix copy
+  has_zero <- rowSums(is.na(data_matrix) | data_matrix == 0) > 0
+  nonzero_genes <- data_matrix[!has_zero, , drop = FALSE]
 
   if (nrow(nonzero_genes) == 0) {
     # Fallback to simple log2 if no all-nonzero genes exist
@@ -519,7 +530,8 @@ preprocess_for_deseq2_normalized <- function(data_matrix, count_type = "expected
   }
 
   # Calculate size factors (median of ratios for each sample)
-  ratios <- sweep(nonzero_genes[valid_genes, , drop = FALSE], 1, geo_means[valid_genes], FUN = "/")
+  # Direct division: R recycles row vector — avoids sweep() MARGIN=1 dispatch overhead
+  ratios <- nonzero_genes[valid_genes, , drop = FALSE] / geo_means[valid_genes]
   size_factors <- if (.HAS_MATRIXSTATS) {
     matrixStats::colMedians(ratios, na.rm = TRUE)
   } else {

@@ -52,15 +52,10 @@ generate_heatmap_violet <- function(data_matrix, output_path, title,
     
     # Sort by mean expression when sort_by_expression is TRUE
     if (sort_by_expression) {
-      if (transpose) {
-        # Organs_as_Rows: genes are columns, sort columns so high expression is LEFT (near row labels)
-        col_means <- colMeans(data_matrix, na.rm = TRUE)
-        data_matrix <- data_matrix[, order(col_means, decreasing = TRUE), drop = FALSE]
-      } else {
-        # Genes_as_Rows: sort columns (organs) so high expression is RIGHT — genes keep original row order
-        col_means <- colMeans(data_matrix, na.rm = TRUE)
-        data_matrix <- data_matrix[, order(col_means, decreasing = FALSE), drop = FALSE]
-      }
+      # Hoist colMeans outside branch — O(genes × samples) computed once, not twice.
+      col_means <- colMeans(data_matrix, na.rm = TRUE)
+      # Organs_as_Rows (transpose): high expression LEFT; Genes_as_Rows: high expression RIGHT
+      data_matrix <- data_matrix[, order(col_means, decreasing = transpose), drop = FALSE]
     }
     
     # Color scale with quantile-based range for better visibility
@@ -180,7 +175,7 @@ generate_heatmap_violet <- function(data_matrix, output_path, title,
       cluster_columns = FALSE,
       show_row_dend = FALSE,
       show_column_dend = FALSE,
-      show_row_names = nrow(data_matrix) <= 50,
+      show_row_names = n_rows <= 50,
       show_column_names = TRUE,
       row_labels = clean_row_labels,
       column_labels = clean_col_labels,
