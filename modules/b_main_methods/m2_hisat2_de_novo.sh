@@ -117,7 +117,12 @@ hisat2_de_novo_pipeline() {
 						| samtools sort -@ "$_det_sort_threads" -m "$_det_sort_mem" $_det_wi_flag -o "$_det_bam"
 				fi
 				local _det_ps=("${PIPESTATUS[@]}")
-				[[ -s "$_det_summary" ]] && sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g' "$_det_summary"
+				if [[ -s "$_det_summary" ]]; then
+					while IFS= read -r _line || [[ -n "$_line" ]]; do
+						_line="${_line//$'\r'/}"
+						printf '%s\n' "$_line"
+					done < "$_det_summary"
+				fi
 				if [[ ${_det_ps[0]} -ne 0 || ${_det_ps[1]} -ne 0 ]]; then
 					log_warn "[STRANDNESS] Detection alignment failed — running unstranded"
 					rm -f "$_det_bam"
@@ -217,8 +222,13 @@ hisat2_de_novo_pipeline() {
 						| samtools sort -@ "$sort_threads" -m "$sort_mem" $_sort_wi_flag -o "$bam"
 				fi
 				local _ps=("${PIPESTATUS[@]}")
-				# Display alignment summary (strip ANSI codes for clean log output)
-				[[ -s "$_align_log" ]] && sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g' "$_align_log"
+				# Display alignment summary (strip CR for clean log output)
+				if [[ -s "$_align_log" ]]; then
+					while IFS= read -r _line || [[ -n "$_line" ]]; do
+						_line="${_line//$'\r'/}"
+						printf '%s\n' "$_line"
+					done < "$_align_log"
+				fi
 				[[ ${_ps[0]} -ne 0 ]] && { _parallel_log HISAT2_DN "$SRR" ERROR "HISAT2 failed (exit=${_ps[0]})"; rm -f "$bam"; return ${_ps[0]}; }
 				[[ ${_ps[1]} -ne 0 ]] && { _parallel_log HISAT2_DN "$SRR" ERROR "samtools sort failed"; rm -f "$bam"; return 1; }
 				if [[ -z "$_sort_wi_flag" ]]; then
@@ -324,7 +334,12 @@ hisat2_de_novo_pipeline() {
 				fi
 				local _ps=("${PIPESTATUS[@]}")
 				# Display alignment summary
-				[[ -s "$_align_log" ]] && sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g' "$_align_log"
+				if [[ -s "$_align_log" ]]; then
+					while IFS= read -r _line || [[ -n "$_line" ]]; do
+						_line="${_line//$'\r'/}"
+						printf '%s\n' "$_line"
+					done < "$_align_log"
+				fi
 				[[ ${_ps[0]} -ne 0 ]] && { log_error "[HISAT2] Alignment failed for $SRR (exit=${_ps[0]})"; rm -f "$bam"; ((_seq_failures++)) || true; continue; }
 				[[ ${_ps[1]} -ne 0 ]] && { log_error "[SAMTOOLS] sort failed for $SRR"; rm -f "$bam"; ((_seq_failures++)) || true; continue; }
 

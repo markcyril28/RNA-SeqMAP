@@ -498,8 +498,13 @@ hisat2_ref_guided_pipeline() {
 						| samtools sort -@ "$sort_threads" -m "$sort_mem" $_sort_wi_flag -o "$bam"
 				fi
 				local _ps=("${PIPESTATUS[@]}")
-				# Display alignment summary (strip ANSI codes for clean log output)
-				[[ -s "$summary_file" ]] && sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g' "$summary_file"
+				# Display alignment summary (strip CR for clean log output)
+				if [[ -s "$summary_file" ]]; then
+					while IFS= read -r _line || [[ -n "$_line" ]]; do
+						_line="${_line//$'\r'/}"
+						printf '%s\n' "$_line"
+					done < "$summary_file"
+				fi
 				[[ ${_ps[0]} -ne 0 ]] && { _parallel_log HISAT2_RG "$SRR" ERROR "HISAT2 failed (exit=${_ps[0]})"; rm -f "$bam"; return ${_ps[0]}; }
 				[[ ${_ps[1]} -ne 0 ]] && { _parallel_log HISAT2_RG "$SRR" ERROR "samtools sort failed"; rm -f "$bam"; return 1; }
 				# Only run separate index if --write-index was not used
@@ -608,8 +613,13 @@ hisat2_ref_guided_pipeline() {
 						| samtools sort -@ "$_seq_sort_threads" -m "$_seq_sort_mem" $_seq_sort_wi_flag -o "$bam"
 				fi
 				local _ps=("${PIPESTATUS[@]}")
-				# Display alignment summary (strip ANSI codes for clean log output)
-				[[ -s "$summary_file" ]] && sed 's/\x1B\[[0-9;]*[a-zA-Z]//g; s/\r//g' "$summary_file"
+				# Display alignment summary (strip CR for clean log output)
+				if [[ -s "$summary_file" ]]; then
+					while IFS= read -r _line || [[ -n "$_line" ]]; do
+						_line="${_line//$'\r'/}"
+						printf '%s\n' "$_line"
+					done < "$summary_file"
+				fi
 
 				if [[ ${_ps[0]} -ne 0 ]]; then
 					log_error "[ALIGN] HISAT2 failed for $SRR (exit=${_ps[0]}) — skipping sample"

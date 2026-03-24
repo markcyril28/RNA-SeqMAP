@@ -141,7 +141,8 @@ RSEM_MATRIX_ROOT="$POST_PROCESSING_ROOT/M5_RSEM_Bowtie2/count_matrices_from_RSEM
 # ==============================================================================
 # SRR SAMPLE ARRAYS (initialize if not set)
 # ==============================================================================
-if ! declare -p SRR_COMBINED_LIST &>/dev/null; then
+# O(1) builtin hash-table check — avoids declare -p string formatting overhead
+if [[ ! -v SRR_COMBINED_LIST ]]; then
 	declare -a SRR_COMBINED_LIST=()
 fi
 
