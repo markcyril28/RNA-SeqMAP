@@ -33,8 +33,8 @@ CONFIG_FILES=(
 	#"config/2_alignment/HPC_test_transcript_M2_M4_M5.toml"	# M2 + M4 + M5 (transcript FASTA)
 
 	# --- Full runs ---
-	"config/2_alignment/HPC_full_ref_guided.toml"				# Reference-guided (M1 + M3)
-	"config/2_alignment/HPC_full_non_ref_guided.toml"			# Non-reference-guided (M2 + M4 + M5)
+	#"config/2_alignment/HPC_full_ref_guided.toml"				# Reference-guided (M1 + M3)
+	#"config/2_alignment/HPC_full_non_ref_guided.toml"			# Non-reference-guided (M2 + M4 + M5)
 
 	# --- Local ---
 	#"config/2_alignment/local_full_ref_guided.toml"			# Local ref-guided (M1 + M3)

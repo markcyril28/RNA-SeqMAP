@@ -35,9 +35,20 @@ if [[ -f /proc/meminfo ]]; then
     done < /proc/meminfo
     unset _key _val
 elif command -v sysctl &>/dev/null; then
+    # macOS: hw.memsize is total RAM. Use vm_stat to estimate available (free+inactive).
+    # Falls back to 75% of total if vm_stat parsing fails.
     _raw_bytes=$(sysctl -n hw.memsize 2>/dev/null)
-    AVAILABLE_RAM_GB=$(( _raw_bytes / 1073741824 ))
-    unset _raw_bytes
+    _total_gb=$(( _raw_bytes / 1073741824 ))
+    # Page size: 4096 on Intel, 16384 on Apple Silicon — query dynamically
+    _page_size=$(sysctl -n hw.pagesize 2>/dev/null)
+    _page_size="${_page_size:-4096}"
+    _vm_free_pages=$(vm_stat 2>/dev/null | awk '/Pages free|Pages inactive/ {gsub(/\./,"",$NF); s+=$NF} END {print s+0}')
+    if [[ "${_vm_free_pages:-0}" -gt 0 ]]; then
+        AVAILABLE_RAM_GB=$(( _vm_free_pages * _page_size / 1073741824 ))
+    else
+        AVAILABLE_RAM_GB=$(( _total_gb * 75 / 100 ))
+    fi
+    unset _raw_bytes _total_gb _vm_free_pages _page_size
 fi
 # Fallback covers both unset and empty (e.g., MemAvailable line missing from /proc/meminfo)
 AVAILABLE_RAM_GB="${AVAILABLE_RAM_GB:-24}"
@@ -396,9 +407,12 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
     done
     $_methods_setup_ok || continue
 
-    # Export utils once per config (avoids repeated export -f per dataset)
-    if $_HAS_PARALLEL && [[ "$ENABLE_GNU_PARALLEL" == "TRUE" ]]; then
+    # Export utils once (function defs don't change between configs)
+    if $_HAS_PARALLEL && [[ "$ENABLE_GNU_PARALLEL" == "TRUE" ]] && [[ "${_UTILS_EXPORTED:-}" != "true" ]]; then
         export_utils_for_parallel
+        _UTILS_EXPORTED=true
+    fi
+    if $_HAS_PARALLEL && [[ "$ENABLE_GNU_PARALLEL" == "TRUE" ]]; then
         export SCRIPT_DIR LOG_FILE ERROR_WARN_FILE RUN_ID
     fi
 

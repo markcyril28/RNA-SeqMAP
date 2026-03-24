@@ -359,7 +359,7 @@ fi
 RUN_ALL_MASTER_REFERENCES="${RUN_ALL_MASTER_REFERENCES:-FALSE}"
 if [[ "${RUN_ALL_MASTER_REFERENCES^^}" == "TRUE" ]]; then
     if [[ -v MASTER_REFERENCES && "${MASTER_REFERENCES@a}" == *a* && ${#MASTER_REFERENCES[@]} -gt 0 ]]; then
-        _parent_report_base="${REPORT_BASE:-${BASE_DIR}/4_CONCORDANCE_ANALYSIS}"
+        _parent_report_base="${REPORT_BASE}"
         _overall_rc=0
 
         log_step "MULTI-REFERENCE CONCORDANCE MODE"
@@ -405,7 +405,7 @@ fi
 RUN_ALL_METHOD_COMBINATIONS="${RUN_ALL_METHOD_COMBINATIONS:-FALSE}"
 if [[ "${RUN_ALL_METHOD_COMBINATIONS^^}" == "TRUE" ]]; then
     if [[ -v METHOD_COMBINATIONS && "${METHOD_COMBINATIONS@a}" == *a* && ${#METHOD_COMBINATIONS[@]} -gt 0 ]]; then
-        _parent_report_base="${REPORT_BASE:-${BASE_DIR}/4_CONCORDANCE_ANALYSIS}"
+        _parent_report_base="${REPORT_BASE}"
         _overall_rc=0
 
         log_step "METHOD-COMBINATION CONCORDANCE MODE"
@@ -455,7 +455,7 @@ fi
 RUN_ALL_GENE_GROUP_COMBINATIONS="${RUN_ALL_GENE_GROUP_COMBINATIONS:-FALSE}"
 if [[ "${RUN_ALL_GENE_GROUP_COMBINATIONS^^}" == "TRUE" ]]; then
     if [[ -v GENE_GROUP_COMBINATIONS && "${GENE_GROUP_COMBINATIONS@a}" == *a* && ${#GENE_GROUP_COMBINATIONS[@]} -gt 0 ]]; then
-        _parent_report_base="${REPORT_BASE:-${BASE_DIR}/4_CONCORDANCE_ANALYSIS}"
+        _parent_report_base="${REPORT_BASE}"
         _overall_rc=0
 
         log_step "GENE-GROUP-COMBINATION CONCORDANCE MODE"
@@ -786,14 +786,70 @@ run_step() {
     fi
 }
 
-# Step 1 must complete first (produces HARMONIZED_RDS consumed by steps 2-3)
-if analysis_enabled "Load_Matrices"; then
-    run_step 1 "Load & Harmonize Matrices"    "${STEP1_SCRIPT}"
+# ── Batch dispatch: run all enabled steps in a single R session ──
+# Saves ~2-3s per additional step by eliminating redundant R interpreter init,
+# package loading (ComplexHeatmap ~1.5s), and config sourcing overhead.
+# Falls back to individual run_step() when batch dispatcher is missing or
+# only 1 step is enabled.
+# Big O: reduces O(S × T_startup) to O(T_startup) where S = enabled steps.
+_batch_dispatcher="${CONCORDANCE_SCRIPT_DIR}/concordance_batch_dispatcher.R"
+_s1_enabled=false; _s2_enabled=false; _s3_enabled=false
+analysis_enabled "Load_Matrices"              && _s1_enabled=true
+analysis_enabled "Quantification_Concordance" && _s2_enabled=true
+analysis_enabled "Generate_Report"            && _s3_enabled=true
+
+# Count enabled steps
+_n_enabled=0
+$_s1_enabled && (( _n_enabled++ )) || true
+$_s2_enabled && (( _n_enabled++ )) || true
+$_s3_enabled && (( _n_enabled++ )) || true
+
+if [[ $_n_enabled -ge 2 && -f "$_batch_dispatcher" ]]; then
+    # Build batch dispatcher arguments
+    _batch_args=()
+    $_s1_enabled && _batch_args+=("--step1=${STEP1_SCRIPT}")
+    $_s2_enabled && _batch_args+=("--step2=${STEP2_SCRIPT}")
+    $_s3_enabled && _batch_args+=("--step3=4_generate_report.R")
+
+    log_step "Concordance batch dispatch (${_n_enabled} steps in single R session)"
+    log_info "  Steps: ${_batch_args[*]}"
+    if ! Rscript "$_batch_dispatcher" "${_batch_args[@]}"; then
+        log_error "Concordance batch dispatch failed!"
+        exit 1
+    fi
 else
-    log_info "Skipping Step 1 (Load_Matrices)"
+    # Sequential fallback: individual Rscript calls per step
+    # Step 1 must complete first (produces HARMONIZED_RDS consumed by steps 2-3)
+    if $_s1_enabled; then
+        run_step 1 "Load & Harmonize Matrices"    "${STEP1_SCRIPT}"
+    else
+        log_info "Skipping Step 1 (Load_Matrices)"
+    fi
+
+    # Check if Step 1 wrote a skip sentinel (e.g., zero common genes in cross_genome mode)
+    if [[ -f "${OUTPUT_DIR}/.skip_sentinel" ]]; then
+        _skip_reason=$(<"${OUTPUT_DIR}/.skip_sentinel")
+        log_info "Analysis skipped by Step 1: ${_skip_reason}"
+        log_step "CONCORDANCE ANALYSIS SKIPPED (mode: ${CONCORDANCE_MODE})"
+        exit 0
+    fi
+
+    # Step 2: Quantification Concordance
+    if $_s2_enabled; then
+        run_step 2 "Quantification Concordance"   "${STEP2_SCRIPT}"
+    else
+        log_info "Skipping Step 2 (Quantification_Concordance)"
+    fi
+
+    # Step 3: Generate Report
+    if $_s3_enabled; then
+        run_step 3 "Generate Report"              "4_generate_report.R"
+    else
+        log_info "Skipping Step 3 (Generate_Report)"
+    fi
 fi
 
-# Check if Step 1 wrote a skip sentinel (e.g., zero common genes in cross_genome mode)
+# Check skip sentinel (may be set by batch dispatcher's Step 1)
 if [[ -f "${OUTPUT_DIR}/.skip_sentinel" ]]; then
     _skip_reason=$(<"${OUTPUT_DIR}/.skip_sentinel")
     log_info "Analysis skipped by Step 1: ${_skip_reason}"
@@ -801,24 +857,9 @@ if [[ -f "${OUTPUT_DIR}/.skip_sentinel" ]]; then
     exit 0
 fi
 
-# Step 2: Quantification Concordance
-if analysis_enabled "Quantification_Concordance"; then
-    run_step 2 "Quantification Concordance"   "${STEP2_SCRIPT}"
-else
-    log_info "Skipping Step 2 (Quantification_Concordance)"
-fi
-
-# Step 3: Generate Report
-if analysis_enabled "Generate_Report"; then
-    run_step 3 "Generate Report"              "4_generate_report.R"
-else
-    log_info "Skipping Step 3 (Generate_Report)"
-fi
-
 log_step "CONCORDANCE ANALYSIS COMPLETE (mode: ${CONCORDANCE_MODE})"
-# Report filename matches R prefix: cross_method, cross_genome, or cross_gene_group
-_report_prefix="${CONCORDANCE_MODE:-cross_method}"
-log_info "Report:  ${REPORT_BASE}/${_report_prefix}_concordance_report.md"
+# Report filename is always concordance_report.md (generated by 4_generate_report.R)
+log_info "Report:  ${REPORT_BASE}/concordance_report.md"
 [[ -d "${OUTPUT_DIR}/figures" ]] && log_info "Figures: ${OUTPUT_DIR}/figures/"
 [[ -d "${OUTPUT_DIR}/tables"  ]] && log_info "Tables:  ${OUTPUT_DIR}/tables/"
 
