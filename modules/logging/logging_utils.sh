@@ -21,7 +21,7 @@
 
 # Guard against double-sourcing
 [[ "${LOGGING_UTILS_SOURCED:-}" == "true" ]] && return 0
-LOGGING_UTILS_SOURCED="true"
+export LOGGING_UTILS_SOURCED="true"
 
 # ==============================================================================
 # LOGGING CONFIGURATION - IMPORTANT PARAMETERS AT TOP
@@ -256,8 +256,6 @@ switch_log_stage() {
 # ==============================================================================
 # ERROR HANDLING
 # ==============================================================================
-
-# enable_error_trap(), enable_exit_trap() — removed (dead code; callers set traps directly)
 
 # Log pipeline configuration settings
 log_configuration() {
