@@ -30,11 +30,46 @@
 
 set -euo pipefail
 
-# Resolve script directory: parameter expansion avoids nested $(dirname) subshell
-SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
-[[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
-SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
-BASE_DIR="${SCRIPT_DIR}"
+# Script-level child PID array — must be declared before traps so cleanup can reap
+# child processes spawned in multi-config mode (prevents orphans on SIGTERM/SIGINT)
+declare -a _cfg_pids=()
+
+# Trap handler: log errors on unexpected exit (aids debugging in orchestrated contexts)
+_concordance_cleanup() {
+    local rc=$?
+    # Kill any background child config processes to prevent orphans on HPC
+    if [[ ${#_cfg_pids[@]} -gt 0 ]]; then
+        kill "${_cfg_pids[@]}" 2>/dev/null || true
+        wait "${_cfg_pids[@]}" 2>/dev/null || true
+    fi
+    if [[ $rc -ne 0 ]]; then
+        echo "[ERROR] run_concordance_analysis.sh exited with code $rc" >&2
+        # Use log_error if available (may not be sourced yet at early failure)
+        type -t log_error &>/dev/null && log_error "Concordance analysis failed (exit $rc)"
+    fi
+    # Clean up background tee/sed processes from logging redirections (prevents zombie
+    # processes in Nextflow/Snakemake containers that would stall work-dir cleanup)
+    type -t _logging_cleanup_bg &>/dev/null && _logging_cleanup_bg
+    exit $rc  # propagate original exit code so orchestrators (Nextflow/Snakemake) see failures
+}
+trap _concordance_cleanup EXIT
+trap 'type -t _logging_cleanup_bg &>/dev/null && _logging_cleanup_bg; exit 143' TERM
+trap 'type -t _logging_cleanup_bg &>/dev/null && _logging_cleanup_bg; exit 130' INT
+
+# Resolve script directory: honour pre-set BASE_DIR from orchestrators (Nextflow/Snakemake)
+if [[ -z "${BASE_DIR:-}" ]]; then
+    SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+    [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+    SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)" || { echo "[ERROR] run_concordance_analysis.sh: Failed to resolve script directory" >&2; exit 1; }
+    BASE_DIR="${SCRIPT_DIR}"
+else
+    # Validate BASE_DIR is absolute; resolve if relative (defensive against misconfigured orchestrators)
+    if [[ "$BASE_DIR" != /* ]]; then
+        BASE_DIR="$(cd "$BASE_DIR" 2>/dev/null && pwd)" || { echo "[ERROR] BASE_DIR is set but invalid: $BASE_DIR" >&2; exit 1; }
+    fi
+    SCRIPT_DIR="$BASE_DIR"
+fi
+_SELF_SCRIPT="$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"
 REPORT_BASE="${REPORT_BASE:-${BASE_DIR}/4_CONCORDANCE_ANALYSIS}"
 
 #===============================================================================
@@ -45,25 +80,28 @@ REPORT_BASE="${REPORT_BASE:-${BASE_DIR}/4_CONCORDANCE_ANALYSIS}"
 # inherit CONDA_DEFAULT_ENV but not the conda PATH entries from the parent shell,
 # so we must always run the hook. Skip only when PATH is already configured.
 # O(1) string match avoids ~0.3-0.5s conda hook overhead per child process.
-if [[ "${CONDA_DEFAULT_ENV:-}" != "gea" ]] || ! command -v Rscript &>/dev/null; then
-    # In non-interactive shells (e.g. WSL2 child processes), conda is not in PATH
-    # because ~/.bashrc is not sourced. Bootstrap it from known install locations.
-    if ! command -v conda &>/dev/null; then
-        for _conda_prefix in \
-            "${HOME}/miniconda3" \
-            "${HOME}/anaconda3" \
-            "/opt/conda" \
-            "/opt/miniconda3" \
-            "/opt/anaconda3"; do
-            if [[ -f "${_conda_prefix}/etc/profile.d/conda.sh" ]]; then
-                # shellcheck source=/dev/null
-                source "${_conda_prefix}/etc/profile.d/conda.sh"
-                break
-            fi
-        done
+# Skip conda activation when orchestrator manages the environment (Nextflow/Snakemake)
+if [[ -z "${WF_MANAGED_ENV:-}" ]]; then
+    if [[ "${CONDA_DEFAULT_ENV:-}" != "gea" ]] || ! command -v Rscript &>/dev/null; then
+        # In non-interactive shells (e.g. WSL2 child processes), conda is not in PATH
+        # because ~/.bashrc is not sourced. Bootstrap it from known install locations.
+        if ! command -v conda &>/dev/null; then
+            for _conda_prefix in \
+                "${HOME}/miniconda3" \
+                "${HOME}/anaconda3" \
+                "/opt/conda" \
+                "/opt/miniconda3" \
+                "/opt/anaconda3"; do
+                if [[ -f "${_conda_prefix}/etc/profile.d/conda.sh" ]]; then
+                    # shellcheck source=/dev/null
+                    source "${_conda_prefix}/etc/profile.d/conda.sh"
+                    break
+                fi
+            done
+        fi
+        eval "$(conda shell.bash hook 2>/dev/null)" 2>/dev/null || true
+        conda activate gea 2>/dev/null || true
     fi
-    eval "$(conda shell.bash hook 2>/dev/null)" 2>/dev/null || true
-    conda activate gea 2>/dev/null || true
 fi
 
 # Source logging utilities for consistent output
@@ -86,6 +124,9 @@ source "${SCRIPT_DIR}/config/shared/toml_parser.sh" || {
 #===============================================================================
 
 CONFIG_INPUT="${1:-}"
+# Absolutize relative config path against BASE_DIR so the pipeline works when
+# CWD differs from project root (e.g., Nextflow scratch workDir, Snakemake shadow).
+[[ -n "$CONFIG_INPUT" && "$CONFIG_INPUT" != /* ]] && CONFIG_INPUT="${BASE_DIR}/${CONFIG_INPUT}"
 CONFIG_CROSS_DIR="${CONCORDANCE_CONFIG_CROSS_DIR:-${BASE_DIR}/config/4_concordance_combination}"
 
 # Analysis steps to run (comment out entries to skip)
@@ -106,6 +147,7 @@ FIGURE_DPI="${FIGURE_DPI:-300}"
 # Clear previous outputs before running (respect parent env in child dispatch)
 CLEAR_LOGS="${CLEAR_LOGS:-TRUE}"
 CLEAR_OUTPUT_FOLDER="${CLEAR_OUTPUT_FOLDER:-TRUE}"
+CLEAR_CACHE="${CLEAR_CACHE:-FALSE}"
 
 # Optional curated config list (comment in/out as needed).
 # Entries can be:
@@ -153,7 +195,7 @@ load_config_entry() {
     # Loop over candidate paths — try .toml first, then .sh fallback
     local path
     for path in "$entry" "${CONFIG_CROSS_DIR}/${entry}" "${CONFIG_CROSS_DIR}/${entry}.toml" "${CONFIG_CROSS_DIR}/${entry}.sh"; do
-        [[ -f "$path" ]] && { source_config_file "$path"; return; }
+        [[ -f "$path" ]] && { source_config_file "$path" || { log_error "Failed to parse config: $path"; return 1; }; return 0; }
     done
     log_warn "Config entry not found: ${entry}"
 }
@@ -172,7 +214,7 @@ fi
 # Load optional config file/cross/dir (first positional argument)
 if [[ -n "$CONFIG_INPUT" ]]; then
     if [[ -f "$CONFIG_INPUT" ]]; then
-        source_config_file "$CONFIG_INPUT"
+        source_config_file "$CONFIG_INPUT" || { log_error "Failed to parse config: $CONFIG_INPUT"; exit 1; }
     elif [[ -d "$CONFIG_INPUT" ]]; then
         # Bash glob + mapfile avoids find+sort subprocess pair. O(F) where F = config files.
         _cfg_files=()
@@ -182,15 +224,15 @@ if [[ -n "$CONFIG_INPUT" ]]; then
         # Sort for deterministic order (globs are locale-sorted but toml/sh interleave)
         mapfile -t _cfg_files < <(printf '%s\n' "${_cfg_files[@]}" | sort)
         for _cfg in "${_cfg_files[@]}"; do
-            source_config_file "$_cfg"
+            source_config_file "$_cfg" || { log_error "Failed to parse config: $_cfg"; exit 1; }
         done
         unset _cfg_files
     elif [[ -f "${CONFIG_CROSS_DIR}/${CONFIG_INPUT}" ]]; then
-        source_config_file "${CONFIG_CROSS_DIR}/${CONFIG_INPUT}"
+        source_config_file "${CONFIG_CROSS_DIR}/${CONFIG_INPUT}" || { log_error "Failed to parse config: ${CONFIG_CROSS_DIR}/${CONFIG_INPUT}"; exit 1; }
     elif [[ -f "${CONFIG_CROSS_DIR}/${CONFIG_INPUT}.toml" ]]; then
-        source_config_file "${CONFIG_CROSS_DIR}/${CONFIG_INPUT}.toml"
+        source_config_file "${CONFIG_CROSS_DIR}/${CONFIG_INPUT}.toml" || { log_error "Failed to parse config: ${CONFIG_CROSS_DIR}/${CONFIG_INPUT}.toml"; exit 1; }
     elif [[ -f "${CONFIG_CROSS_DIR}/${CONFIG_INPUT}.sh" ]]; then
-        source_config_file "${CONFIG_CROSS_DIR}/${CONFIG_INPUT}.sh"
+        source_config_file "${CONFIG_CROSS_DIR}/${CONFIG_INPUT}.sh" || { log_error "Failed to parse config: ${CONFIG_CROSS_DIR}/${CONFIG_INPUT}.sh"; exit 1; }
     else
         log_warn "Config input not found: ${CONFIG_INPUT} (continuing with defaults)"
     fi
@@ -256,6 +298,29 @@ if [[ "${CLEAR_LOGS:-FALSE}" == "TRUE" && -d "${CONCORDANCE_LOG_BASE}" ]]; then
     rm -rf "${CONCORDANCE_LOG_BASE}"
 fi
 
+# Clear persistent R caches if requested
+if [[ "${CLEAR_CACHE:-FALSE}" == "TRUE" ]]; then
+    log_info "Clearing persistent pipeline caches..."
+    _cache_count=0
+    _srr_dir="${BASE_DIR}/inputs/3_post_proc_inputs/SRR_csv"
+    _gg_dir="${BASE_DIR}/inputs/3_post_proc_inputs/gene_groups_csv"
+    # Sample labels cache
+    [[ -f "$_srr_dir/.sample_labels_cache.rds" ]] && rm -f "$_srr_dir/.sample_labels_cache.rds" && _cache_count=$((_cache_count + 1))
+    # Gene name mapping caches (*.namemap.rds beside gene group CSVs)
+    while IFS= read -r -d '' _f; do
+        rm -f "$_f" && _cache_count=$((_cache_count + 1))
+    done < <(find "$_gg_dir" -name '*.namemap.rds' -print0 2>/dev/null)
+    # GPU detection cache (R tempdir varies per session; search common temp roots)
+    for _tmp_root in "${TMPDIR:-/tmp}" "${TEMP:-}" "${TMP:-}"; do
+        [[ -z "$_tmp_root" || ! -d "$_tmp_root" ]] && continue
+        while IFS= read -r -d '' _f; do
+            rm -f "$_f" && _cache_count=$((_cache_count + 1))
+        done < <(find "$_tmp_root" -maxdepth 2 -name '.gpu_detect_cache.rds' -print0 2>/dev/null)
+    done
+    log_info "  Cleared $_cache_count cache file(s)"
+    unset _cache_count _f _srr_dir _gg_dir _tmp_root
+fi
+
 mkdir -p "${OUTPUT_DIR}" || {
     log_error "Failed to create output directory: ${OUTPUT_DIR}"
     exit 1
@@ -289,6 +354,13 @@ fi
 # O(min(N, MAX_CONCORDANCE_JOBS)) wall-clock vs O(N) unthrottled.
 MAX_CONCORDANCE_JOBS="${MAX_CONCORDANCE_JOBS:-4}"
 
+# Detect wait -n support once (bash 4.3+); avoids conflating
+# "child exited with error" (non-zero rc) with "unsupported flag" (rc=2).
+_has_wait_n=false
+if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3) )); then
+    _has_wait_n=true
+fi
+
 # Throttle helper: waits until the number of tracked PIDs drops below MAX_CONCORDANCE_JOBS.
 # Usage: _throttle_pids <array_name>
 # Complexity: O(J) per call where J = active jobs; total O(N) amortized across N launches.
@@ -297,7 +369,13 @@ _throttle_pids() {
     while [[ ${#_pids_ref[@]} -ge $MAX_CONCORDANCE_JOBS ]]; do
         # Use `wait -n` (Bash 4.3+) to block until any child exits — avoids busy-wait polling.
         # Falls back to poll+sleep for older Bash versions.
-        if wait -n "${_pids_ref[@]}" 2>/dev/null; then true; fi
+        if $_has_wait_n; then
+            # wait -n returns child's exit code; slot freed regardless of success/failure
+            wait -n "${_pids_ref[@]}" 2>/dev/null || true
+        else
+            # bash < 4.3: poll+sleep to avoid busy-wait
+            sleep 0.5
+        fi
         # Compact the PID array: keep only still-running PIDs
         local _still_running=()
         for _p in "${_pids_ref[@]}"; do
@@ -337,8 +415,8 @@ if [[ -z "${__CONCORDANCE_OVERRIDE_SINGLE_CONFIG:-}" ]] && \
         __CONCORDANCE_OVERRIDE_SINGLE_CONFIG="${_cfg}" \
         CONCORDANCE_LOG_BASE="${CONCORDANCE_LOG_BASE}" \
         RUN_ID="${_child_run_id}" LOGGING_INITIALIZED="" \
-        CLEAR_LOGS=FALSE CLEAR_OUTPUT_FOLDER=FALSE \
-        bash "$0" ${REINVOKE_ARGS[@]+"${REINVOKE_ARGS[@]}"} &
+        CLEAR_LOGS=FALSE CLEAR_OUTPUT_FOLDER=FALSE CLEAR_CACHE=FALSE \
+        bash "$_SELF_SCRIPT" ${REINVOKE_ARGS[@]+"${REINVOKE_ARGS[@]}"} &
         _cfg_pids+=($!)
     done
     for _pid in "${_cfg_pids[@]}"; do
@@ -379,8 +457,8 @@ if [[ "${RUN_ALL_MASTER_REFERENCES^^}" == "TRUE" ]]; then
             __CONCORDANCE_OVERRIDE_SINGLE_CONFIG="${__CONCORDANCE_OVERRIDE_SINGLE_CONFIG:-}" \
             CONCORDANCE_LOG_BASE="${CONCORDANCE_LOG_BASE}" \
             RUN_ID="${_child_run_id}" LOGGING_INITIALIZED="" \
-            CLEAR_LOGS=FALSE CLEAR_OUTPUT_FOLDER=FALSE \
-            bash "$0" ${REINVOKE_ARGS[@]+"${REINVOKE_ARGS[@]}"} &
+            CLEAR_LOGS=FALSE CLEAR_OUTPUT_FOLDER=FALSE CLEAR_CACHE=FALSE \
+            bash "$_SELF_SCRIPT" ${REINVOKE_ARGS[@]+"${REINVOKE_ARGS[@]}"} &
             _ref_pids+=($!)
         done
         for _pid in "${_ref_pids[@]}"; do
@@ -429,8 +507,8 @@ if [[ "${RUN_ALL_METHOD_COMBINATIONS^^}" == "TRUE" ]]; then
             __CONCORDANCE_OVERRIDE_SINGLE_CONFIG="${__CONCORDANCE_OVERRIDE_SINGLE_CONFIG:-}" \
             CONCORDANCE_LOG_BASE="${CONCORDANCE_LOG_BASE}" \
             RUN_ID="${_child_run_id}" LOGGING_INITIALIZED="" \
-            CLEAR_LOGS=FALSE CLEAR_OUTPUT_FOLDER=FALSE \
-            bash "$0" ${REINVOKE_ARGS[@]+"${REINVOKE_ARGS[@]}"} &
+            CLEAR_LOGS=FALSE CLEAR_OUTPUT_FOLDER=FALSE CLEAR_CACHE=FALSE \
+            bash "$_SELF_SCRIPT" ${REINVOKE_ARGS[@]+"${REINVOKE_ARGS[@]}"} &
             _combo_pids+=($!)
         done
         for _pid in "${_combo_pids[@]}"; do
@@ -478,8 +556,8 @@ if [[ "${RUN_ALL_GENE_GROUP_COMBINATIONS^^}" == "TRUE" ]]; then
             __CONCORDANCE_OVERRIDE_SINGLE_CONFIG="${__CONCORDANCE_OVERRIDE_SINGLE_CONFIG:-}" \
             CONCORDANCE_LOG_BASE="${CONCORDANCE_LOG_BASE}" \
             RUN_ID="${_child_run_id}" LOGGING_INITIALIZED="" \
-            CLEAR_LOGS=FALSE CLEAR_OUTPUT_FOLDER=FALSE \
-            bash "$0" ${REINVOKE_ARGS[@]+"${REINVOKE_ARGS[@]}"} &
+            CLEAR_LOGS=FALSE CLEAR_OUTPUT_FOLDER=FALSE CLEAR_CACHE=FALSE \
+            bash "$_SELF_SCRIPT" ${REINVOKE_ARGS[@]+"${REINVOKE_ARGS[@]}"} &
             _gg_combo_pids+=($!)
         done
         for _pid in "${_gg_combo_pids[@]}"; do
@@ -663,7 +741,7 @@ unset _GG_REF_TAG _GG_REF_DIR
 SRR_CSV_DIR="${SRR_CSV_DIR:-${BASE_DIR}/inputs/3_post_proc_inputs/SRR_csv}"
 
 # System resources (auto-detect with sane fallbacks)
-THREADS="${THREADS:-$(nproc 2>/dev/null || echo 12)}"
+THREADS="${THREADS:-${SLURM_CPUS_PER_TASK:-${PBS_NCPUS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 12)}}}"
 ENABLE_GPU="${ENABLE_GPU:-FALSE}"
 if [[ -z "${AVAILABLE_RAM_GB:-}" ]]; then
     if [[ -f /proc/meminfo ]]; then
@@ -676,13 +754,29 @@ if [[ -z "${AVAILABLE_RAM_GB:-}" ]]; then
         done < /proc/meminfo
         unset _key _val
     elif command -v sysctl &>/dev/null; then
+        # macOS: hw.memsize is total RAM. Use vm_stat to estimate available (free+inactive).
+        # Falls back to 75% of total if vm_stat parsing fails.
+        # Matches run_post_processing.sh pattern.
         _raw_bytes=$(sysctl -n hw.memsize 2>/dev/null)
-        AVAILABLE_RAM_GB=$(( _raw_bytes / 1073741824 ))
-        unset _raw_bytes
+        _total_gb=$(( _raw_bytes / 1073741824 ))
+        # Page size: 4096 on Intel, 16384 on Apple Silicon — query dynamically
+        _page_size=$(sysctl -n hw.pagesize 2>/dev/null)
+        _page_size="${_page_size:-4096}"
+        _vm_free_pages=$(vm_stat 2>/dev/null | awk '/Pages free|Pages inactive/ {gsub(/\./,"",$NF); s+=$NF} END {print s+0}')
+        if [[ "${_vm_free_pages:-0}" -gt 0 ]]; then
+            AVAILABLE_RAM_GB=$(( _vm_free_pages * _page_size / 1073741824 ))
+        else
+            AVAILABLE_RAM_GB=$(( _total_gb * 75 / 100 ))
+        fi
+        unset _raw_bytes _total_gb _vm_free_pages _page_size
     fi
 fi
 # Fallback covers both unset and empty (e.g., MemAvailable line missing from /proc/meminfo)
 [[ -z "${AVAILABLE_RAM_GB:-}" ]] && AVAILABLE_RAM_GB=24
+# Ensure numeric (reset to default if non-numeric) before arithmetic
+[[ "$AVAILABLE_RAM_GB" =~ ^[0-9]+$ ]] || AVAILABLE_RAM_GB=24
+# Floor: ensure at least 4 GB to avoid starving R scripts
+(( AVAILABLE_RAM_GB < 4 )) && AVAILABLE_RAM_GB=4
 GPU_VRAM_GB="${GPU_VRAM_GB:-8}"
 
 #===============================================================================
@@ -713,13 +807,20 @@ if [[ -v CONCORDANCE_GENOMES && "${CONCORDANCE_GENOMES@a}" == *a* ]]; then
     unset CONCORDANCE_GENOMES
 fi
 
-export BASE_DIR MASTER_REFERENCE METHODS METHOD_REF_DIRS_STR
+export WF_MANAGED_ENV BASE_DIR MASTER_REFERENCE METHODS METHOD_REF_DIRS_STR
 export GENE_GROUPS GENE_GROUPS_DIR SRR_CSV_DIR
 export THREADS ENABLE_GPU AVAILABLE_RAM_GB GPU_VRAM_GB
 export CONCORDANCE_SCRIPT_DIR ANALYSIS_MODULES_DIR UTILITIES_DIR
 export OUTPUT_DIR ALIGNMENT_BASE POST_PROC_BASE REPORT_BASE
 export FIGURE_DPI
-CONCORDANCE_GENOMES="${CONCORDANCE_GENOMES_STR}"
+# Sync CONCORDANCE_GENOMES (exported string for R) and CONCORDANCE_GENOMES_STR:
+# - Array from TOML: already joined above → assign string form
+# - Plain string from env var: if-block was skipped → preserve it and sync _STR
+if [[ -n "$CONCORDANCE_GENOMES_STR" ]]; then
+    CONCORDANCE_GENOMES="${CONCORDANCE_GENOMES_STR}"
+elif [[ -n "${CONCORDANCE_GENOMES:-}" ]]; then
+    CONCORDANCE_GENOMES_STR="${CONCORDANCE_GENOMES}"
+fi
 # Per-genome gene group CSV mapping for cross-genome orthology (positional row correspondence)
 # GENOME_GENE_GROUPS_MAP is set by TOML as a flat string; export as-is for R parsing.
 export GENOME_GENE_GROUPS_MAP="${GENOME_GENE_GROUPS_MAP:-}"
