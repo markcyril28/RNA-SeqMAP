@@ -35,12 +35,12 @@ pipeline_stages = [
 
 # Input
 # Genome file used as decoy for Salmon SAF (M4)
-decoy = "inputs/fasta/experimental/TEST.fasta"
+decoy = "inputs/2_alignment_input/experimental/TEST.fasta"
 
 # FASTA Files for Analysis (transcripts, required for M2, M4, M5)
 all_fasta_files = [
-    "inputs/fasta/reference_genome/GPE001970_transcripts.fa",
-    "inputs/fasta/reference_genome/Eggplant_V4.1_transcripts.function.fa",
+    "inputs/2_alignment_input/reference_genome/GPE001970_transcripts.fa",
+    "inputs/2_alignment_input/reference_genome/Eggplant_V4.1_transcripts.function.fa",
 ]
 
 # SRR Test

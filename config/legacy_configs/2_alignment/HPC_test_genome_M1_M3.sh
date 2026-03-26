@@ -51,8 +51,10 @@ PIPELINE_STAGES=(
 # CONDA ENVIRONMENT
 # ==============================================================================
 
-eval "$(conda shell.bash hook)"
-conda activate gea
+if [[ -z "${WF_MANAGED_ENV:-}" ]]; then
+    eval "$(conda shell.bash hook)"
+    conda activate gea
+fi
 
 # ==============================================================================
 # SOURCE MODULES

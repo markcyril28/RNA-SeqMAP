@@ -29,8 +29,8 @@ pipeline_stages = [
 
 # Input
 genome_ref_pairs = [
-    "inputs/gtf/reference/GPE001970_genome.gtf|inputs/fasta/reference_genome/GPE001970_genome.fa|inputs/fasta/reference_genome/GPE001970_transcripts.fa",
-    "inputs/gtf/reference/Eggplant_V4.1_function_IPR_final_stringtie.gtf|inputs/fasta/reference_genome/Eggplant_V4.1.fa|inputs/fasta/reference_genome/Eggplant_V4.1_transcripts.function.fa",
+    "inputs/2_alignment_input/reference/GPE001970_genome.gtf|inputs/2_alignment_input/reference_genome/GPE001970.fa|inputs/2_alignment_input/reference_genome/GPE001970_transcripts.fa",
+    "inputs/2_alignment_input/reference/Eggplant_V4.1_function_IPR_final_stringtie.gtf|inputs/2_alignment_input/reference_genome/Eggplant_V4.1.fa|inputs/2_alignment_input/reference_genome/Eggplant_V4.1_transcripts.function.fa",
 ]
 
 # Output

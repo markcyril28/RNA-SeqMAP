@@ -6,8 +6,9 @@
 # Supports: scalars, arrays, inline comments, and [section] headers.
 #
 # Usage:
-#   source "config/shared/toml_parser.sh"
-#   load_toml "config/2_alignment/HPC_full_ref_guided.toml"
+#   source "${PROJECT_ROOT}/config/shared/toml_parser.sh"
+#   load_toml "${PROJECT_ROOT}/config/2_alignment/HPC_full_ref_guided.toml"
+#   # Orchestrators (Nextflow/Snakemake): export PROJECT_ROOT before sourcing
 #
 # After loading, variables are set as bash variables/arrays:
 #   [runtime]

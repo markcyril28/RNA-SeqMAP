@@ -26,11 +26,11 @@ pipeline_stages = [
 ]
 
 # Input
-decoy = "inputs/fasta/experimental/TEST.fasta"
+decoy = "inputs/2_alignment_input/experimental/TEST.fasta"
 
 all_fasta_files = [
-    "inputs/fasta/reference_genome/GPE001970_transcripts.fa",
-    "inputs/fasta/reference_genome/Eggplant_V4.1_transcripts.function.fa",
+    "inputs/2_alignment_input/reference_genome/GPE001970_transcripts.fa",
+    "inputs/2_alignment_input/reference_genome/Eggplant_V4.1_transcripts.function.fa",
 ]
 
 # Output

@@ -10,7 +10,7 @@
 # ==============================================================================
 
 [[ "${_SRR_DATASETS_SOURCED:-}" == "true" ]] && return 0
-export _SRR_DATASETS_SOURCED="true"
+_SRR_DATASETS_SOURCED="true"
 
 # ==============================================================================
 # RNA-SEQ DATA SOURCES (SRR LISTS)

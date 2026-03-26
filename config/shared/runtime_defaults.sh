@@ -11,14 +11,15 @@
 # ==============================================================================
 
 [[ "${_RUNTIME_DEFAULTS_SOURCED:-}" == "true" ]] && return 0
-export _RUNTIME_DEFAULTS_SOURCED="true"
+_RUNTIME_DEFAULTS_SOURCED="true"
 
 # ==============================================================================
 # CONDA ENVIRONMENT
 # ==============================================================================
 
+# Skip conda activation when orchestrator manages the environment (Nextflow/Snakemake)
 # Skip conda hook if already in the gea environment (~0.3-0.5s saved per invocation)
-if [[ "${CONDA_DEFAULT_ENV:-}" != "gea" ]]; then
+if [[ -z "${WF_MANAGED_ENV:-}" && "${CONDA_DEFAULT_ENV:-}" != "gea" ]]; then
 	eval "$(conda shell.bash hook 2>/dev/null)" 2>/dev/null || true
 	conda activate gea 2>/dev/null || true
 fi
@@ -27,12 +28,19 @@ fi
 # SOURCE MODULES
 # ==============================================================================
 
-# Resolve relative to this file's location (two levels up from config/shared/)
-_RUNTIME_DEFAULTS_DIR="${BASH_SOURCE[0]%/*}"
-[[ "$_RUNTIME_DEFAULTS_DIR" == "${BASH_SOURCE[0]}" ]] && _RUNTIME_DEFAULTS_DIR="."
-_RUNTIME_DEFAULTS_DIR="$(cd "$_RUNTIME_DEFAULTS_DIR" && pwd)"
-source "${_RUNTIME_DEFAULTS_DIR}/../../modules/modules_loader.sh"
-unset _RUNTIME_DEFAULTS_DIR
+# Prefer MODULES_DIR env var (set by orchestrators); fall back to relative resolution
+if [[ -n "${MODULES_DIR:-}" && -f "${MODULES_DIR}/modules_loader.sh" ]]; then
+    source "${MODULES_DIR}/modules_loader.sh"
+else
+    _RUNTIME_DEFAULTS_DIR="${BASH_SOURCE[0]%/*}"
+    [[ "$_RUNTIME_DEFAULTS_DIR" == "${BASH_SOURCE[0]}" ]] && _RUNTIME_DEFAULTS_DIR="."
+    _RUNTIME_DEFAULTS_DIR="$(cd "$_RUNTIME_DEFAULTS_DIR" && pwd)" || {
+        echo "[ERROR] runtime_defaults.sh: Failed to resolve script directory from BASH_SOURCE=${BASH_SOURCE[0]}" >&2
+        return 1
+    }
+    source "${_RUNTIME_DEFAULTS_DIR}/../../modules/modules_loader.sh"
+    unset _RUNTIME_DEFAULTS_DIR
+fi
 
 # ==============================================================================
 # AUTO-JOBS RESOLUTION — O(1)
@@ -60,7 +68,7 @@ OPTIMAL_THREADS_PER_JOB="${OPTIMAL_THREADS_PER_JOB:-8}"
 
 _resolve_auto_jobs() {
 	local optimal="${1:-${OPTIMAL_THREADS_PER_JOB:-8}}"
-	local threads="${THREADS:-$(nproc 2>/dev/null || echo 12)}"
+	local threads="${THREADS:-${SLURM_CPUS_PER_TASK:-${PBS_NCPUS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 12)}}}"
 
 	if [[ "${JOBS:-}" == "auto" || "${JOBS:-}" == "AUTO" ]]; then
 		JOBS=$(( threads / optimal ))
@@ -80,6 +88,8 @@ _resolve_auto_jobs() {
 
 # Resolve JOBS="auto" before computing THREADS_PER_JOB
 _resolve_auto_jobs "${OPTIMAL_THREADS_PER_JOB:-8}"
+# Guard against JOBS=0 (explicitly set) which would cause division-by-zero
+[[ "${JOBS:-0}" -lt 1 ]] && JOBS=1
 
 if [[ "${USE_GNU_PARALLEL:-FALSE}" == "TRUE" ]]; then
 	THREADS_PER_JOB=$((${THREADS:-4} / ${JOBS:-1}))
@@ -87,4 +97,5 @@ if [[ "${USE_GNU_PARALLEL:-FALSE}" == "TRUE" ]]; then
 else
 	THREADS_PER_JOB="${THREADS:-4}"
 fi
+keep_bam_global="${keep_bam_global:-n}"
 export THREADS JOBS OPTIMAL_THREADS_PER_JOB USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global

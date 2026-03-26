@@ -23,7 +23,7 @@ gene_groups = [
     #"SmelDMPs_with_2_18s_rRNA",
     #"SmelDMPs_with_SmelCyclo",
     #"SmelGRF-GIF",
-    #"SmelGRF-GIF_with_1_18s_rRNA",
+    "SmelGRF-GIF_with_1_18s_rRNA",
     #"SmelGRFs",
     #"SmelGIF",
     #"Selected_GRF_GIF_Genes_vAll_GIF",

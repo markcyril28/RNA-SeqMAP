@@ -8,7 +8,7 @@
 
 master_references = [
     "GPE001970_genome",
-    "Eggplant_V4.1_genome",
+    "Eggplant_V4.1",
 ]
 
 method_combinations = [

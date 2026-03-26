@@ -23,7 +23,7 @@ gene_groups = [
     #"SmelDMPs_with_2_18s_rRNA",
     #"SmelDMPs_with_SmelCyclo",
     #"SmelGRF-GIF",
-    #"SmelGRF-GIF_with_1_18s_rRNA",
+    "SmelGRF-GIF_with_1_18s_rRNA",
     #"SmelGRFs",
     #"SmelGIF",
     #"Selected_GRF_GIF_Genes_vAll_GIF",
@@ -50,7 +50,7 @@ methods = ["M2_HISAT2_DeNovo"]
 # Tximport_* and Matrix_Creation are NOT applicable to M2.
 # Differential_Expression is NOT supported (StringTie TPM, not integer counts).
 analyses = [
-    #"Stringtie_Matrix",               # Legacy name — preprocessing handles this automatically
+    "Stringtie_Matrix",               # Legacy name — preprocessing handles this automatically
     "Basic_Heatmap",
     "Heatmap_with_CV",
 ]
