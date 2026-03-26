@@ -7,10 +7,13 @@
 
 set -o pipefail   # -e/-u omitted intentionally (sourced functions use boolean returns)
 
-# Resolve project root without subshell forks (parameter expansion only)
-PROJECT_ROOT="${BASH_SOURCE[0]%/*}"
-[[ "$PROJECT_ROOT" == "${BASH_SOURCE[0]}" ]] && PROJECT_ROOT="."
-PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"  # one cd to resolve symlinks + relative paths
+# Resolve project root: honour pre-set PROJECT_ROOT from orchestrators (Nextflow/Snakemake)
+if [[ -z "${PROJECT_ROOT:-}" ]]; then
+	PROJECT_ROOT="${BASH_SOURCE[0]%/*}"
+	[[ "$PROJECT_ROOT" == "${BASH_SOURCE[0]}" ]] && PROJECT_ROOT="."
+	PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"  # one cd to resolve symlinks + relative paths
+fi
+export PROJECT_ROOT  # export so parallel method subshells and child processes inherit it
 cd "$PROJECT_ROOT" || exit 1
 
 # ==============================================================================
@@ -22,6 +25,9 @@ cd "$PROJECT_ROOT" || exit 1
 #   overwrite - Force clean rerun, overwriting all existing output files
 OVERWRITE_MODE="${OVERWRITE_MODE:-skip}"
 export OVERWRITE_MODE
+
+# Clear persistent R/.rds pipeline caches before running (sample labels, gene name maps, GPU detection)
+CLEAR_CACHE="${CLEAR_CACHE:-FALSE}"
 
 # Active configuration file — uncomment as needed:
 CONFIG_FILES=(
@@ -52,7 +58,7 @@ set_pipeline_flags() {
 	local s
 	for s in "${PIPELINE_STAGES[@]}"; do _stage_set["$s"]=1; done
 
-	# Single loop replaces 14 × 2-line manual assignments — O(N) with zero subshell spawns.
+	# Single loop replaces 13 × 2-line manual assignments — O(N) with zero subshell spawns.
 	local _flag _stage
 	for _stage in \
 		MAMBA_INSTALLATION DOWNLOAD_SRR TRIM_SRR DOWNLOAD_TRIM_and_DELETE_RAW_SRR \
@@ -102,7 +108,7 @@ run_all() {
 	fi
 	log_configuration
 	# Use printf builtin for formatted date — avoids subshell
-	local _start_fmt; printf -v _start_fmt '%(%Y-%m-%d %H:%M:%S)T' "$start_time" 2>/dev/null || _start_fmt=$(date -d "@$start_time" '+%Y-%m-%d %H:%M:%S')
+	local _start_fmt; printf -v _start_fmt '%(%Y-%m-%d %H:%M:%S)T' "$start_time" 2>/dev/null || _start_fmt=$(date -r "$start_time" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -d "@$start_time" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S')
 	log_step "Script started at: $_start_fmt"
 
 	log_info "SRR samples to process:"
@@ -256,7 +262,7 @@ run_all() {
 	printf -v end_time '%(%s)T' -1 2>/dev/null || end_time=$(date +%s)
 	elapsed=$((end_time - start_time))
 	log_step "Final timing"
-	local _end_fmt; printf -v _end_fmt '%(%Y-%m-%d %H:%M:%S)T' "$end_time" 2>/dev/null || _end_fmt=$(date -d "@$end_time" '+%Y-%m-%d %H:%M:%S')
+	local _end_fmt; printf -v _end_fmt '%(%Y-%m-%d %H:%M:%S)T' "$end_time" 2>/dev/null || _end_fmt=$(date -r "$end_time" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -d "@$end_time" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S')
 	log_info "Script ended at: $_end_fmt"
 	# Pure bash arithmetic (avoids date subshell spawn)
 	# O(1) bash builtin — avoids $(printf) subprocess fork
@@ -287,8 +293,37 @@ source "${PROJECT_ROOT}/modules/logging/logging_utils.sh" 2>/dev/null || {
 }
 
 # Source TOML parser and shared runtime defaults
-source "${PROJECT_ROOT}/config/shared/toml_parser.sh"
-source "${PROJECT_ROOT}/config/shared/runtime_defaults.sh"
+source "${PROJECT_ROOT}/config/shared/toml_parser.sh" || {
+	log_error "Failed to source TOML parser: ${PROJECT_ROOT}/config/shared/toml_parser.sh"
+	exit 1
+}
+source "${PROJECT_ROOT}/config/shared/runtime_defaults.sh" || {
+	log_error "Failed to source runtime defaults: ${PROJECT_ROOT}/config/shared/runtime_defaults.sh"
+	exit 1
+}
+
+# Clear persistent R caches if requested
+if [[ "$CLEAR_CACHE" == "TRUE" ]]; then
+	log_info "Clearing persistent pipeline caches..."
+	_cache_count=0
+	_srr_dir="${PROJECT_ROOT}/inputs/3_post_proc_inputs/SRR_csv"
+	_gg_dir="${PROJECT_ROOT}/inputs/3_post_proc_inputs/gene_groups_csv"
+	# Sample labels cache
+	[[ -f "$_srr_dir/.sample_labels_cache.rds" ]] && rm -f "$_srr_dir/.sample_labels_cache.rds" && _cache_count=$((_cache_count + 1))
+	# Gene name mapping caches (*.namemap.rds beside gene group CSVs)
+	while IFS= read -r -d '' _f; do
+		rm -f "$_f" && _cache_count=$((_cache_count + 1))
+	done < <(find "$_gg_dir" -name '*.namemap.rds' -print0 2>/dev/null)
+	# GPU detection cache (R tempdir varies per session; search common temp roots)
+	for _tmp_root in "${TMPDIR:-/tmp}" "${TEMP:-}" "${TMP:-}"; do
+		[[ -z "$_tmp_root" || ! -d "$_tmp_root" ]] && continue
+		while IFS= read -r -d '' _f; do
+			rm -f "$_f" && _cache_count=$((_cache_count + 1))
+		done < <(find "$_tmp_root" -maxdepth 2 -name '.gpu_detect_cache.rds' -print0 2>/dev/null)
+	done
+	log_info "  Cleared $_cache_count cache file(s)"
+	unset _cache_count _f _srr_dir _gg_dir _tmp_root
+fi
 
 # Track whether STAR was used across ANY config (not just the last one).
 # The cleanup trap needs this because RUN_METHOD_3_STAR_ALIGNMENT only reflects
@@ -299,17 +334,28 @@ _STAR_WAS_USED=false
 # Cleanup trap: log summary on exit; clean up STAR temp dirs on signal kill
 _pipeline_cleanup() {
 	local rc=$?
+	local _ar="${ALIGNMENT_RESULTS_ROOT:-${PROJECT_ROOT}/2_ALIGNMENT_RESULTs}"
 	# Only search for orphan STAR temp dirs when STAR was actually used in any config
 	# (avoids traversing entire PROJECT_ROOT on every exit — saves ~0.5-2s on large trees)
 	if [[ "$_STAR_WAS_USED" == "true" ]]; then
-		find "${PROJECT_ROOT}/2_ALIGNMENT_RESULTs" -maxdepth 4 -type d -name '_STARtmp*' -exec rm -rf {} + 2>/dev/null || true
+		find "$_ar" -maxdepth 4 -type d -name '_STARtmp*' -exec rm -rf {} + 2>/dev/null || true
 	fi
+	# Clean up Salmon gentrome temp dirs (PID-namespaced: tmp_*_gentrome_*)
+	find "$_ar" -maxdepth 5 -type d -name 'tmp_*_gentrome_*' -exec rm -rf {} + 2>/dev/null || true
 	if [[ $rc -ne 0 ]]; then
 		log_error "Pipeline terminated with exit code $rc"
 	fi
-	log_info "Pipeline finished. See logs under: 1_SRRs/logs/ and 2_ALIGNMENT_RESULTs/logs/"
+	log_info "Pipeline finished. See logs under: 1_SRRs/logs/ and ${_ar}/logs/"
+	# Clean up background tee/sed processes from logging redirections (prevents zombie
+	# processes in Nextflow/Snakemake containers that would stall work-dir cleanup)
+	type -t _logging_cleanup_bg &>/dev/null && _logging_cleanup_bg
+	exit $rc  # propagate original exit code so orchestrators (Nextflow/Snakemake) see failures
 }
 trap _pipeline_cleanup EXIT
+# Ensure background logging processes are cleaned up on SIGTERM/SIGINT (Nextflow/Snakemake send
+# SIGTERM on timeout/cancel; EXIT trap may not fire after signal-induced termination in some shells)
+trap 'type -t _logging_cleanup_bg &>/dev/null && _logging_cleanup_bg; exit 143' TERM
+trap 'type -t _logging_cleanup_bg &>/dev/null && _logging_cleanup_bg; exit 130' INT
 
 # Big O: O(C × R × M × S) where C=configs, R=ref_pairs, M=enabled_methods, S=samples.
 # Methods run in parallel when PARALLEL_METHODS=TRUE, reducing M dimension to O(1) wall-clock.
@@ -322,12 +368,14 @@ _SRR_DATASETS_CACHED_FILE=""
 for config_file in "${CONFIG_FILES[@]}"; do
 	log_step "LOADING CONFIGURATION: $config_file"
 
+	# Resolve relative config paths against PROJECT_ROOT for orchestrator compatibility
+	[[ "$config_file" != /* ]] && config_file="${PROJECT_ROOT}/${config_file}"
 	[[ -f "$config_file" ]] || { log_error "Configuration file not found: $config_file"; exit 1; }
 	GENOME_REF_PAIRS=()
 	ALL_FASTA_FILES=()
 	PIPELINE_STAGES=()
 	SRR_COMBINED_LIST=()
-	unset gtf_file STAR_TRANSCRIPTOME_FASTA decoy DECOY KEEP_BAM_GLOBAL STAR_READ_LENGTH HISAT2_STRANDNESS SRR_DATASETS
+	unset gtf_file STAR_TRANSCRIPTOME_FASTA decoy DECOY KEEP_BAM_GLOBAL keep_bam_global STAR_READ_LENGTH HISAT2_STRANDNESS SRR_DATASETS
 	load_toml "$config_file" || { log_error "Failed to load config: $config_file"; exit 1; }
 	# Export STAR_READ_LENGTH if set by config
 	[[ -n "${STAR_READ_LENGTH:-}" ]] && export STAR_READ_LENGTH
@@ -356,6 +404,7 @@ for config_file in "${CONFIG_FILES[@]}"; do
 
 	# Map TOML uppercase keys to lowercase aliases used by method modules
 	[[ -n "${DECOY:-}" ]] && decoy="$DECOY"
+	[[ -n "${decoy:-}" ]] && decoy="$(_make_absolute_path "$decoy")"
 	[[ -n "${KEEP_BAM_GLOBAL:-}" ]] && keep_bam_global="$KEEP_BAM_GLOBAL"
 	[[ -n "${HISAT2_STRANDNESS:-}" ]] || HISAT2_STRANDNESS=""
 	[[ -n "${POST_PROCESSING_ROOT:-}" ]] && export POST_PROCESSING_ROOT
@@ -394,6 +443,11 @@ for config_file in "${CONFIG_FILES[@]}"; do
 			STAR_TRANSCRIPTOME_FASTA="${_remainder#*|}"
 			# If no third field existed, strip fell back to the full string — reset to empty
 			[[ "$STAR_TRANSCRIPTOME_FASTA" == "$_fasta" ]] && STAR_TRANSCRIPTOME_FASTA=""
+			# Absolutize TOML-extracted paths so they resolve correctly even if a
+			# downstream function or workflow manager changes the working directory.
+			gtf_file="$(_make_absolute_path "$gtf_file")"
+			_fasta="$(_make_absolute_path "$_fasta")"
+			[[ -n "$STAR_TRANSCRIPTOME_FASTA" ]] && STAR_TRANSCRIPTOME_FASTA="$(_make_absolute_path "$STAR_TRANSCRIPTOME_FASTA")"
 			export gtf_file STAR_TRANSCRIPTOME_FASTA
 			_rc=0
 			run_all --FASTA "$_fasta" --RNASEQ_LIST "${SRR_COMBINED_LIST[@]}" || _rc=$?
@@ -402,6 +456,7 @@ for config_file in "${CONFIG_FILES[@]}"; do
 		unset _pair _remainder _fasta gtf_file STAR_TRANSCRIPTOME_FASTA
 	elif [[ ${#ALL_FASTA_FILES[@]} -gt 0 ]]; then
 		for fasta_input in "${ALL_FASTA_FILES[@]}"; do
+			fasta_input="$(_make_absolute_path "$fasta_input")"
 			_rc=0
 			run_all --FASTA "$fasta_input" --RNASEQ_LIST "${SRR_COMBINED_LIST[@]}" || _rc=$?
 			total_failures=$((total_failures + _rc))
