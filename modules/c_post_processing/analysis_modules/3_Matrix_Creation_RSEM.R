@@ -11,7 +11,11 @@
 
 suppressPackageStartupMessages(library(tximport))
 
-SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", ".")
+SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", {
+  if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+    stop("[MATRIX_CREATION_RSEM] ANALYSIS_MODULES_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+  "."
+})
 source(file.path(SCRIPT_DIR, "0_shared_config.R"))
 source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
 source(file.path(SCRIPT_DIR, "3_Matrix_Creation_utils.R"))
@@ -87,14 +91,31 @@ quant_dir <- if (nzchar(rsem_quant_root_env)) {
   rsem_quant_root_env  # already includes fasta_tag
 } else if (nzchar(base_dir)) {
   file.path(base_dir, "2_ALIGNMENT_RESULTs", "M5_RSEM_Bowtie2", "RSEM_Quant_WD", MASTER_REFERENCE)
+} else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+  stop("[RSEM MATRIX] BASE_DIR is required when running under a workflow manager (WF_MANAGED_ENV is set). ",
+       "Export BASE_DIR pointing to the project root.")
 } else {
+  message("[RSEM MATRIX] WARN: BASE_DIR and RSEM_QUANT_ROOT not set; using relative 'RSEM_Quant_WD'. ",
+          "Set BASE_DIR for orchestrated execution (Nextflow/Snakemake).")
   "RSEM_Quant_WD"  # fallback for standalone execution
 }
-output_dir  <- "count_matrices_from_RSEM_Quant"
+output_dir  <- if (nzchar(base_dir)) {
+  file.path(base_dir, "3_POST_PROC", CURRENT_METHOD, "count_matrices_from_RSEM_Quant")
+} else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+  stop("[RSEM MATRIX] BASE_DIR is required when running under a workflow manager (WF_MANAGED_ENV is set). ",
+       "Export BASE_DIR pointing to the project root.")
+} else {
+  "count_matrices_from_RSEM_Quant"
+}
 count_label <- "expected_count"
 
 cat("Quantification directory:", quant_dir, "\n")
 cat("Output directory:        ", output_dir, "\n\n")
+
+if (!dir.exists(quant_dir)) {
+  stop("RSEM quantification directory not found: ", quant_dir,
+       "\n  Run the M5 Bowtie2+RSEM alignment stage first, or check RSEM_QUANT_ROOT / MASTER_REFERENCE.")
+}
 
 results <- list()
 
