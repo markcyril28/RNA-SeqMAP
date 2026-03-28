@@ -75,7 +75,17 @@ GPU_BACKEND <- "none"  # "none", "cuda", or "torch"
 #   M4 (Salmon): count_matrices_from_Salmon_Quant/
 #   M5 (RSEM): count_matrices_from_RSEM_Quant/
 # Use get_matrices_dir() for method-specific directory names
-CONSOLIDATED_BASE_DIR <- "Figure_Outputs"
+CONSOLIDATED_BASE_DIR <- Sys.getenv("CONSOLIDATED_BASE_DIR", unset = {
+  .bd <- Sys.getenv("BASE_DIR", unset = "")
+  if (nzchar(.bd)) {
+    file.path(.bd, "3_POST_PROC", CURRENT_METHOD, "Figure_Outputs")
+  } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+    stop("[SHARED CONFIG] CONSOLIDATED_BASE_DIR or BASE_DIR is required when running under a workflow manager ",
+         "(WF_MANAGED_ENV is set). Export BASE_DIR pointing to the project root.")
+  } else {
+    "Figure_Outputs"
+  }
+})
 
 # Gene groups directory - use environment variable if set, otherwise derive from BASE_DIR
 GENE_GROUPS_DIR <- Sys.getenv("GENE_GROUPS_DIR", unset = "")
@@ -83,9 +93,16 @@ if (GENE_GROUPS_DIR == "") {
   base_dir_fallback <- Sys.getenv("BASE_DIR", unset = "")
   if (nzchar(base_dir_fallback)) {
     GENE_GROUPS_DIR <- file.path(base_dir_fallback, "inputs", "3_post_proc_inputs", "gene_groups_csv")
+  } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+    stop("[SHARED CONFIG] BASE_DIR or GENE_GROUPS_DIR is required when running under a workflow manager ",
+         "(WF_MANAGED_ENV is set). Export BASE_DIR pointing to the project root.")
   } else {
     # Last-resort: walk up three levels from ANALYSIS_MODULES_DIR to reach project root
     ANALYSIS_MODULES_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", unset = normalizePath(".", mustWork = FALSE))
+    if (ANALYSIS_MODULES_DIR == normalizePath(".", mustWork = FALSE)) {
+      message("[SHARED CONFIG] WARN: ANALYSIS_MODULES_DIR not set; using cwd '",
+              ANALYSIS_MODULES_DIR, "' — set BASE_DIR or ANALYSIS_MODULES_DIR for orchestrated execution")
+    }
     # Cache project root — avoids redundant triple-dirname traversal (reused for SRR_CSV_DIR below)
     .project_root <- dirname(dirname(dirname(ANALYSIS_MODULES_DIR)))
     GENE_GROUPS_DIR <- file.path(.project_root, "inputs", "3_post_proc_inputs", "gene_groups_csv")
@@ -98,9 +115,15 @@ if (SRR_CSV_DIR == "") {
   base_dir_fallback <- Sys.getenv("BASE_DIR", unset = "")
   if (nzchar(base_dir_fallback)) {
     SRR_CSV_DIR <- file.path(base_dir_fallback, "inputs", "3_post_proc_inputs", "SRR_csv")
+  } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+    stop("[SHARED CONFIG] BASE_DIR or SRR_CSV_DIR is required when running under a workflow manager ",
+         "(WF_MANAGED_ENV is set). Export BASE_DIR pointing to the project root.")
   } else {
     if (!exists(".project_root")) {
       ANALYSIS_MODULES_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", unset = normalizePath(".", mustWork = FALSE))
+      if (ANALYSIS_MODULES_DIR == normalizePath(".", mustWork = FALSE)) {
+        message("[SHARED CONFIG] WARN: ANALYSIS_MODULES_DIR not set; using cwd for SRR_CSV_DIR derivation")
+      }
       .project_root <- dirname(dirname(dirname(ANALYSIS_MODULES_DIR)))
     }
     SRR_CSV_DIR <- file.path(.project_root, "inputs", "3_post_proc_inputs", "SRR_csv")
@@ -140,7 +163,10 @@ OUTPUT_SUBDIRS <- list(
 #
 # NOTE: COUNT_TYPES is now dynamically set at initialization based on CURRENT_METHOD
 #       Use get_count_types() function for method-specific types
-COUNT_TYPES <- c()  # Initialized in SECTION 5 based on method
+if (!exists("COUNT_TYPES", inherits = FALSE)) {
+  # Preserve method-resolved values when this file is re-sourced in the same R session.
+  COUNT_TYPES <- c()  # Initialized in SECTION 5 based on method
+}
 
 # Gene name display options (column names in gene_groups_csv/*.csv files)
 GENE_TYPES <- c(
@@ -509,7 +535,10 @@ load_sample_labels_from_csv <- function(srr_csv_dir = SRR_CSV_DIR) {
   for (.ci in seq_along(csv_files)) {
     tryCatch({
       df <- if (.HAS_DATATABLE) {
-        data.table::fread(csv_files[.ci], header = TRUE, data.table = FALSE)
+        # fread() has no comment.char support; strip #-comment lines before parsing
+        .lines <- readLines(csv_files[.ci], warn = FALSE)
+        .lines <- .lines[!grepl("^\\s*#", .lines)]
+        data.table::fread(text = paste(.lines, collapse = "\n"), header = TRUE, data.table = FALSE)
       } else {
         read.csv(csv_files[.ci], stringsAsFactors = FALSE, header = TRUE, comment.char = "#")
       }
