@@ -10,19 +10,22 @@
 
 # Guard against double-sourcing
 [[ "${METHODS_MASTER_SOURCED:-}" == "true" ]] && return 0
-export METHODS_MASTER_SOURCED="true"
+METHODS_MASTER_SOURCED="true"
 
 # Source dependencies
 # Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
 SCRIPT_DIR="${MODULES_DIR:+${MODULES_DIR}/b_main_methods}"
-if [[ -z "$SCRIPT_DIR" ]]; then SCRIPT_DIR="${BASH_SOURCE[0]%/*}"; [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."; fi
+if [[ -z "$SCRIPT_DIR" ]]; then
+	SCRIPT_DIR="${BASH_SOURCE[0]%/*}"; [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+	SCRIPT_DIR="$(cd "$SCRIPT_DIR" 2>/dev/null && pwd)"
+fi
 
-# Source all method scripts
-source "$SCRIPT_DIR/m1_hisat2_ref_guided.sh"
-source "$SCRIPT_DIR/m2_hisat2_de_novo.sh"
-source "$SCRIPT_DIR/m3_star_alignment.sh"
-source "$SCRIPT_DIR/m4_salmon_saf.sh"
-source "$SCRIPT_DIR/m5_bowtie2_rsem.sh"
+# Source all method scripts (log_error is available via logging_utils.sh sourced earlier in the chain)
+source "$SCRIPT_DIR/m1_hisat2_ref_guided.sh" || { log_error "Failed to source m1_hisat2_ref_guided.sh"; return 1; }
+source "$SCRIPT_DIR/m2_hisat2_de_novo.sh"    || { log_error "Failed to source m2_hisat2_de_novo.sh"; return 1; }
+source "$SCRIPT_DIR/m3_star_alignment.sh"    || { log_error "Failed to source m3_star_alignment.sh"; return 1; }
+source "$SCRIPT_DIR/m4_salmon_saf.sh"        || { log_error "Failed to source m4_salmon_saf.sh"; return 1; }
+source "$SCRIPT_DIR/m5_bowtie2_rsem.sh"      || { log_error "Failed to source m5_bowtie2_rsem.sh"; return 1; }
 
 # ==============================================================================
 # METHOD COMPARISON AND VALIDATION FUNCTIONS
