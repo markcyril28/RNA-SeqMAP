@@ -1,9 +1,11 @@
 #!/bin/bash
+# cd to script's own directory so *.csv glob works from any cwd
+cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 
 # Function to validate a single CSV file
 validate_csv() {
     local file="$1"
-    local filename=$(basename "$file")
+    local filename="$(basename "$file")"
     
     # Extract header and check columns
     local header=$(head -1 "$file")
@@ -17,9 +19,9 @@ validate_csv() {
     
     echo "=== FILE: $filename ==="
     echo "Headers: $header"
-    echo "  ✓ SRR_ID column: $([ $has_srr_id -eq 1 ] && echo 'YES' || echo 'NO')"
-    echo "  ✓ Organ column: $([ $has_organ -eq 1 ] && echo 'YES' || echo 'NO')"
-    echo "  ✓ Batch column: $([ $has_batch -eq 1 ] && echo 'YES' || echo 'NO')"
+    echo "  $([ "$has_srr_id" -eq 1 ] && echo '✓' || echo '✗') SRR_ID column: $([ "$has_srr_id" -eq 1 ] && echo 'YES' || echo 'NO')"
+    echo "  $([ "$has_organ" -eq 1 ] && echo '✓' || echo '✗') Organ column: $([ "$has_organ" -eq 1 ] && echo 'YES' || echo 'NO')"
+    echo "  $([ "$has_batch" -eq 1 ] && echo '✓' || echo '✗') Batch column: $([ "$has_batch" -eq 1 ] && echo 'YES' || echo 'NO')"
     
     # Count data lines (excluding header and comment lines)
     local data_lines=$(grep -v "^#" "$file" | grep -v "^SRR_ID" | grep -v "^$" | wc -l)
@@ -61,5 +63,6 @@ validate_csv() {
 
 # Process all CSV files
 for csv in *.csv; do
+    [[ -f "$csv" ]] || continue
     validate_csv "$csv"
 done

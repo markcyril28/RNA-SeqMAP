@@ -1,14 +1,17 @@
 #!/bin/bash
+# cd to script's own directory so *.csv glob works from any cwd
+cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 
 echo "╔════════════════════════════════════════════════════════════════════════╗"
 echo "║                      ORGAN DIVERSITY BY FILE                           ║"
 echo "╚════════════════════════════════════════════════════════════════════════╝"
 echo ""
 
-for csv in $(ls -1 *.csv | sort); do
-    organ_count=$(grep "^SRR" "$csv" | awk -F',' '{print $2}' | sort -u | wc -l)
-    unique_organs=$(grep "^SRR" "$csv" | awk -F',' '{print $2}' | sort -u | tr '\n' ', ' | sed 's/,$//')
-    sample_count=$(grep "^SRR" "$csv" | wc -l)
+for csv in *.csv; do
+    [[ -f "$csv" ]] || continue
+    organ_count=$(grep "^SRR[0-9]" "$csv" | awk -F',' '{print $2}' | sort -u | wc -l)
+    unique_organs=$(grep "^SRR[0-9]" "$csv" | awk -F',' '{print $2}' | sort -u | tr '\n' ', ' | sed 's/,$//')
+    sample_count=$(grep "^SRR[0-9]" "$csv" | wc -l)
     
     printf "\n%-45s: %2d samples, %2d organs\n" "$csv" "$sample_count" "$organ_count"
     echo "  Organs: $unique_organs"
