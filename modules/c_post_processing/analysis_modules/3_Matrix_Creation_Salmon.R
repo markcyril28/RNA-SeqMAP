@@ -11,7 +11,11 @@
 
 suppressPackageStartupMessages(library(tximport))
 
-SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", ".")
+SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", {
+  if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+    stop("[MATRIX_CREATION_SALMON] ANALYSIS_MODULES_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+  "."
+})
 source(file.path(SCRIPT_DIR, "0_shared_config.R"))
 source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
 source(file.path(SCRIPT_DIR, "3_Matrix_Creation_utils.R"))
@@ -81,7 +85,7 @@ if (any(.nonempty)) {
   if (any(.found)) .tx2gene_file <- .candidates[which(.found)[1L]]
 }
 # Only recurse directory tree if direct paths failed
-if (is.null(.tx2gene_file) && nzchar(.input_fastas_dir)) {
+if (is.null(.tx2gene_file) && nzchar(.input_fastas_dir) && dir.exists(.input_fastas_dir)) {
   .all_maps <- list.files(.input_fastas_dir, pattern = "\\.gene_trans_map$",
                           recursive = TRUE, full.names = TRUE)
   # Match on basename to avoid substring false positives (e.g., "V4" matching "V4.1")
@@ -129,12 +133,24 @@ quant_dir <- if (nzchar(salmon_quant_root_env)) {
   salmon_quant_root_env  # already includes fasta_tag
 } else if (nzchar(base_dir)) {
   file.path(base_dir, "2_ALIGNMENT_RESULTs", "M4_Salmon_Saf", "Salmon_Quant", MASTER_REFERENCE)
+} else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+  stop("[SALMON MATRIX] BASE_DIR is required when running under a workflow manager (WF_MANAGED_ENV is set). ",
+       "Export BASE_DIR pointing to the project root.")
 } else {
+  message("[SALMON MATRIX] WARN: BASE_DIR and SALMON_QUANT_ROOT not set; using relative path 'Salmon_Quant/' ",
+          "(resolves to '", normalizePath("Salmon_Quant", mustWork = FALSE), "'). ",
+          "Set BASE_DIR for orchestrated execution (Nextflow/Snakemake).")
   "Salmon_Quant"  # fallback for standalone execution
 }
 output_dir  <- if (nzchar(base_dir)) {
-  file.path(base_dir, "3_POST_PROC", "M4_Salmon_Saf", "count_matrices_from_Salmon_Quant")
+  file.path(base_dir, "3_POST_PROC", CURRENT_METHOD, "count_matrices_from_Salmon_Quant")
+} else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+  stop("[SALMON MATRIX] BASE_DIR is required when running under a workflow manager (WF_MANAGED_ENV is set). ",
+       "Export BASE_DIR pointing to the project root.")
 } else {
+  message("[SALMON MATRIX] WARN: BASE_DIR not set; using relative output path 'count_matrices_from_Salmon_Quant/' ",
+          "(resolves to '", normalizePath("count_matrices_from_Salmon_Quant", mustWork = FALSE), "'). ",
+          "Set BASE_DIR for orchestrated execution (Nextflow/Snakemake).")
   "count_matrices_from_Salmon_Quant"  # relative fallback for pushd context
 }
 count_label <- "NumReads"
@@ -210,7 +226,7 @@ if (GENERATE_ISOFORM_LEVEL) {
   }
 }
 
-if (exists(".tx2gene")) rm(.tx2gene)
+if (exists(".tx2gene")) rm(".tx2gene")
 
 run_matrix_saving(results, output_dir, MASTER_REFERENCE, count_label, GENE_GROUPS_DIR)
 }  # end run_salmon_matrix_creation
