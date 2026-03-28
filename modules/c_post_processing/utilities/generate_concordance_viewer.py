@@ -15,7 +15,6 @@ Scans for:
 import argparse
 import datetime
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -85,7 +84,8 @@ def scan_concordance(base_dir: Path) -> tuple[list, list, list]:
             for csv_f in sorted(tbl_dir.glob("*.csv")):
                 try:
                     content = csv_f.read_text(encoding="utf-8", errors="replace")
-                except Exception:
+                except Exception as e:
+                    print(f"  [WARN] Could not read {csv_f}: {e}")
                     content = ""
                 tables.append({
                     "path": csv_f.relative_to(base_dir).as_posix(),
@@ -100,7 +100,8 @@ def scan_concordance(base_dir: Path) -> tuple[list, list, list]:
         if rpt.is_file():
             try:
                 content = rpt.read_text(encoding="utf-8", errors="replace")
-            except Exception:
+            except Exception as e:
+                print(f"  [WARN] Could not read {rpt}: {e}")
                 content = ""
             reports.append({
                 "mode": mode,
@@ -665,13 +666,14 @@ function mdInline(t) {
 
 function mdTable(rows) {
   if (rows.length === 0) return "";
-  let html = "<table>";
+  const _p = ["<table>"];
   rows.forEach((row, ri) => {
     const cells = row.split("|").slice(1, -1).map(c => c.trim());
     const tag = ri === 0 ? "th" : "td";
-    html += "<tr>" + cells.map(c => "<" + tag + ">" + mdInline(c) + "</" + tag + ">").join("") + "</tr>";
+    _p.push("<tr>" + cells.map(c => "<" + tag + ">" + mdInline(c) + "</" + tag + ">").join("") + "</tr>");
   });
-  return html + "</table>\n";
+  _p.push("</table>\n");
+  return _p.join("");
 }
 
 // ── Data Tables ──────────────────────────────────────────────────────────
@@ -914,7 +916,8 @@ def main():
         return
 
     # Write HTML
-    output_path = Path(args.output) if args.output else base_dir / "concordance_viewer.html"
+    output_path = Path(args.output).resolve() if args.output else base_dir / "concordance_viewer.html"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     html = generate_html(manifest)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(html)

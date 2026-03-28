@@ -14,6 +14,7 @@ python matrix_builder.py gene_names.txt sample_files_list.txt
 
 import sys
 import re
+from pathlib import Path
 
 # Pre-compile regex once at module level (avoids re-compilation per call)
 _TRAILING_DIGITS_RE = re.compile(r'\.\d+$')
@@ -143,6 +144,7 @@ if __name__ == "__main__":
     if len(sys.argv) != 3:
         print("Usage: python matrix_builder.py gene_names.txt sample_files_list.txt")
         sys.exit(1)
-    gene_names_file = sys.argv[1]
-    sample_files_list = sys.argv[2]
+    # Resolve to absolute paths for portability under Nextflow/Snakemake workDirs
+    gene_names_file = str(Path(sys.argv[1]).resolve())
+    sample_files_list = str(Path(sys.argv[2]).resolve())
     main(gene_names_file, sample_files_list)

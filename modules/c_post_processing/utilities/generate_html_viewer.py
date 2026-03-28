@@ -72,8 +72,8 @@ def build_manifest(records: list[dict]) -> dict:
     # Single O(R) pass extracts all 9 dimension sets simultaneously
     # (was 9× O(R) with separate unique_sorted calls per key)
     dim_keys = ("method", "analysis", "reference", "gene_group",
-                "processing_level", "count_type", "norm_scheme",
-                "row_orientation", "sort_order")
+                "processing_level", "count_type", "label_type",
+                "norm_scheme", "row_orientation", "sort_order")
     dims: dict[str, set[str]] = {k: set() for k in dim_keys}
     for r in records:
         for k in dim_keys:
@@ -88,6 +88,7 @@ def build_manifest(records: list[dict]) -> dict:
             "gene_groups": sorted(dims["gene_group"]),
             "processing_levels": sorted(dims["processing_level"]),
             "count_types": sorted(dims["count_type"]),
+            "label_types": sorted(dims["label_type"]),
             "norm_schemes": sorted(dims["norm_scheme"]),
             "row_orientations": sorted(dims["row_orientation"]),
             "sort_orders": sorted(dims["sort_order"]),
@@ -361,6 +362,10 @@ body.col-resizing * { cursor: col-resize !important; }
     <div class="chip-group" id="filter-count-type"></div>
   </div>
   <div class="sidebar-section">
+    <h3>Label Type</h3>
+    <div class="chip-group" id="filter-label-type"></div>
+  </div>
+  <div class="sidebar-section">
     <h3>Normalization</h3>
     <div class="chip-group" id="filter-norm"></div>
   </div>
@@ -454,6 +459,7 @@ const state = {
   gene_groups_active:       new Set(),
   processing_levels_active: new Set(),
   count_types_active:       new Set(),
+  label_types_active:       new Set(),
   norm_schemes_active:      new Set(),
   row_orientations_active:  new Set(),
   sort_orders_active:       new Set(),
@@ -480,7 +486,7 @@ document.addEventListener("DOMContentLoaded", () => {
   if (location.protocol === "file:") {
     const banner = document.createElement("div");
     banner.style.cssText = "background:#1c3a6e;color:#79c0ff;padding:7px 16px;font-size:12px;text-align:center;position:sticky;top:53px;z-index:99;";
-    banner.textContent = "Opened via file:// — for best experience you can also serve with: bash run_post_processing_html_viewer.sh --serve";
+    banner.textContent = "Opened via file:// — for best experience you can also serve with: bash modules/other_tools/run_post_processing_html_viewer.sh --serve";
     document.body.insertBefore(banner, document.querySelector(".layout"));
   }
 
@@ -488,6 +494,7 @@ document.addEventListener("DOMContentLoaded", () => {
   buildChips("filter-gene-group", d.gene_groups,       "gene_groups_active",       prettyGeneGroup);
   buildChips("filter-proc-level", d.processing_levels, "processing_levels_active");
   buildChips("filter-count-type", d.count_types,       "count_types_active");
+  buildChips("filter-label-type", d.label_types,       "label_types_active");
   buildChips("filter-norm",       d.norm_schemes,      "norm_schemes_active");
   buildChips("filter-row-orient", d.row_orientations,  "row_orientations_active");
   buildChips("filter-sort",       d.sort_orders,       "sort_orders_active");
@@ -537,12 +544,13 @@ function resetFilters() {
   state.gene_groups_active       = new Set();
   state.processing_levels_active = new Set();
   state.count_types_active       = new Set();
+  state.label_types_active       = new Set();
   state.norm_schemes_active      = new Set();
   state.row_orientations_active  = new Set();
   state.sort_orders_active       = new Set();
   state.hide_empty_cols          = false;
   ["filter-analysis","filter-gene-group","filter-proc-level","filter-count-type",
-   "filter-norm","filter-row-orient","filter-sort"].forEach(id => {
+   "filter-label-type","filter-norm","filter-row-orient","filter-sort"].forEach(id => {
     document.getElementById(id).querySelectorAll(".chip")
       .forEach(c => c.classList.remove("active"));
   });
@@ -563,6 +571,7 @@ function filteredImages() {
     if (state.gene_groups_active.size > 0       && !state.gene_groups_active.has(img.gene_group))           return false;
     if (state.processing_levels_active.size > 0 && !state.processing_levels_active.has(img.processing_level)) return false;
     if (state.count_types_active.size > 0       && !state.count_types_active.has(img.count_type))           return false;
+    if (state.label_types_active.size > 0      && !state.label_types_active.has(img.label_type))           return false;
     if (state.norm_schemes_active.size > 0      && !state.norm_schemes_active.has(img.norm_scheme))         return false;
     if (state.row_orientations_active.size > 0  && !state.row_orientations_active.has(img.row_orientation)) return false;
     if (state.sort_orders_active.size > 0       && !state.sort_orders_active.has(img.sort_order))           return false;
@@ -819,7 +828,7 @@ function showModalAt(idx) {
   document.getElementById("modal-download").download = (img.original_path || img.path).split("/").pop();
   document.getElementById("modal-title").textContent = (img.original_path || img.path).split("/").pop().replace(/_/g," ").replace(/\.png$/i,"");
   const tags = document.getElementById("modal-tags");
-  tags.innerHTML = ["method","analysis","reference","gene_group","processing_level","count_type","norm_scheme","row_orientation","sort_order"]
+  tags.innerHTML = ["method","analysis","reference","gene_group","processing_level","count_type","label_type","norm_scheme","row_orientation","sort_order"]
     .map(k => `<span class="modal-tag">${escHTML(prettyLabel(k))}: ${escHTML(prettyLabel(img[k]))}</span>`)
     .join("");
   document.getElementById("modal-pos").textContent = (idx+1) + " / " + modalImages.length;
@@ -912,7 +921,8 @@ def main():
         return
 
     # Write HTML
-    output_path = Path(args.output) if args.output else post_proc_dir / "alignment_results_viewer.html"
+    output_path = Path(args.output).resolve() if args.output else post_proc_dir / "alignment_results_viewer.html"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     html = generate_html(manifest)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(html)

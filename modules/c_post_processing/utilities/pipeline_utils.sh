@@ -7,10 +7,16 @@
 
 # Guard against double-sourcing
 [[ "${PIPELINE_UTILS_SOURCED:-}" == "true" ]] && return 0
-export PIPELINE_UTILS_SOURCED="true"
+PIPELINE_UTILS_SOURCED="true"
 
 # Pre-compute utility directory paths at module load (avoids ~15-30 local var assignments
 # per run_single_analysis call × N methods × N analyses). O(1) lookup thereafter.
+# Orchestrated execution (Nextflow/Snakemake) must set BASE_DIR explicitly;
+# the "." fallback only works when CWD is the repo root (standalone bash mode).
+if [[ -n "${WF_MANAGED_ENV:-}" && -z "${BASE_DIR:-}" ]]; then
+	echo "ERROR: WF_MANAGED_ENV is set but BASE_DIR is not. Orchestrators must export BASE_DIR." >&2
+	return 1
+fi
 _PIPELINE_UTIL_DIR="${UTILITIES_DIR:-${BASE_DIR:-.}/modules/c_post_processing/utilities}"
 _PIPELINE_MODS_DIR="${ANALYSIS_MODULES_DIR:-${BASE_DIR:-.}/modules/c_post_processing/analysis_modules}"
 
@@ -91,7 +97,7 @@ get_matrix_creation_script() {
 # Returns the full path to the script that converts raw quant output to count matrices
 get_preprocessing_script() {
     local method=$1
-    local PREPROCESSING_DIR="${BASE_DIR}/modules/c_post_processing/preprocessing"
+    local PREPROCESSING_DIR="${BASE_DIR:-.}/modules/c_post_processing/preprocessing"
     
     case "$method" in
         "M1_HISAT2_RefGuided")
@@ -374,6 +380,8 @@ run_method_analysis() {
 #===============================================================================
 
 export_utils_for_parallel() {
+    # Skip when orchestrator manages parallelism (Nextflow/Snakemake)
+    [[ -n "${WF_MANAGED_ENV:-}" ]] && return 0
     # Guard: skip if already exported this session (saves ~20 export -f calls per dataset iteration)
     [[ "${_PARALLEL_UTILS_EXPORTED:-}" == "true" ]] && return 0
     # Export logging functions (from logging_utils.sh)
