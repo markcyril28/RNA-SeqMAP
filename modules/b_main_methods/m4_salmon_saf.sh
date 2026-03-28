@@ -8,16 +8,19 @@
 
 # NOTE: set -e/-u/-o pipefail are intentionally NOT set here — this file is sourced
 # as a library and must not alter the parent shell's error-exit behaviour.
-# Pipe failures in salmon quant are checked manually via PIPESTATUS (lines ~119, ~127).
+# Salmon quant exit codes are captured directly via $? in parallel workers.
 
 # Guard against double-sourcing
 [[ "${M4_SALMON_SOURCED:-}" == "true" ]] && return 0
-export M4_SALMON_SOURCED="true"
+M4_SALMON_SOURCED="true"
 
 # Source dependencies
 # Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
 SCRIPT_DIR="${MODULES_DIR:+${MODULES_DIR}/b_main_methods}"
-if [[ -z "$SCRIPT_DIR" ]]; then SCRIPT_DIR="${BASH_SOURCE[0]%/*}"; [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."; fi
+if [[ -z "$SCRIPT_DIR" ]]; then
+	SCRIPT_DIR="${BASH_SOURCE[0]%/*}"; [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+	SCRIPT_DIR="$(cd "$SCRIPT_DIR" 2>/dev/null && pwd)"
+fi
 source "$SCRIPT_DIR/shared_utils_method.sh"
 
 # ==============================================================================
@@ -52,11 +55,14 @@ salmon_saf_pipeline() {
 
 	[[ -z "$fasta" || -z "$genome" ]] && { log_error "Usage: --FASTA genes.fa --GENOME genome.fa"; return 1; }
 	[[ ${#rnaseq_list[@]} -eq 0 ]] && rnaseq_list=("${SRR_COMBINED_LIST[@]}")
+	[[ ${#rnaseq_list[@]} -eq 0 ]] && { log_error "No RNA-seq samples provided."; return 1; }
 
 	local _fn="${fasta##*/}"; local tag="${_fn%.*}"
 	set_fasta_output_dirs "$tag"
 	# Use an absolute path so $work is unambiguous regardless of the caller's CWD
-	local work="$SALMON_SAF_ROOT/tmp_${tag}_gentrome"
+	# Include BASHPID (per-subshell) for concurrency safety under GNU Parallel;
+	# $$ is constant across workers, BASHPID differs per forked subshell
+	local work="$SALMON_SAF_ROOT/tmp_${tag}_gentrome_${BASHPID:-$$}"
 	local idx_dir="$SALMON_INDEX_ROOT/decoySAF"
 	local quant_root="$SALMON_QUANT_ROOT"
 	local matrix_dir="$SALMON_MATRIX_ROOT"
@@ -114,7 +120,7 @@ salmon_saf_pipeline() {
 
 	if $_SHARED_HAS_PARALLEL && [[ "$parallel_jobs" -gt 1 ]] && [[ "${USE_GNU_PARALLEL:-TRUE}" != "FALSE" ]]; then
 		log_step "[PARALLEL] Salmon quantification: ${#rnaseq_list[@]} samples, $parallel_jobs jobs x $threads_per_job threads"
-		_prepare_parallel_env
+		_prepare_parallel_env "M4"
 
 		export idx_dir quant_root threads_per_job
 		local salmon_num_bootstraps="$SALMON_NUM_BOOTSTRAPS"
@@ -161,12 +167,13 @@ salmon_saf_pipeline() {
 
 		parallel \
 			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
+			--env _CONDA_PROFILE_SCRIPT --env WF_MANAGED_ENV \
 			--env abs_trim_dir_root --env abs_error_warn_file --env keep_bam_global \
 			--env idx_dir --env quant_root --env threads_per_job --env salmon_num_bootstraps \
 			--env OVERWRITE_MODE \
 			-j "$parallel_jobs" \
 			--halt soon,fail,1 \
-			--joblog "$quant_root/parallel_salmon_saf.log" \
+			--joblog "$quant_root/parallel_salmon_saf_${BASHPID:-$$}.log" \
 			_m4_salmon_parallel_worker {} \
 			< <(printf '%s\n' "${rnaseq_list[@]}")
 
@@ -178,7 +185,10 @@ salmon_saf_pipeline() {
 			[[ -f "$quant_root/$_s/quant.sf" ]] && successful=$((successful + 1))
 		done
 		log_info "[PARALLEL] Salmon SAF complete: $successful/${#rnaseq_list[@]} samples succeeded"
-		[[ $par_exit -ne 0 ]] && log_warn "[PARALLEL] Some jobs failed - check $quant_root/parallel_salmon_saf.log"
+		if [[ $par_exit -ne 0 ]]; then
+			log_error "[PARALLEL] Some jobs failed - check $quant_root/parallel_salmon_saf_${BASHPID:-$$}.log"
+			return $par_exit
+		fi
 	else
 		# Sequential fallback
 		for SRR in "${rnaseq_list[@]}"; do
