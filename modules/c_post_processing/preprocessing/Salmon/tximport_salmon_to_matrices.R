@@ -20,7 +20,11 @@ suppressPackageStartupMessages({
 # ===============================================
 
 # Source shared config and utilities (DRY principle)
-SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", ".")
+SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", {
+  if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+    stop("[SALMON_TXIMPORT] ANALYSIS_MODULES_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+  "."
+})
 source(file.path(SCRIPT_DIR, "0_shared_config.R"))
 source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
 source(file.path(SCRIPT_DIR, "3_Matrix_Creation_utils.R"))
@@ -28,7 +32,12 @@ source(file.path(SCRIPT_DIR, "3_Matrix_Creation_utils.R"))
 # Ensure match_gene_ids is available (fallback to standalone utility if not in 1_utility_functions.R)
 if (!exists("match_gene_ids", mode = "function")) {
   .match_ids_path <- file.path(dirname(SCRIPT_DIR), "utilities", "match_gene_ids.R")
-  if (file.exists(.match_ids_path)) source(.match_ids_path)
+  if (file.exists(.match_ids_path)) {
+    source(.match_ids_path)
+  } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+    stop("[SALMON TXIMPORT] match_gene_ids.R not found at ", .match_ids_path,
+         ". Ensure ANALYSIS_MODULES_DIR points to a directory whose sibling 'utilities/' contains match_gene_ids.R.")
+  }
 }
 
 # Wrapper to adapt the shared save_count_matrices() signature to the call sites
@@ -56,7 +65,11 @@ QUANT_DIR <- if (QUANT_DIR_INCLUDES_REF) {
   SALMON_QUANT_ROOT_ENV
 } else if (nzchar(BASE_DIR)) {
   file.path(BASE_DIR, "2_ALIGNMENT_RESULTs", "M4_Salmon_Saf", "Salmon_Quant")
+} else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+  stop("[SALMON TXIMPORT] BASE_DIR or SALMON_QUANT_ROOT is required under workflow manager (WF_MANAGED_ENV is set).")
 } else {
+  message("[SALMON TXIMPORT] WARN: BASE_DIR and SALMON_QUANT_ROOT not set; using relative 'Salmon_Quant/'. ",
+          "Set BASE_DIR for orchestrated execution (Nextflow/Snakemake).")
   "Salmon_Quant"  # last-resort relative fallback
 }
 # MASTER_REFERENCE is already set by 0_shared_config.R (sourced above).
@@ -65,7 +78,11 @@ QUANT_DIR <- if (QUANT_DIR_INCLUDES_REF) {
 # working directory is correct, but an absolute path allows the script to be run standalone).
 MATRICES_OUTPUT_DIR <- if (nzchar(BASE_DIR)) {
   file.path(BASE_DIR, "3_POST_PROC", "M4_Salmon_Saf", "count_matrices_from_Salmon_Quant")
+} else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+  stop("[SALMON TXIMPORT] BASE_DIR is required for output directory under workflow manager.")
 } else {
+  message("[SALMON TXIMPORT] WARN: BASE_DIR not set; using relative 'count_matrices_from_Salmon_Quant/'. ",
+          "Set BASE_DIR for orchestrated execution (Nextflow/Snakemake).")
   "count_matrices_from_Salmon_Quant"  # relative fallback when called from pushd context
 }
 # Use shared GENE_GROUPS_DIR from 0_shared_config.R (already sourced)
@@ -178,7 +195,15 @@ for (level_name in names(processing_levels)) {
   # Use the gene_trans_map file corresponding to the MASTER_REFERENCE
   INPUT_FASTAS_DIR <- Sys.getenv("INPUT_FASTAS_DIR", unset = "")
   if (!nzchar(INPUT_FASTAS_DIR)) {
-    INPUT_FASTAS_DIR <- if (nzchar(BASE_DIR)) file.path(BASE_DIR, "inputs") else "../../inputs"
+    INPUT_FASTAS_DIR <- if (nzchar(BASE_DIR)) {
+      file.path(BASE_DIR, "inputs")
+    } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+      stop("[SALMON TXIMPORT] INPUT_FASTAS_DIR or BASE_DIR is required under workflow manager.")
+    } else {
+      message("[SALMON TXIMPORT] WARN: INPUT_FASTAS_DIR and BASE_DIR not set; using relative '../../inputs'. ",
+              "Set INPUT_FASTAS_DIR or BASE_DIR for orchestrated execution.")
+      "../../inputs"
+    }
   }
 
   # Search for the tx2gene mapping file produced by create_gene_trans_map()
@@ -200,7 +225,7 @@ for (level_name in names(processing_levels)) {
     if (any(.found)) tx2gene_file <- tx2gene_candidates[which(.found)[1L]]
   }
   # Lazy fallback: only recurse directory tree if direct paths failed
-  if (is.null(tx2gene_file) && nzchar(INPUT_FASTAS_DIR)) {
+  if (is.null(tx2gene_file) && nzchar(INPUT_FASTAS_DIR) && dir.exists(INPUT_FASTAS_DIR)) {
     all_maps <- list.files(INPUT_FASTAS_DIR, pattern = "\\.gene_trans_map$",
                            recursive = TRUE, full.names = TRUE)
     # Match on basename to avoid substring false positives (e.g., "V4" matching "V4.1")
@@ -284,6 +309,22 @@ for (level_name in names(processing_levels)) {
             nrow(txi$counts), " rows x ", ncol(txi$counts), " cols)")
     cat("Skipping level:", level_name, "\n\n")
     next
+  }
+
+  # Filter entries with zero effective length (prevents NaN/Inf in DESeq2 normalization)
+  if (!is.null(txi$length)) {
+    zero_mask <- rowSums(txi$length == 0) > 0
+    if (any(zero_mask)) {
+      entity_type_tmp <- if (level_config$tx_out) "transcripts" else "genes"
+      cat("  Filtering", sum(zero_mask), entity_type_tmp, "with zero effective length\n")
+      txi$counts    <- txi$counts[!zero_mask, , drop = FALSE]
+      txi$abundance <- txi$abundance[!zero_mask, , drop = FALSE]
+      txi$length    <- txi$length[!zero_mask, , drop = FALSE]
+      if (nrow(txi$counts) == 0) {
+        cat("  ERROR: All entries removed after zero-length filtering — skipping level\n")
+        next
+      }
+    }
   }
 
   entity_type <- if (level_config$tx_out) "transcripts" else "genes"
@@ -397,14 +438,12 @@ for (level_name in names(processing_levels)) {
 
   cat("Step 7: Processing gene groups...\n")
 
-  if (!dir.exists(GENE_GROUPS_DIR)) {
-    cat("WARNING: Gene groups directory does not exist:", GENE_GROUPS_DIR, "\n")
-    cat("  Set GENE_GROUPS_DIR env var or check BASE_DIR.\n")
-  }
   # Reuse pre-computed gene group file list (hoisted above level loop to avoid
   # repeated list.files() filesystem traversals — same result across levels)
   if (!exists(".gg_files_cached")) {
-    .gg_files_cached <- list.files(GENE_GROUPS_DIR, pattern = "\\.(csv|txt|tsv)$", recursive = TRUE, full.names = TRUE)
+    .gg_files_cached <- if (dir.exists(GENE_GROUPS_DIR)) {
+      list.files(GENE_GROUPS_DIR, pattern = "\\.(csv|txt|tsv)$", recursive = TRUE, full.names = TRUE)
+    } else character(0)
     .gg_base_cached <- tools::file_path_sans_ext(basename(.gg_files_cached))
     if (length(.gg_files_cached) > 1) {
       dup_idx <- duplicated(.gg_base_cached)
