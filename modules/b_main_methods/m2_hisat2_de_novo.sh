@@ -10,12 +10,15 @@
 
 # Guard against double-sourcing
 [[ "${M2_HISAT2_DN_SOURCED:-}" == "true" ]] && return 0
-export M2_HISAT2_DN_SOURCED="true"
+M2_HISAT2_DN_SOURCED="true"
 
 # Source dependencies
 # Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
 SCRIPT_DIR="${MODULES_DIR:+${MODULES_DIR}/b_main_methods}"
-if [[ -z "$SCRIPT_DIR" ]]; then SCRIPT_DIR="${BASH_SOURCE[0]%/*}"; [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."; fi
+if [[ -z "$SCRIPT_DIR" ]]; then
+	SCRIPT_DIR="${BASH_SOURCE[0]%/*}"; [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+	SCRIPT_DIR="$(cd "$SCRIPT_DIR" 2>/dev/null && pwd)"
+fi
 source "$SCRIPT_DIR/shared_utils_method.sh"
 
 # ==============================================================================
@@ -42,6 +45,7 @@ hisat2_de_novo_pipeline() {
 	[[ -z "$fasta" ]] && { log_error "No FASTA file specified. Use --FASTA <fasta_file>."; return 1; }
 	[[ ! -f "$fasta" ]] && { log_error "FASTA file '$fasta' not found."; return 1; }
 	[[ ${#rnaseq_list[@]} -eq 0 ]] && rnaseq_list=("${SRR_COMBINED_LIST[@]}")
+	[[ ${#rnaseq_list[@]} -eq 0 ]] && { log_error "No RNA-seq samples provided."; return 1; }
 
 	local fasta_base fasta_tag index_prefix
 	fasta_base="${fasta##*/}"
@@ -75,7 +79,12 @@ hisat2_de_novo_pipeline() {
 	local _strand_cache="$HISAT2_DE_NOVO_INDEX_DIR/detected_strandness.txt"
 
 	if [[ -f "$_strand_cache" && "${OVERWRITE_MODE:-skip}" != "overwrite" ]]; then
-		source "$_strand_cache"
+		# Parse cache file safely instead of sourcing (avoids arbitrary code execution
+		# if cache was corrupted by an interrupted write or external modification).
+		# Uses POSIX sed (grep -oP lookbehind is GNU-only, unavailable on macOS/BSD).
+		_detected_strand="$(sed -n 's/^_detected_strand="\([^"]*\)".*/\1/p' "$_strand_cache" 2>/dev/null)"
+		hisat2_strand_opts="$(sed -n 's/^hisat2_strand_opts="\([^"]*\)".*/\1/p' "$_strand_cache" 2>/dev/null)"
+		stringtie_strand_opt="$(sed -n 's/^stringtie_strand_opt="\([^"]*\)".*/\1/p' "$_strand_cache" 2>/dev/null)"
 		log_info "[STRANDNESS] Cached: ${_detected_strand:-unstranded} | HISAT2: ${hisat2_strand_opts:-none} | StringTie: ${stringtie_strand_opt:-none}"
 	else
 		# Find first sample with trimmed FASTQs
@@ -148,10 +157,11 @@ hisat2_de_novo_pipeline() {
 			log_warn "[STRANDNESS] No trimmed FASTQs found — running unstranded"
 		fi
 
-		# Cache for resume runs
+		# Cache for resume runs (atomic write via tmp+mv to avoid corruption under concurrent access)
+		local _cache_tmp="${_strand_cache}.${BASHPID:-$$}"
 		printf '_detected_strand="%s"\nhisat2_strand_opts="%s"\nstringtie_strand_opt="%s"\n' \
 			"${_detected_strand:-unstranded}" "$hisat2_strand_opts" "$stringtie_strand_opt" \
-			> "$_strand_cache"
+			> "$_cache_tmp" && mv -f "$_cache_tmp" "$_strand_cache"
 	fi
 
 	# ALIGNMENT AND STRINGTIE ASSEMBLY
@@ -170,13 +180,13 @@ hisat2_de_novo_pipeline() {
 
 	if $_SHARED_HAS_PARALLEL && [[ "$parallel_jobs" -gt 1 ]] && [[ "${USE_GNU_PARALLEL:-TRUE}" != "FALSE" ]]; then
 		log_step "[PARALLEL] HISAT2 De Novo: ${#rnaseq_list[@]} samples, $parallel_jobs jobs x $threads_per_job threads"
-		_prepare_parallel_env
+		_prepare_parallel_env "M2"
 
 		export fasta_tag index_prefix threads_per_job hisat2_strand_opts stringtie_strand_opt
 		local abs_hisat2_dn_root="$HISAT2_DE_NOVO_ROOT"
-		[[ "$abs_hisat2_dn_root" != /* ]] && abs_hisat2_dn_root="$PWD/$abs_hisat2_dn_root"
+		[[ "$abs_hisat2_dn_root" != /* ]] && abs_hisat2_dn_root="${PROJECT_ROOT:-$PWD}/$abs_hisat2_dn_root"
 		local abs_stringtie_dn_root="$STRINGTIE_HISAT2_DE_NOVO_ROOT"
-		[[ "$abs_stringtie_dn_root" != /* ]] && abs_stringtie_dn_root="$PWD/$abs_stringtie_dn_root"
+		[[ "$abs_stringtie_dn_root" != /* ]] && abs_stringtie_dn_root="${PROJECT_ROOT:-$PWD}/$abs_stringtie_dn_root"
 		export abs_hisat2_dn_root abs_stringtie_dn_root
 
 		_m2_align_parallel_worker() {
@@ -269,6 +279,7 @@ hisat2_de_novo_pipeline() {
 
 		parallel \
 			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
+			--env _CONDA_PROFILE_SCRIPT --env WF_MANAGED_ENV \
 			--env abs_trim_dir_root --env abs_error_warn_file --env keep_bam_global \
 			--env fasta_tag --env index_prefix --env threads_per_job \
 			--env hisat2_strand_opts --env stringtie_strand_opt \
@@ -276,14 +287,14 @@ hisat2_de_novo_pipeline() {
 			--env OVERWRITE_MODE --env _SAMTOOLS_HAS_WRITE_INDEX --env _CACHED_AVAIL_MB \
 			-j "$parallel_jobs" \
 			--halt soon,fail,1 \
-			--joblog "$HISAT2_DE_NOVO_ROOT/parallel_hisat2_denovo.log" \
+			--joblog "$HISAT2_DE_NOVO_ROOT/parallel_hisat2_denovo_${BASHPID:-$$}.log" \
 			_m2_align_parallel_worker {} \
 			< <(printf '%s\n' "${rnaseq_list[@]}")
 
 		local par_exit=$?
 		log_info "[PARALLEL] HISAT2 De Novo complete (exit=$par_exit)"
 		if [[ $par_exit -ne 0 ]]; then
-			log_warn "[PARALLEL] Some jobs failed - check $HISAT2_DE_NOVO_ROOT/parallel_hisat2_denovo.log"
+			log_warn "[PARALLEL] Some jobs failed - check $HISAT2_DE_NOVO_ROOT/parallel_hisat2_denovo_${BASHPID:-$$}.log"
 			return $par_exit
 		fi
 	else
