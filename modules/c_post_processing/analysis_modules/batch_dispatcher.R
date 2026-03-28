@@ -21,7 +21,11 @@ if (length(args) == 0) {
   stop("Usage: Rscript batch_dispatcher.R <analysis1> [analysis2] ...")
 }
 
-SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", ".")
+SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", {
+  if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+    stop("[BATCH DISPATCHER] ANALYSIS_MODULES_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+  "."
+})
 
 # ── Source shared modules ONCE ──────────────────────────────────────────────
 # These are the common dependencies for all analysis scripts. Each analysis
