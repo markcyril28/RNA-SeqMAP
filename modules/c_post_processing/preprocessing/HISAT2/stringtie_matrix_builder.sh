@@ -22,8 +22,14 @@
 
 set -euo pipefail
 
+# Fail early under orchestrators if BASE_DIR/PROJECT_ROOT are missing
+if [[ -n "${WF_MANAGED_ENV:-}" && -z "${BASE_DIR:-}" && -z "${PROJECT_ROOT:-}" ]]; then
+    echo "ERROR: WF_MANAGED_ENV is set but neither BASE_DIR nor PROJECT_ROOT is set. Orchestrators must export BASE_DIR." >&2
+    exit 1
+fi
+
 # Source logging utilities for consistent pipeline logging (minimal fallback if unavailable)
-source "${BASE_DIR:-$PWD}/modules/logging/logging_utils.sh" 2>/dev/null || {
+source "${BASE_DIR:-${PROJECT_ROOT:-$PWD}}/modules/logging/logging_utils.sh" 2>/dev/null || {
     log_info()  { echo "[INFO] $*"; }
     log_warn()  { echo "[WARN] $*" >&2; }
     log_error() { echo "[ERROR] $*" >&2; }
@@ -79,13 +85,9 @@ MASTER_REFERENCE="${MASTER_REFERENCE:-All_Smel_Genes}"
 MASTER_SUFFIX="_from_${MASTER_REFERENCE}"
 
 # Directories
-BASE_DIR="${BASE_DIR:-$PWD}"
+BASE_DIR="${BASE_DIR:-${PROJECT_ROOT:-$PWD}}"
 INPUTS_DIR="${INPUTS_DIR:-${BASE_DIR}/2_ALIGNMENT_RESULTs/${_DEFAULT_INPUTS_SUBDIR}}"
 OUT_DIR="${OUT_DIR:-${BASE_DIR}/3_POST_PROC/${_DEFAULT_OUT_SUBDIR}}"
-# Resolve SCRIPT_DIR without nested dirname subshell
-SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
-[[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
-
 # Abundance filename suffix
 ABUNDANCE_SUFFIX="${ABUNDANCE_SUFFIX:-$_DEFAULT_ABUNDANCE_SUFFIX}"
 
@@ -94,10 +96,10 @@ ABUNDANCE_SUFFIX="${ABUNDANCE_SUFFIX:-$_DEFAULT_ABUNDANCE_SUFFIX}"
 GENENAME_COL="${GENENAME_COL:-$_DEFAULT_GENENAME_COL}"
 
 # Utilities directory (contains matrix_builder.py)
-UTILITIES_DIR="${UTILITIES_DIR:-$SCRIPT_DIR/../../utilities}"
+UTILITIES_DIR="${UTILITIES_DIR:-${BASE_DIR}/modules/c_post_processing/utilities}"
 
 # Create output directory and logging
-mkdir -p "$OUT_DIR/logs"
+mkdir -p "$OUT_DIR/logs" || { log_error "Failed to create output directory: $OUT_DIR/logs"; exit 1; }
 
 log_step "Starting StringTie Matrix Builder ($_METHOD_LABEL)"
 log_info "Working directory: $BASE_DIR"
@@ -118,7 +120,7 @@ TPM_COL=9
 # SRR_CSV_DIR is exported by run_post_processing.sh
 # Fallback to inputs/3_post_proc_inputs/SRR_csv relative to the project root
 
-SRR_CSV_DIR="${SRR_CSV_DIR:-$SCRIPT_DIR/../../../../inputs/3_post_proc_inputs/SRR_csv}"
+SRR_CSV_DIR="${SRR_CSV_DIR:-${BASE_DIR}/inputs/3_post_proc_inputs/SRR_csv}"
 
 load_samples_from_csv() {
     local csv_dir="$1"
@@ -223,10 +225,10 @@ merge_group_counts() {
 
     log_info "Processing gene group: $gene_group -> Output: $group_name"
 
-    mkdir -p "$OUT_DIR/$group_name"
-
     local tmpdir
-    tmpdir=$(mktemp -d)
+    tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/stie_merge.XXXXXX")
+
+    mkdir -p "$OUT_DIR/$group_name" || { log_error "Failed to create output directory: $OUT_DIR/$group_name"; rm -rf "$tmpdir" 2>/dev/null; return 1; }
     # NOTE: Do NOT use 'trap ... RETURN' here. This function is called from
     # build_full_transcriptome_matrix(), and in bash nested RETURN traps
     # replace each other — the inner trap would clobber the outer, causing
@@ -410,7 +412,7 @@ build_full_transcriptome_matrix() {
     # In ref-guided mode all samples share the same gene set, but taking the
     # union keeps this robust if any file is truncated or filtered.
     local tmp_csv
-    tmp_csv=$(mktemp --suffix=.csv)
+    tmp_csv=$(mktemp "${TMPDIR:-/tmp}/stie_csv.XXXXXX")
     # NOTE: Do NOT use 'trap ... RETURN' here — merge_group_counts() is called
     # below, and nested RETURN traps clobber each other in bash. Use explicit rm.
     echo "Gene_ID" > "$tmp_csv"
@@ -444,7 +446,7 @@ build_full_transcriptome_matrix() {
     # De-duplicate gene IDs AND count in single awk pass — eliminates separate wc -l fork.
     # awk writes dedup output to tmp_dedup, prints only the count to stdout.
     local tmp_dedup gene_count
-    tmp_dedup=$(mktemp --suffix=.csv)
+    tmp_dedup=$(mktemp "${TMPDIR:-/tmp}/stie_dedup.XXXXXX")
     gene_count=$(awk -v out="$tmp_dedup" '
         NR==1 { print > out; next }
         !seen[$0]++ { n++; print > out }
@@ -469,7 +471,7 @@ build_full_transcriptome_matrix() {
 # ===============================================
 
 # Centralized gene groups CSV directory
-GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-$SCRIPT_DIR/../../../../inputs/3_post_proc_inputs/gene_groups_csv}}"
+GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-${BASE_DIR}/inputs/3_post_proc_inputs/gene_groups_csv}}"
 
 log_info "Gene groups CSV directory: $GENE_GROUPS_CSV_DIR"
 log_step "Starting count matrix generation for ${#GENE_GROUPS[@]} gene groups"
