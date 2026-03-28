@@ -10,7 +10,12 @@
 
 # Skip re-sourcing when running under concordance_batch_dispatcher.R (already loaded)
 if (!exists(".CONC_BATCH_CONFIG_LOADED") || !isTRUE(.CONC_BATCH_CONFIG_LOADED)) {
-  source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
+  .conc_dir <- Sys.getenv("CONCORDANCE_SCRIPT_DIR", {
+    if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+      stop("[GENERATE_REPORT] CONCORDANCE_SCRIPT_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+    "."
+  })
+  source(file.path(.conc_dir, "0_concordance_config.R"))
 }
 
 cat("\n=== STEP 4: Generating Concordance Report ===\n\n")
@@ -124,11 +129,24 @@ add("### 2.1 Median Spearman Correlation Matrix")
 add("")
 add("Pairwise median Spearman correlations across all samples (computed on log2(TPM+1) of expressed genes).")
 add("")
+# Report sample coverage: how many samples had enough expressed genes for correlation
+.sp_per_sample <- concordance$spearman_per_sample
+if (!is.null(.sp_per_sample)) {
+  .n_total <- nrow(.sp_per_sample)
+  .n_with_cor <- sum(rowSums(!is.na(.sp_per_sample)) > 0)
+  .n_skipped <- .n_total - .n_with_cor
+  if (.n_skipped > 0) {
+    add("**Note:** ", .n_with_cor, "/", .n_total, " samples had sufficient expressed genes ",
+        "(>= CORRELATION_MIN_GENES) for correlation. ",
+        .n_skipped, " sample(s) were excluded due to too few nonzero genes in the common gene set.")
+    add("")
+  }
+}
 
 # Format correlation matrix as markdown table
 sp_mat <- concordance$median_spearman
 add("| Method |", paste(colnames(sp_mat), collapse = " | "), " |")
-add("|", strrep("------|", ncol(sp_mat) + 1), "|")
+add(paste(c("|", rep(" ------ |", ncol(sp_mat) + 1)), collapse = ""))
 # Pre-format entire matrix at once: O(R×C) total, then vectorized row construction
 .sp_mat_str <- matrix(sprintf("%.3f", sp_mat), nrow = nrow(sp_mat), dimnames = dimnames(sp_mat))
 # Vectorized row-paste: single C-level call vs O(R) per-row paste dispatch
@@ -182,22 +200,25 @@ if (!is.finite(sp_overall)) {
 } else if (sp_overall >= 0.95) {
   add("**Overall concordance is excellent.** The median pairwise Spearman correlation is ",
       sprintf("%.3f", sp_overall), " (range: ", sprintf("%.3f", sp_min), "\u2013",
-      sprintf("%.3f", sp_max), "), indicating that all methods produce highly consistent ",
-      "expression rankings.")
+      sprintf("%.3f", sp_max), "), indicating that all ", tolower(.item_label),
+      " pairs produce highly consistent expression rankings.")
 } else if (sp_overall >= 0.90) {
   add("**Overall concordance is good.** The median pairwise Spearman correlation is ",
       sprintf("%.3f", sp_overall), " (range: ", sprintf("%.3f", sp_min), "\u2013",
-      sprintf("%.3f", sp_max), "). Most method pairs agree well on gene expression rankings, ",
+      sprintf("%.3f", sp_max), "). Most ", tolower(.item_label),
+      " pairs agree well on gene expression rankings, ",
       "though some pairs show moderate divergence.")
 } else if (sp_overall >= 0.85) {
   add("**Overall concordance is moderate.** The median pairwise Spearman correlation is ",
       sprintf("%.3f", sp_overall), " (range: ", sprintf("%.3f", sp_min), "\u2013",
-      sprintf("%.3f", sp_max), "). Notable method-specific biases are present. ",
-      "Downstream results should be validated across multiple methods.")
+      sprintf("%.3f", sp_max), "). Notable ", tolower(.item_label),
+      "-specific biases are present. ",
+      "Downstream results should be validated across multiple ", tolower(.item_label), "s.")
 } else {
   add("**Overall concordance is low.** The median pairwise Spearman correlation is only ",
       sprintf("%.3f", sp_overall), " (range: ", sprintf("%.3f", sp_min), "\u2013",
-      sprintf("%.3f", sp_max), "). Substantial disagreement exists between methods. ",
+      sprintf("%.3f", sp_max), "). Substantial disagreement exists between ",
+      tolower(.item_label), "s. ",
       "Results should be interpreted with caution and validated with orthogonal data.")
 }
 add("")
@@ -222,21 +243,23 @@ sp_clusters <- cutree(sp_hclust, h = median(sp_dist))
 n_clusters <- length(unique(sp_clusters))
 
 if (n_clusters > 1) {
-  add("**Clustering pattern:** Methods form ", n_clusters, " distinct clusters based on ",
-      "Spearman correlation similarity:")
+  add("**Clustering pattern:** ", .item_label, "s form ", n_clusters,
+      " distinct clusters based on Spearman correlation similarity:")
   add("")
-  # O(K) where K = number of clusters (K ≤ M methods)
+  # O(K) where K = number of clusters (K ≤ M items)
   for (cl in sort(unique(sp_clusters))) {
     cl_methods <- names(sp_clusters)[sp_clusters == cl]
     add("- Cluster ", cl, ": ", paste(cl_methods, collapse = ", "))
   }
   add("")
-  add("Methods within the same cluster produce more similar quantification results ",
-      "and can be considered more interchangeable for this dataset.")
+  add(.item_label, "s within the same cluster produce more similar quantification ",
+      "results and can be considered more interchangeable for this dataset.")
 } else {
-  add("**Clustering pattern:** All methods form a single tight cluster, indicating ",
-      "uniformly high agreement across all method pairs. No method stands out as ",
-      "systematically different from the others.")
+  add("**Clustering pattern:** All ", tolower(.item_label),
+      "s form a single tight cluster, indicating ",
+      "uniformly high agreement across all ", tolower(.item_label),
+      " pairs. No ", tolower(.item_label),
+      " stands out as systematically different from the others.")
 }
 add("")
 
@@ -274,23 +297,24 @@ if (!is.finite(overall_median)) {
 } else {
   add("- **Median pairwise Spearman correlation:** ", sprintf("%.3f", overall_median))
   if (overall_median > 0.9) {
-    add("- **Assessment:** High overall concordance across methods.")
+    add("- **Assessment:** High overall concordance across ", tolower(.item_label), "s.")
   } else if (overall_median > 0.8) {
-    add("- **Assessment:** Moderate concordance. Some method-specific biases observed.")
+    add("- **Assessment:** Moderate concordance. Some ", tolower(.item_label),
+        "-specific biases observed.")
   } else {
-    add("- **Assessment:** Low concordance. Significant method-dependent differences in quantification.")
+    add("- **Assessment:** Low concordance. Significant ", tolower(.item_label),
+        "-dependent differences in quantification.")
   }
 }
 add("")
 
-# Most/least concordant pairs — reuse sp_best_idx / sp_worst_idx from Section 2
-# (avoids redundant O(M^2) which() scan on same matrix with same values)
-if (is.finite(sp_full_max) && is.finite(sp_full_min)) {
-  add("- **Most concordant pair:** ", rownames(.sp_upper_masked)[sp_best_idx[1, 1]], " & ",
-      colnames(.sp_upper_masked)[sp_best_idx[1, 2]],
+# Most/least concordant pairs — reuse sp_best_name / sp_worst_name from Section 2
+# (avoids redundant O(M^2) which() scan on same matrix with same values).
+# Guard: sp_best_name/sp_worst_name are "N/A" when which() returned 0 rows.
+if (sp_best_name != "N/A" && sp_worst_name != "N/A") {
+  add("- **Most concordant pair:** ", sp_best_name,
       " (rho = ", sprintf("%.3f", sp_full_max), ")")
-  add("- **Least concordant pair:** ", rownames(.sp_upper_masked)[sp_worst_idx[1, 1]], " & ",
-      colnames(.sp_upper_masked)[sp_worst_idx[1, 2]],
+  add("- **Least concordant pair:** ", sp_worst_name,
       " (rho = ", sprintf("%.3f", sp_full_min), ")")
 } else {
   add("- Best/worst concordant pairs could not be determined (insufficient valid correlations)")
@@ -300,9 +324,12 @@ add("")
 add("### Recommendations")
 add("")
 if (is.finite(overall_median) && overall_median > 0.9) {
-  add("- All methods produce largely consistent results; any single method can be used with confidence.")
+  add("- All ", tolower(.item_label),
+      "s produce largely consistent results; any single ",
+      tolower(.item_label), " can be used with confidence.")
 } else {
-  add("- Consider using consensus results from multiple methods for higher confidence.")
+  add("- Consider using consensus results from multiple ",
+      tolower(.item_label), "s for higher confidence.")
 }
 add("")
 
@@ -312,6 +339,19 @@ add("")
   add("")
   gene_cors <- concordance$per_pair_cors
   pair_labels <- concordance$pair_labels
+
+  # Guard: if per_pair_cors was saved as a data.frame (legacy bug), extract only
+  # Spearman correlation columns (values must be in [-1, 1]).
+  if (is.data.frame(gene_cors)) {
+    .spearman_cols <- grep("^Spearman_", names(gene_cors), value = TRUE)
+    if (length(.spearman_cols) > 0) {
+      gene_cors <- lapply(.spearman_cols, function(cn) setNames(gene_cors[[cn]], gene_cors$Gene))
+      pair_labels <- sub("^Spearman_", "", .spearman_cols)
+    } else {
+      gene_cors <- NULL
+    }
+  }
+
   if (!is.null(gene_cors) && length(gene_cors) > 0) {
     add("Per-gene Spearman correlations between equivalent genes across genome pairs.")
     add("")
@@ -319,6 +359,8 @@ add("")
       .label <- if (!is.null(pair_labels) && pi <= length(pair_labels)) pair_labels[pi] else paste("Pair", pi)
       .cors <- gene_cors[[pi]]
       .finite <- .cors[is.finite(.cors)]
+      # Validate correlation range — skip entries outside [-1, 1]
+      .finite <- .finite[.finite >= -1 & .finite <= 1]
       if (length(.finite) == 0) next
       add("### ", .label)
       add("")
@@ -327,8 +369,17 @@ add("")
       add("- **Range:** ", sprintf("%.3f", min(.finite)), " to ", sprintf("%.3f", max(.finite)))
       add("")
     }
-    # Link to heatmap figure if it exists
-    add("![Equivalent Gene Concordance](cross_method_concordance/figures/equivalent_gene_heatmap.png)")
+    # Link to per-gene-group heatmap figures (derive groups from harmonized data)
+    .eq_gene_groups <- if (!is.null(data$ortho_gene_groups)) unique(data$ortho_gene_groups) else NULL
+    if (!is.null(.eq_gene_groups) && length(.eq_gene_groups) > 0) {
+      for (.gg in .eq_gene_groups) {
+        .gg_safe <- gsub("[^[:alnum:]_.-]", "_", .gg)
+        add("![Equivalent Gene Concordance — ", .gg, "](figures/equivalent_gene_heatmap_", .gg_safe, ".png)")
+        add("")
+      }
+    } else {
+      add("![Equivalent Gene Concordance](figures/equivalent_gene_heatmap.png)")
+    }
     add("")
   } else {
     add("No equivalent-gene concordance results available.")
@@ -353,7 +404,7 @@ add("")
       add("- **Range:** ", sprintf("%.3f", min(off_diag, na.rm = TRUE)),
           " to ", sprintf("%.3f", max(off_diag, na.rm = TRUE)))
       add("")
-      add("![Gene Concordance](cross_method_concordance/figures/gene_concordance_heatmap_", safe_name, ".png)")
+      add("![Gene Concordance](figures/gene_concordance_heatmap_", safe_name, ".png)")
       add("")
     }
   } else {
