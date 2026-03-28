@@ -26,7 +26,11 @@ GENERATE_ISOFORM_LEVEL <- isTRUE(as.logical(Sys.getenv(paste0(.method_prefix, "_
 .HAS_TXIMPORT <- requireNamespace("tximport", quietly = TRUE)
 if (.HAS_TXIMPORT) suppressPackageStartupMessages(library(tximport))
 
-SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", ".")
+SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", {
+  if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+    stop("[MATRIX_CREATION] ANALYSIS_MODULES_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+  "."
+})
 source(file.path(SCRIPT_DIR, "0_shared_config.R"))
 source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
 source(file.path(SCRIPT_DIR, "3_Matrix_Creation_utils.R"))
@@ -122,8 +126,10 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
       character(0)
     }
     if (GENERATE_GENE_LEVEL) {
-      tx2gene_file <- list.files(file.path("count_matrices_from_STAR", master_ref),
-                                  pattern = "^tx2gene.*\\.tsv$", full.names = TRUE)
+      .tx2gene_search_dir <- file.path(output_dir, master_ref)
+      tx2gene_file <- if (dir.exists(.tx2gene_search_dir)) {
+        list.files(.tx2gene_search_dir, pattern = "^tx2gene.*\\.tsv$", full.names = TRUE)
+      } else character(0)
       if (length(tx2gene_file) > 0) {
         # Read without col.names to detect actual column count and order.
         # Matches the approach in 3_Matrix_Creation_STAR.R / tximport_star_to_matrices.R.
@@ -336,7 +342,7 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
             break
           }
         }
-        if (is.null(.tx2gene_m4)) {
+        if (is.null(.tx2gene_m4) && dir.exists(.input_fastas_dir)) {
           # Lazy fallback: recurse directory tree
           .all_maps <- list.files(.input_fastas_dir, pattern = "\\.gene_trans_map$",
                                   recursive = TRUE, full.names = TRUE)
@@ -457,7 +463,14 @@ run_matrix_creation_main <- function() {
     get_quant_dir(CURRENT_METHOD)  # fallback for standalone execution
   }
 
-  output_dir <- get_matrices_dir(CURRENT_METHOD)
+  output_dir <- if (nzchar(base_dir)) {
+    file.path(base_dir, "3_POST_PROC", CURRENT_METHOD, get_matrices_dir(CURRENT_METHOD))
+  } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+    stop("[MATRIX CREATION] BASE_DIR is required when running under a workflow manager ",
+         "(WF_MANAGED_ENV is set). Export BASE_DIR pointing to the project root.")
+  } else {
+    get_matrices_dir(CURRENT_METHOD)  # relative fallback for standalone pushd context
+  }
 
   cat("Quantification directory:", quant_dir, "\n")
   cat("Output directory:        ", output_dir, "\n\n")
