@@ -12,6 +12,7 @@
 
 SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+SCRIPT_DIR="$(cd "$SCRIPT_DIR" 2>/dev/null && pwd)" || { echo "ERROR: Cannot resolve SCRIPT_DIR" >&2; exit 1; }
 
 export STRINGTIE_METHOD="M1"
 exec bash "$SCRIPT_DIR/stringtie_matrix_builder.sh"
