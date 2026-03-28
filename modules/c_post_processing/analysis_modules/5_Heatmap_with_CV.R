@@ -20,7 +20,11 @@ invisible(suppressWarnings({
   file.remove(tmp)
 }))
 
-SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", ".")
+SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", {
+  if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+    stop("[HEATMAP_WITH_CV] ANALYSIS_MODULES_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+  "."
+})
 source(file.path(SCRIPT_DIR, "0_shared_config.R"))
 source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
 source(file.path(SCRIPT_DIR, "2_processing_engine.R"))
@@ -477,7 +481,11 @@ process_cv_heatmap <- function(gene_group, gene_group_output_dir, processing_lev
 
 run_cv_heatmap <- function(config = NULL, matrices_dir = NULL) {
   # Get method base directory from environment for config file loading
-  method_base_dir <- Sys.getenv("METHOD_BASE_DIR", unset = ".")
+  method_base_dir <- Sys.getenv("METHOD_BASE_DIR", {
+    if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+      stop("[CV_HEATMAP] METHOD_BASE_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+    "."
+  })
   if (is.null(config)) config <- load_runtime_config(method_base_dir)
   if (is.null(matrices_dir)) {
     matrices_dir <- file.path(method_base_dir, get_matrices_dir(CURRENT_METHOD))
