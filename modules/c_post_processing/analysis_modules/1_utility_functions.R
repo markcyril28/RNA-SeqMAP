@@ -9,10 +9,19 @@
 # Use ANALYSIS_MODULES_DIR env var (set by the bash wrapper) with a safe fallback to
 # sys.frame(1)$ofile for interactive/direct-source calls.
 if (!exists("CURRENT_METHOD")) {
-  .utils_dir <- tryCatch(
-    dirname(sys.frame(1)$ofile),
-    error = function(e) Sys.getenv("ANALYSIS_MODULES_DIR", ".")
-  )
+  # Prefer explicit env var (set by bash wrapper / orchestrator); fall back to sys.frame for
+  # interactive/direct-source calls. The env var path is reliable in Nextflow/Snakemake scratch dirs.
+  .utils_dir <- Sys.getenv("ANALYSIS_MODULES_DIR", "")
+  if (!nzchar(.utils_dir)) {
+    .utils_dir <- tryCatch(
+      dirname(sys.frame(1)$ofile),
+      error = function(e) {
+        if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+          stop("[UTILITY_FUNCTIONS] ANALYSIS_MODULES_DIR env var is required under workflow manager (WF_MANAGED_ENV is set).")
+        "."
+      }
+    )
+  }
   source(file.path(.utils_dir, "0_shared_config.R"))
 }
 
@@ -350,7 +359,7 @@ match_gene_ids <- function(gene_list, data_rownames) {
     # Pre-compute all base forms outside loop — vectorized sub() is O(m) total
     # vs O(m) individual sub() calls inside loop (same complexity but avoids
     # per-iteration regex compilation overhead).
-    # Use same double-suffix regex as base_ids (line 308) to handle both .X and .X.XX suffixes
+    # Use same double-suffix regex as base_ids (line 333) to handle both .X and .X.XX suffixes
     ne_bases <- sub("(\\.[0-9]+){1,2}$", "", non_exact)
     ne_has_suffix <- ne_bases != non_exact
     # Pre-compute set membership for base-level IDs in data_rownames (O(m) hash lookup)
@@ -641,8 +650,10 @@ convert_to_organ_labels <- function(counts_matrix) {
   # Build/reuse cached directory listing (one list.files call per gene_groups_dir)
   cache_key <- gene_groups_dir
   if (is.null(.gene_groups_csv_cache[[cache_key]])) {
-    all_files <- list.files(gene_groups_dir, pattern = "\\.csv$",
-                            recursive = TRUE, full.names = TRUE)
+    all_files <- if (dir.exists(gene_groups_dir)) {
+      list.files(gene_groups_dir, pattern = "\\.csv$",
+                 recursive = TRUE, full.names = TRUE)
+    } else character(0)
     .fnames <- tools::file_path_sans_ext(basename(all_files))
     .first <- !duplicated(.fnames)
     file_map <- setNames(all_files[.first], .fnames[.first])
@@ -677,11 +688,16 @@ load_gene_name_mapping <- function(gene_group, gene_groups_dir = GENE_GROUPS_DIR
     # Check for gene_info.csv companion file in INPUT_FASTAs
     input_fastas_dir <- Sys.getenv("INPUT_FASTAS_DIR", "")
     if (input_fastas_dir == "") {
-      # Try to find it relative to workspace
+      # Try to find it relative to workspace; orchestrators should set INPUT_FASTAS_DIR
+      .base_env <- Sys.getenv("BASE_DIR", "")
+      if (!nzchar(.base_env) && nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+        stop("[LOAD_GENE_NAME_MAPPING] INPUT_FASTAS_DIR or BASE_DIR is required ",
+             "when running under a workflow manager (WF_MANAGED_ENV is set).")
+      }
       potential_paths <- c(
+        if (nzchar(.base_env)) file.path(.base_env, "inputs"),
         file.path(dirname(dirname(dirname(gene_groups_dir))), "inputs"),
-        file.path(dirname(dirname(gene_groups_dir)), "inputs"),
-        "../../../../inputs"
+        file.path(dirname(dirname(gene_groups_dir)), "inputs")
       )
       # O(P) where P = candidate paths (≤3); breaks on first valid directory
       for (path in potential_paths) {
