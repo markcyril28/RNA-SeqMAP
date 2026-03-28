@@ -11,7 +11,11 @@
 
 suppressPackageStartupMessages(library(tximport))
 
-SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", ".")
+SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", {
+  if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+    stop("[MATRIX_CREATION_STAR] ANALYSIS_MODULES_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+  "."
+})
 source(file.path(SCRIPT_DIR, "0_shared_config.R"))
 source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
 source(file.path(SCRIPT_DIR, "3_Matrix_Creation_utils.R"))
@@ -37,11 +41,23 @@ base_dir  <- Sys.getenv("BASE_DIR", "")
 quant_dir <- if (nzchar(base_dir)) {
   file.path(base_dir, "2_ALIGNMENT_RESULTs", "M3_STAR_Align",
             MASTER_REFERENCE, "6_salmon", "quant")
+} else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+  stop("[STAR MATRIX] BASE_DIR is required when running under a workflow manager (WF_MANAGED_ENV is set). ",
+       "Export BASE_DIR pointing to the project root.")
 } else {
+  message("[STAR MATRIX] WARN: BASE_DIR not set; using relative path '../..'. ",
+          "Set BASE_DIR for orchestrated execution (Nextflow/Snakemake).")
   file.path("..", "..", "2_ALIGNMENT_RESULTs", "M3_STAR_Align",
             MASTER_REFERENCE, "6_salmon", "quant")
 }
-output_dir  <- "count_matrices_from_STAR"
+output_dir  <- if (nzchar(base_dir)) {
+  file.path(base_dir, "3_POST_PROC", CURRENT_METHOD, "count_matrices_from_STAR")
+} else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+  stop("[STAR MATRIX] BASE_DIR is required when running under a workflow manager (WF_MANAGED_ENV is set). ",
+       "Export BASE_DIR pointing to the project root.")
+} else {
+  "count_matrices_from_STAR"
+}
 count_label <- "NumReads"
 
 cat("Quantification directory:", quant_dir, "\n")
@@ -81,12 +97,16 @@ if (sum(file.exists(.resolved_quant_files)) == 0 && dir.exists(quant_dir)) {
 # ----- Gene-level (requires tx2gene mapping) --------------------------------
 if (GENERATE_GENE_LEVEL) {
   tx2gene_dir <- file.path(output_dir, MASTER_REFERENCE)
-  tx2gene_files <- list.files(tx2gene_dir, pattern = "^tx2gene.*\\.tsv$", full.names = TRUE)
+  tx2gene_files <- if (dir.exists(tx2gene_dir)) {
+    list.files(tx2gene_dir, pattern = "^tx2gene.*\\.tsv$", full.names = TRUE)
+  } else character(0)
 
   # Generate tx2gene from GTF if missing (alignment step may not have been run)
   if (length(tx2gene_files) == 0) {
     gtf_ref_dir <- if (nzchar(base_dir)) {
       file.path(base_dir, "inputs", "gtf", "reference")
+    } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+      stop("[STAR MATRIX] BASE_DIR is required for GTF lookup under workflow manager.")
     } else {
       file.path("..", "..", "inputs", "gtf", "reference")
     }
