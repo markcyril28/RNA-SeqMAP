@@ -10,14 +10,14 @@
 
 # Guard against double-sourcing
 [[ "${METHOD_CONFIG_SOURCED:-}" == "true" ]] && return 0
-export METHOD_CONFIG_SOURCED="true"
+METHOD_CONFIG_SOURCED="true"
 
 # ==============================================================================
 # IMPORTANT PARAMETERS (tweak here)
 # ==============================================================================
 
 # Total CPU threads available to the pipeline (auto-detect if not set)
-THREADS="${THREADS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 12)}"
+THREADS="${THREADS:-${SLURM_CPUS_PER_TASK:-${PBS_NCPUS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 12)}}}"
 # Base parallel job count; set to "auto" to calculate from THREADS / OPTIMAL_THREADS_PER_JOB
 JOBS="${JOBS:-2}"
 # Default optimal threads per job for Stage 2 (alignment programs scale well up to ~16)
@@ -76,9 +76,14 @@ unset _ow
 # ==============================================================================
 # Converts relative paths to absolute using $PWD. Consolidates the repeated
 # if [[ "$path" != /* ]] pattern (was 3 copies; now single source of truth).
+# Orchestrated execution must set PROJECT_ROOT; PWD fallback only works in standalone bash.
+if [[ -n "${WF_MANAGED_ENV:-}" && -z "${PROJECT_ROOT:-}" ]]; then
+	echo "ERROR: WF_MANAGED_ENV is set but PROJECT_ROOT is not. Orchestrators must export PROJECT_ROOT." >&2
+	return 1
+fi
 _make_absolute_path() {
 	local p="$1"
-	[[ "$p" != /* ]] && p="$PWD/$p"
+	[[ "$p" != /* ]] && p="${PROJECT_ROOT:-$PWD}/$p"
 	printf '%s' "$p"
 }
 
@@ -86,11 +91,13 @@ _make_absolute_path() {
 # POST PROCESSING ROOT
 # ==============================================================================
 POST_PROCESSING_ROOT="$(_make_absolute_path "${POST_PROCESSING_ROOT:-3_POST_PROC}")"
+export POST_PROCESSING_ROOT
 
 # ==============================================================================
 # ALIGNMENT RESULTS ROOT
 # ==============================================================================
 ALIGNMENT_RESULTS_ROOT="$(_make_absolute_path "${ALIGNMENT_RESULTS_ROOT:-2_ALIGNMENT_RESULTs}")"
+export ALIGNMENT_RESULTS_ROOT
 
 # ==============================================================================
 # SAMPLE METADATA CONFIGURATION
