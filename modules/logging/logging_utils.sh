@@ -21,7 +21,7 @@
 
 # Guard against double-sourcing
 [[ "${LOGGING_UTILS_SOURCED:-}" == "true" ]] && return 0
-export LOGGING_UTILS_SOURCED="true"
+LOGGING_UTILS_SOURCED="true"
 
 # ==============================================================================
 # LOGGING CONFIGURATION - IMPORTANT PARAMETERS AT TOP
@@ -32,14 +32,22 @@ if [[ -z "${RUN_ID:-}" ]]; then
 	printf -v RUN_ID '%(%Y%m%d_%H%M%S)T' -1 2>/dev/null || RUN_ID=$(date +%Y%m%d_%H%M%S)
 fi
 
-# Log directory structure
-LOG_DIR="${LOG_DIR:-logs/log_files}"
-TIME_DIR="${TIME_DIR:-logs/time_logs}"
-SPACE_DIR="${SPACE_DIR:-logs/space_logs}"
-SPACE_TIME_DIR="${SPACE_TIME_DIR:-logs/space_time_logs}"
-ERROR_WARN_DIR="${ERROR_WARN_DIR:-logs/error_warn_logs}"
-SOFTWARE_CATALOG_DIR="${SOFTWARE_CATALOG_DIR:-logs/software_catalogs}"
-GPU_LOG_DIR="${GPU_LOG_DIR:-logs/gpu_log}"
+# Log directory structure — use PROJECT_ROOT prefix when available so log paths are
+# absolute even when the working directory changes (e.g., Nextflow work directories).
+# Callers like run_post_processing.sh override these with explicit absolute paths.
+# Warn if orchestrator is active but PROJECT_ROOT is unset — logs would go to workDir.
+if [[ -n "${WF_MANAGED_ENV:-}" && -z "${PROJECT_ROOT:-}" && -z "${LOG_DIR:-}" ]]; then
+	echo "[WARN] logging_utils.sh: WF_MANAGED_ENV is set but PROJECT_ROOT is unset. Logs will be written to CWD ($(pwd))." >&2
+fi
+_LOG_ROOT="${PROJECT_ROOT:-.}"
+LOG_DIR="${LOG_DIR:-${_LOG_ROOT}/logs/log_files}"
+TIME_DIR="${TIME_DIR:-${_LOG_ROOT}/logs/time_logs}"
+SPACE_DIR="${SPACE_DIR:-${_LOG_ROOT}/logs/space_logs}"
+SPACE_TIME_DIR="${SPACE_TIME_DIR:-${_LOG_ROOT}/logs/space_time_logs}"
+ERROR_WARN_DIR="${ERROR_WARN_DIR:-${_LOG_ROOT}/logs/error_warn_logs}"
+SOFTWARE_CATALOG_DIR="${SOFTWARE_CATALOG_DIR:-${_LOG_ROOT}/logs/software_catalogs}"
+GPU_LOG_DIR="${GPU_LOG_DIR:-${_LOG_ROOT}/logs/gpu_log}"
+unset _LOG_ROOT
 
 # Log file paths (derived from directories and RUN_ID)
 LOG_FILE="${LOG_FILE:-$LOG_DIR/pipeline_${RUN_ID}_full_log.log}"
@@ -50,6 +58,21 @@ SPACE_TIME_FILE="${SPACE_TIME_FILE:-$SPACE_TIME_DIR/pipeline_${RUN_ID}_combined_
 ERROR_WARN_FILE="${ERROR_WARN_FILE:-$ERROR_WARN_DIR/pipeline_${RUN_ID}_errors_warnings.log}"
 SOFTWARE_FILE="${SOFTWARE_FILE:-$SOFTWARE_CATALOG_DIR/software_catalog_${RUN_ID}.csv}"
 GPU_LOG_FILE="${GPU_LOG_FILE:-$GPU_LOG_DIR/gpu_${RUN_ID}.log}"
+
+# Detect GNU time binary at module load (O(1) per session, avoids per-call PATH lookup)
+# Linux: /usr/bin/time; macOS (Homebrew): gtime; fallback: run command without time wrapper
+if [[ -z "${_GNU_TIME_CMD:-}" ]]; then
+	if /usr/bin/time --version &>/dev/null; then
+		_GNU_TIME_CMD="/usr/bin/time"
+	elif command -v gtime &>/dev/null && gtime --version &>/dev/null; then
+		_GNU_TIME_CMD="gtime"
+	elif command -v time &>/dev/null && time --version &>/dev/null 2>&1; then
+		_GNU_TIME_CMD="time"
+	else
+		_GNU_TIME_CMD=""
+	fi
+	export _GNU_TIME_CMD
+fi
 
 # Logging behavior
 log_choice="${log_choice:-1}"  # 1 = tee to console, 2 = file only
@@ -69,7 +92,16 @@ _log_impl() {
 	local _msg; printf -v _msg '[%s] [%s] %s' "$_ts" "$level" "$*"
 	if [[ "$level" == "WARN" || "$level" == "ERROR" ]]; then
 		echo "$_msg" >&2
-		[[ -n "${ERROR_WARN_FILE:-}" ]] && echo "$_msg" >> "$ERROR_WARN_FILE"
+		if [[ -n "${ERROR_WARN_FILE:-}" ]]; then
+			# Lazy mkdir: ensure parent dir exists once (avoids fork per call via sentinel)
+			if [[ "${_LOG_DIR_VERIFIED:-}" != "true" ]]; then
+				if ! mkdir -p "${ERROR_WARN_FILE%/*}" 2>/dev/null; then
+					echo "[WARN] Cannot create error log directory: ${ERROR_WARN_FILE%/*}" >&2
+				fi
+				_LOG_DIR_VERIFIED="true"
+			fi
+			echo "$_msg" >> "$ERROR_WARN_FILE"
+		fi
 	else
 		echo "$_msg"
 	fi
@@ -125,7 +157,7 @@ _logging_setup_redirect() {
 	# Without this, fd 1 still points to the dead pipe after the kill, and any
 	# subsequent write (including the exec setup) triggers SIGPIPE → silent exit.
 	if [[ ${#_LOGGING_BG_PIDS[@]} -gt 0 ]]; then
-		exec > /dev/tty 2>&1 2>/dev/null || exec > /dev/null 2>&1
+		exec > /dev/tty 2>/dev/null || exec > /dev/null 2>&1
 		_logging_cleanup_bg
 	fi
 
@@ -136,7 +168,7 @@ _logging_setup_redirect() {
 	fi
 	# Capture the PID of the outermost process substitution
 	# ($! is set by exec > >(...) in bash)
-	[[ -n "${!+x}" ]] && [[ -n "$!" ]] && _LOGGING_BG_PIDS+=("$!")
+	[[ -n "${!:-}" ]] && _LOGGING_BG_PIDS+=("$!")
 }
 
 setup_logging() {
@@ -183,14 +215,11 @@ setup_logging() {
 	# Rotate old logs to prevent unbounded growth
 	rotate_old_logs "${LOG_DIR%/*}"
 
-	# Set up output redirection (strip ANSI escape codes from log files)
-	# Use a named pipe (FIFO) instead of process substitution to avoid leaking
-	# background tee/sed processes on each switch_log_stage() call.
-	# A single cat-to-FIFO process is created; switching stages only requires
-	# reopening the FIFO writer, not spawning new background processes.
+	# Set up output redirection via process substitution (strip ANSI from log files).
+	# Background PIDs are tracked in _LOGGING_BG_PIDS and cleaned up on stage switch.
 	_logging_setup_redirect
 
-	export LOGGING_INITIALIZED="true"
+	LOGGING_INITIALIZED="true"  # shell-local sentinel — NOT exported to avoid poisoning child process logging
 	log_info "Logging to: $LOG_FILE"
 	log_info "Time metrics to: $TIME_FILE"
 	log_info "Space metrics to: $SPACE_FILE"
@@ -210,7 +239,7 @@ switch_log_stage() {
 	# Example: switch_log_stage "1_SRRs"
 	#          switch_log_stage "2_ALIGNMENT_RESULTs"
 	#          switch_log_stage "3_POST_PROC"
-	local stage_base="$1"
+	local stage_base="${WF_LOG_BASE:-$1}"
 
 	# Convert to absolute path if relative
 	if [[ "$stage_base" != /* ]]; then
@@ -245,6 +274,9 @@ switch_log_stage() {
 
 	# Initialize CSV headers (single source of truth: _init_csv_headers)
 	_init_csv_headers
+
+	# Reset lazy-mkdir sentinel so _log_impl creates the new stage's error log dir
+	_LOG_DIR_VERIFIED=""
 
 	# Re-setup output redirection to the new log file (reuses _logging_setup_redirect
 	# to kill previous background processes before spawning new ones)
@@ -296,9 +328,10 @@ capture_stderr_errors() {
 		-v warn_pat="$_WARN_PATTERN" '
 	BEGIN {
 		ts = ""; last_epoch = 0
-		# Detect gawk: systime() returns >0 on gawk, causes error on mawk/nawk
+		# Detect gawk: PROCINFO is gawk-only; on mawk/nawk this is an undefined array
+		# whose elements return "" -- so the check safely falls through to has_systime=0.
 		has_systime = 0
-		if (PROCINFO["version"] != "") has_systime = 1  # PROCINFO is gawk-only
+		if (PROCINFO["version"] != "") has_systime = 1
 	}
 	function get_ts() {
 		if (has_systime) {
@@ -417,12 +450,17 @@ run_with_space_time_log() {
 	local _ts_begin; printf -v _ts_begin '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _ts_begin=$(date '+%Y-%m-%d %H:%M:%S')
 	printf '[%s] [INFO] --- BEGIN TOOL OUTPUT: %s ---\n' "$_ts_begin" "${1##*/}" >> "$LOG_FILE"
 	# Strip ANSI escape codes and carriage returns before writing to log (e.g. Salmon progress bars)
-	/usr/bin/time -v "$@" 2>"$TIME_TEMP" | strip_ansi_stream >> "$LOG_FILE"
+	# Use detected GNU time (_GNU_TIME_CMD); fall back to running command without time wrapper
+	if [[ -n "${_GNU_TIME_CMD:-}" ]]; then
+		"$_GNU_TIME_CMD" -v "$@" 2>"$TIME_TEMP" | strip_ansi_stream >> "$LOG_FILE"
+	else
+		"$@" 2>"$TIME_TEMP" | strip_ansi_stream >> "$LOG_FILE"
+	fi
 	exit_code=${PIPESTATUS[0]}
 	local _ts_end; printf -v _ts_end '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _ts_end=$(date '+%Y-%m-%d %H:%M:%S')
 	printf '[%s] [INFO] --- END TOOL OUTPUT: %s (exit=%d) ---\n' "$_ts_end" "${1##*/}" "$exit_code" >> "$LOG_FILE"
 
-	# Single-pass extraction of all metrics from /usr/bin/time output.
+	# Single-pass extraction of all metrics from GNU time output (if available).
 	# Replaces 6 separate grep|awk pipelines (12 process spawns) with 1 awk process.
 	local elapsed_raw cpu_raw rss_raw elapsed_time cpu_percent max_rss user_time system_time
 	eval "$(awk '
@@ -531,8 +569,8 @@ log_file_size() {
 	size_gb="$(( _gb_scaled / 100 )).$_gb_frac"
 
 	local file_count="-"
-	# Use find -printf x | wc -c (faster than -print | wc -l, avoids newline overhead)
-	[[ -d "$file_path" ]] && file_count=$(find "$file_path" -type f -printf x 2>/dev/null | wc -c)
+	# POSIX-compatible file counting (find -printf is GNU-only, fails on macOS/BSD)
+	[[ -d "$file_path" ]] && file_count=$(find "$file_path" -type f 2>/dev/null | wc -l)
 	
 	local ts; printf -v ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || ts=$(date '+%Y-%m-%d %H:%M:%S')
 	echo "${ts},${type},\"${file_path}\",${size_kb},${size_mb},${size_gb},${file_count},\"${description}\"" >> "$SPACE_FILE"
@@ -555,7 +593,8 @@ catalog_all_software() {
 	if command -v git >/dev/null 2>&1; then
 		# Cache repo root path — avoids 3 redundant dirname subshell forks
 		local _repo_root
-		_repo_root="${BASH_SOURCE[0]%/*}/../.."
+		_repo_root="$(cd "${BASH_SOURCE[0]%/*}/../.." 2>/dev/null && pwd)" || _repo_root=""
+		[[ -z "$_repo_root" ]] && return 0
 		local git_sha
 		git_sha=$(git -C "$_repo_root" rev-parse --short HEAD 2>/dev/null || echo "not_a_git_repo")
 		local git_branch
@@ -599,7 +638,7 @@ catalog_all_software() {
 	# Batch version checks: collect all installed tools and run version commands
 	# concurrently via background subshells (reduces ~18 sequential spawns to parallel)
 	local _ver_tmpdir
-	_ver_tmpdir=$(mktemp -d)
+	_ver_tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/ver_check.XXXXXX")
 	trap 'rm -rf "$_ver_tmpdir" 2>/dev/null' RETURN
 	local _ver_pids=()
 	for tool_cmd in "${tools[@]}"; do
@@ -668,11 +707,12 @@ rotate_old_logs() {
 
 	[[ ! -d "$base_dir" ]] && return 0
 
-	# O(F) — single find traversal over F log/csv files; -delete and -printf are inline actions
-	# avoiding a second traversal pass that a separate rm invocation would require
+	# POSIX-compatible: count matching files, then delete in a single batched exec.
+	# (Replaces GNU-only find -printf/-delete combo unavailable on macOS/BSD.)
 	local count
-	count=$(find "$base_dir" -type f \( -name '*.log' -o -name '*.csv' \) -mtime +"$max_age" -delete -printf '.' 2>/dev/null | wc -c)
+	count=$(find "$base_dir" -type f \( -name '*.log' -o -name '*.csv' \) -mtime +"$max_age" 2>/dev/null | wc -l)
 	if [[ "$count" -gt 0 ]]; then
+		find "$base_dir" -type f \( -name '*.log' -o -name '*.csv' \) -mtime +"$max_age" -exec rm -f {} + 2>/dev/null
 		log_info "Log rotation: removed $count files older than ${max_age} days from $base_dir"
 	fi
 }

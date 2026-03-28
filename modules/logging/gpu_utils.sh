@@ -9,7 +9,7 @@
 
 # Guard against double-sourcing
 [[ "${GPU_UTILS_SOURCED:-}" == "true" ]] && return 0
-export GPU_UTILS_SOURCED="true"
+GPU_UTILS_SOURCED="true"
 
 # ==============================================================================
 # GPU CONFIGURATION
@@ -28,7 +28,7 @@ DISTRO_VERSION=""
 # LOGGING CONFIGURATION
 # ==============================================================================
 
-GPU_LOG_DIR="${GPU_LOG_DIR:-${SCRIPT_DIR:-$PWD}/logs}"
+GPU_LOG_DIR="${GPU_LOG_DIR:-${PROJECT_ROOT:-${SCRIPT_DIR:-$PWD}}/logs}"
 # Prefer printf builtin over date subprocess for log filename
 if [[ -z "${GPU_LOG_FILE:-}" ]]; then
 	printf -v _gpu_ts_id '%(%Y%m%d_%H%M%S)T' -1 2>/dev/null || _gpu_ts_id=$(date +%Y%m%d_%H%M%S)
@@ -150,7 +150,6 @@ detect_gpu() {
 				END { print (cuda ? cuda : ""), cnt+0, (mem ? mem : 0) }
 			' <<< "$_smi_full")
 			CUDA_VERSION="${_cuda_ver}"
-			GPU_AVAILABLE="true"
 			GPU_COUNT="${_gpu_cnt}"
 			GPU_MEMORY_MB="${_gpu_mem}"
 
@@ -174,14 +173,26 @@ detect_gpu() {
 				fi
 			fi
 
+			# Only report GPU as available after all fallbacks have run and confirmed
+			# at least one GPU exists. nvidia-smi can produce output (driver header)
+			# even when no GPUs are present.
+			[[ "$GPU_COUNT" -gt 0 ]] 2>/dev/null && GPU_AVAILABLE="true"
+
 			# Check if CUDA toolkit is ready (cached at module load)
 			if $_HAS_NVCC; then
 				CUDA_READY="true"
 			fi
+
+			# Set GPU_VENDOR from query-gpu if available, otherwise from nvidia-smi output
+			if [[ -n "${_query_info:-}" ]]; then
+				GPU_VENDOR=$(awk -F',' 'NR==1 {gsub(/^[[:space:]]+|[[:space:]]+$/,"",$3); print $3}' <<< "$_query_info")
+			else
+				GPU_VENDOR=$(awk '/^\|.*[0-9]+MiB/ {gsub(/^[| ]+/,"",$0); sub(/ +[0-9]+MiB.*/,"",$0); print; exit}' <<< "$_smi_full")
+			fi
 		fi
 	fi
 
-	export GPU_AVAILABLE GPU_COUNT GPU_MEMORY_MB CUDA_VERSION CUDA_READY
+	export GPU_AVAILABLE GPU_COUNT GPU_MEMORY_MB CUDA_VERSION CUDA_READY GPU_VENDOR
 }
 
 # Check if GPU is available (triggers lazy detection on first call)
