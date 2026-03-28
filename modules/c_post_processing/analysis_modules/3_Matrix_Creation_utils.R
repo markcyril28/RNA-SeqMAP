@@ -172,7 +172,11 @@ run_matrix_saving <- function(results, output_dir, master_ref,
     return(invisible(NULL))
   }
 
-  method_base_dir <- Sys.getenv("METHOD_BASE_DIR", unset = ".")
+  method_base_dir <- Sys.getenv("METHOD_BASE_DIR", {
+    if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+      stop("[MATRIX_UTILS] METHOD_BASE_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+    "."
+  })
   config <- load_runtime_config(method_base_dir)
 
   # Skip companion "_tpm" keys — they are processed alongside their parent level
@@ -212,7 +216,7 @@ run_matrix_saving <- function(results, output_dir, master_ref,
         } else {
           .gf_candidates <- file.path(gene_groups_dir, paste0(gene_group, c(".csv", ".txt")))
           .gf_exist <- file.exists(.gf_candidates)
-          gf <- if (any(.gf_exist)) .gf_candidates[which.max(.gf_exist)] else ""
+          gf <- if (any(.gf_exist)) .gf_candidates[which(.gf_exist)[1L]] else ""
         }
         if (!nzchar(gf) || !file.exists(gf)) {
           cat("Gene group file not found:", gene_group, "\n")
