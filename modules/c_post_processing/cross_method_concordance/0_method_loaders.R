@@ -28,7 +28,11 @@ if (exists(".METHOD_LOADERS_SOURCED") && .METHOD_LOADERS_SOURCED) {
   if (!exists(".n_cores")) {
     .n_cores <- if (.use_parallel) {
       .threads_env <- as.integer(Sys.getenv("THREADS", unset = "0"))
-      if (!is.na(.threads_env) && .threads_env > 1) min(.threads_env, 8L) else {
+      .max_conc_cores <- as.integer(Sys.getenv("MAX_CONCORDANCE_CORES", unset = "16"))
+      if (is.na(.max_conc_cores) || .max_conc_cores < 1L) .max_conc_cores <- 16L
+      if (!is.na(.threads_env) && .threads_env > 1) min(.threads_env, .max_conc_cores) else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+        1L  # conservative under workflow manager: single-threaded unless THREADS explicitly set
+      } else {
         max(1L, parallel::detectCores(logical = FALSE) %/% 2L)
       }
     } else 1L
