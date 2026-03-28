@@ -19,12 +19,19 @@ set -euo pipefail
 # CONFIGURATION
 # ===============================================
 
-BASE_DIR="${BASE_DIR:-$PWD}"
+# Fail early under orchestrators if BASE_DIR/PROJECT_ROOT are missing
+if [[ -n "${WF_MANAGED_ENV:-}" && -z "${BASE_DIR:-}" && -z "${PROJECT_ROOT:-}" ]]; then
+    echo "ERROR: WF_MANAGED_ENV is set but neither BASE_DIR nor PROJECT_ROOT is set. Orchestrators must export BASE_DIR." >&2
+    exit 1
+fi
+
+BASE_DIR="${BASE_DIR:-${PROJECT_ROOT:-$PWD}}"
 MASTER_REFERENCE="${MASTER_REFERENCE:-All_Smel_Genes}"
 
 # Source logging utilities for consistent pipeline logging
 SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+SCRIPT_DIR="$(cd "$SCRIPT_DIR" 2>/dev/null && pwd)" || SCRIPT_DIR="."
 source "${BASE_DIR}/modules/logging/logging_utils.sh" 2>/dev/null || {
     log_info()  { echo "[INFO] $*"; }
     log_warn()  { echo "[WARN] $*" >&2; }
@@ -103,7 +110,7 @@ fi
 # STAGE TO POST-PROCESSING TARGET
 # ===============================================
 
-mkdir -p "$TARGET_DESEQ2_DIR"
+mkdir -p "$TARGET_DESEQ2_DIR" || { log_error "Failed to create target directory: $TARGET_DESEQ2_DIR"; exit 1; }
 
 for fname in gene_count_matrix.csv transcript_count_matrix.csv sample_metadata.csv; do
     src="$SOURCE_DESEQ2_DIR/$fname"
