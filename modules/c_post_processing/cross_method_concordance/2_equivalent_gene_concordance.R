@@ -21,7 +21,12 @@
 
 # Skip re-sourcing when running under concordance_batch_dispatcher.R (already loaded)
 if (!exists(".CONC_BATCH_CONFIG_LOADED") || !isTRUE(.CONC_BATCH_CONFIG_LOADED)) {
-  source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
+  .conc_dir <- Sys.getenv("CONCORDANCE_SCRIPT_DIR", {
+    if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+      stop("[EQUIV_GENE_CONCORDANCE] CONCORDANCE_SCRIPT_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+    "."
+  })
+  source(file.path(.conc_dir, "0_concordance_config.R"))
 
   suppressPackageStartupMessages({
     library(ComplexHeatmap)
@@ -112,7 +117,7 @@ for (pi in seq_along(genome_pairs)) {
   m2_sub[!nonzero_mask] <- NA
   # Row-wise rank transform (each gene ranked across samples)
   # matrixStats::rowRanks is a C-level loop — avoids G R-level apply() calls.
-  # .HAS_MATRIXSTATS is set at module load (line 31) — no exists() guard needed
+  # .HAS_MATRIXSTATS is set at top of script — no exists() guard needed
   if (.HAS_MATRIXSTATS) {
     r1 <- matrixStats::rowRanks(m1_sub, ties.method = "average")
     r2 <- matrixStats::rowRanks(m2_sub, ties.method = "average")
@@ -237,7 +242,7 @@ if (n_genomes == 2) {
     ortho_gene_groups <- setNames(rep("all_genes", length(common_genes)), common_genes)
   }
 
-  cat("--- Generating per-gene-group figures (", length(group_names), "groups ) ---\n")
+  cat(paste0("--- Generating per-gene-group figures (", length(group_names), " groups) ---\n"))
 
   # Hoist color palette outside loop — colorRampPalette() does interpolation
   # setup once; palette(100) generates 100 colors. Both are loop-invariant.
@@ -251,16 +256,22 @@ if (n_genomes == 2) {
   # Shared rank helper — .HAS_MATRIXSTATS set at module load (line 31)
   .rank_rows <- function(m) {
     if (.HAS_MATRIXSTATS) {
-      r <- matrixStats::rowRanks(m, ties.method = "average")
-      dimnames(r) <- dimnames(m)
+      r <- matrixStats::rowRanks(m, ties.method = "average", useNames = TRUE)
+      # rowRanks assigns numeric ranks to NA positions; restore NAs to match
+      # the base-R fallback (na.last = "keep") and prevent NA cells from
+      # influencing the centered-rank dot product used for Spearman correlation
+      r[is.na(m)] <- NA
     } else {
-      r <- t(apply(m, 1, rank))
+      r <- t(apply(m, 1, rank, na.last = "keep"))
     }
-    r - rowMeans(r)
+    r - rowMeans(r, na.rm = TRUE)
   }
 
   for (.grp in group_names) {
-    .grp_genes <- common_genes[ortho_gene_groups[common_genes] == .grp]
+    # Guard against NA group membership: == on NA produces NA, which would silently
+    # include unrelated genes in the subset when used as a logical index.
+    .grp_match <- ortho_gene_groups[common_genes] == .grp
+    .grp_genes <- common_genes[!is.na(.grp_match) & .grp_match]
     if (length(.grp_genes) < 2) {
       cat("  [INFO] Skipping group '", .grp, "' — fewer than 2 genes\n")
       next
@@ -280,7 +291,11 @@ if (n_genomes == 2) {
 
     r1 <- .rank_rows(mat1)
     r2 <- .rank_rows(mat2)
-    num <- gpu_matmult(r1, t(r2))
+    # Zero out NAs so matrix multiply and row sums are not poisoned by missing data
+    # (consistent with the per-gene block at lines 139-140)
+    r1[is.na(r1)] <- 0
+    r2[is.na(r2)] <- 0
+    num <- if (exists("gpu_matmult", mode = "function")) gpu_matmult(r1, t(r2)) else r1 %*% t(r2)
     # r*r avoids ^ S3 method dispatch on matrix
     den <- sqrt(rowSums(r1*r1)) %o% sqrt(rowSums(r2*r2))
     den[den == 0] <- 1
@@ -415,9 +430,12 @@ if (n_genomes == 2) {
         .ok <- is.finite(lx) & is.finite(ly)
         if (sum(.ok) >= 3) {
           .lx <- lx[.ok]; .ly <- ly[.ok]
-          .slope <- cov(.lx, .ly) / var(.lx)
-          .intercept <- mean(.ly) - .slope * mean(.lx)
-          abline(.intercept, .slope, col = "#D73027", lwd = 1.5)
+          .vx <- var(.lx)
+          if (.vx > 0) {
+            .slope <- cov(.lx, .ly) / .vx
+            .intercept <- mean(.ly) - .slope * mean(.lx)
+            abline(.intercept, .slope, col = "#D73027", lwd = 1.5)
+          }
         }
       }
 
