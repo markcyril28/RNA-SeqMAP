@@ -18,7 +18,12 @@
 
 # Skip re-sourcing when running under concordance_batch_dispatcher.R (already loaded)
 if (!exists(".CONC_BATCH_CONFIG_LOADED") || !isTRUE(.CONC_BATCH_CONFIG_LOADED)) {
-  source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
+  .conc_dir <- Sys.getenv("CONCORDANCE_SCRIPT_DIR", {
+    if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+      stop("[QUANT_CONCORDANCE] CONCORDANCE_SCRIPT_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+    "."
+  })
+  source(file.path(.conc_dir, "0_concordance_config.R"))
 
   suppressPackageStartupMessages({
     library(ComplexHeatmap)
