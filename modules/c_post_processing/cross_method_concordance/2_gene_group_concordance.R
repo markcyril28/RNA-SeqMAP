@@ -17,7 +17,12 @@
 
 # Skip re-sourcing when running under concordance_batch_dispatcher.R (already loaded)
 if (!exists(".CONC_BATCH_CONFIG_LOADED") || !isTRUE(.CONC_BATCH_CONFIG_LOADED)) {
-  source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
+  .conc_dir <- Sys.getenv("CONCORDANCE_SCRIPT_DIR", {
+    if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+      stop("[GENE_GROUP_CONCORDANCE] CONCORDANCE_SCRIPT_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+    "."
+  })
+  source(file.path(.conc_dir, "0_concordance_config.R"))
 
   suppressPackageStartupMessages({
     library(ComplexHeatmap)
@@ -95,7 +100,7 @@ for (gg_name in groups) {
   # Each row is a gene, each column is a sample — cor() correlates columns,
   # so transpose to get gene-vs-gene correlations across samples.
   # gpu_cor() rank-transforms on CPU then offloads the O(G²×S) matmul to GPU.
-  cor_mat <- gpu_cor(t(log2_mat), method = "spearman")
+  cor_mat <- if (exists("gpu_cor", mode = "function")) gpu_cor(t(log2_mat), method = "spearman") else cor(t(log2_mat), method = "spearman")
 
   # Use Shortened_Name labels if available from the gene group CSV
   gene_labels <- rownames(cor_mat)
@@ -128,9 +133,7 @@ for (gg_name in groups) {
   rownames(cor_mat) <- gene_labels
   colnames(cor_mat) <- gene_labels
 
-  all_cor_matrices[[gg_name]] <- cor_mat
-
-  # Save correlation matrix
+  # Save correlation matrix (store BEFORE NA-cleaning so CSV reflects raw cor() output)
   safe_name <- gsub("[^[:alnum:]_.-]", "_", gg_name)
   # Use as.data.table(keep.rownames=) when available — avoids O(G²) data.frame() copy
   .cor_csv_path <- file.path(TABLES_DIR, paste0("gene_correlation_matrix_", safe_name, ".csv"))
@@ -158,6 +161,10 @@ for (gg_name in groups) {
   cat("  Generating heatmap...\n")
 
   cor_mat[!is.finite(cor_mat) & .off_diag_mask] <- NA
+
+  # Store cleaned matrix (after Inf/NaN → NA) so RDS and report see consistent data
+  all_cor_matrices[[gg_name]] <- cor_mat
+
   off_diag <- cor_mat[.off_diag_mask]
   min_cor <- min(off_diag, na.rm = TRUE)
   if (!is.finite(min_cor) || min_cor >= 1) min_cor <- -1
@@ -186,7 +193,7 @@ for (gg_name in groups) {
   # Pre-compute distance matrix for clustering — gpu_dist() offloads the O(G²×G)
   # Euclidean distance computation to GPU when available, falls back to CPU otherwise.
   # cor_mat is symmetric so row and column distances are identical.
-  .cl_dist <- gpu_dist(cor_mat)
+  .cl_dist <- if (exists("gpu_dist", mode = "function")) gpu_dist(cor_mat) else dist(cor_mat)
 
   ht <- Heatmap(cor_mat,
     name = "Spearman",
