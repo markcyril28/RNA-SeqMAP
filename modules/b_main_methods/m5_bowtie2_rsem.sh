@@ -10,12 +10,15 @@
 
 # Guard against double-sourcing
 [[ "${M5_RSEM_SOURCED:-}" == "true" ]] && return 0
-export M5_RSEM_SOURCED="true"
+M5_RSEM_SOURCED="true"
 
 # Source dependencies
 # Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
 SCRIPT_DIR="${MODULES_DIR:+${MODULES_DIR}/b_main_methods}"
-if [[ -z "$SCRIPT_DIR" ]]; then SCRIPT_DIR="${BASH_SOURCE[0]%/*}"; [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."; fi
+if [[ -z "$SCRIPT_DIR" ]]; then
+	SCRIPT_DIR="${BASH_SOURCE[0]%/*}"; [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+	SCRIPT_DIR="$(cd "$SCRIPT_DIR" 2>/dev/null && pwd)"
+fi
 source "$SCRIPT_DIR/shared_utils_method.sh"
 
 # ==============================================================================
@@ -112,7 +115,7 @@ _rsem_detect_strandedness() {
 	log_step "[STRANDEDNESS] Auto-detecting library strandedness using Salmon (sample: $first_srr)"
 
 	local tmp_dir
-	tmp_dir=$(mktemp -d "${index_root}/strandedness_detect_XXXXXX") || {
+	tmp_dir=$(mktemp -d "${TMPDIR:-${index_root}}/strandedness_detect_XXXXXX") || {
 		log_warn "[STRANDEDNESS] Failed to create temp directory — falling back to 'none'"
 		RSEM_STRANDEDNESS="none"
 		return 0
@@ -227,9 +230,10 @@ _rsem_detect_strandedness() {
 
 	log_info "[STRANDEDNESS] Detected: $RSEM_STRANDEDNESS (Salmon inferred: $inferred_type)"
 
-	# Cache the result
+	# Cache the result (atomic write via tmp+mv to avoid partial reads under concurrent runs)
 	mkdir -p "$index_root"
-	echo "$RSEM_STRANDEDNESS" > "$cache_file"
+	local _cache_tmp="${cache_file}.${BASHPID:-$$}"
+	echo "$RSEM_STRANDEDNESS" > "$_cache_tmp" && mv -f "$_cache_tmp" "$cache_file"
 
 	# Cleanup temp files
 	rm -rf "$tmp_dir"
@@ -257,13 +261,9 @@ bowtie2_rsem_pipeline() {
 	[[ -z "$fasta" ]] && { log_error "Usage: --FASTA genes.fa"; return 1; }
 	[[ ! -f "$fasta" ]] && { log_error "FASTA file not found: $fasta"; return 1; }
 	[[ ${#rnaseq_list[@]} -eq 0 ]] && rnaseq_list=("${SRR_COMBINED_LIST[@]}")
+	[[ ${#rnaseq_list[@]} -eq 0 ]] && { log_error "No RNA-seq samples provided."; return 1; }
 
-	# Convert line endings only if CRLF detected in first 100KB (avoids full-file scan
-	# on multi-GB FASTA references; CRLF is always present in the header if present at all)
-	if [[ "$_M5_HAS_DOS2UNIX" == "true" ]] && head -c 102400 "$fasta" 2>/dev/null | grep -q $'\r'; then
-		dos2unix "$fasta" 2>/dev/null || true
-	fi
-
+	# Derive tag from original FASTA name for consistent output dir naming
 	local _fn="${fasta##*/}"; local tag="${_fn%.*}"
 	set_fasta_output_dirs "$tag"
 	local rsem_idx="$RSEM_INDEX_ROOT/rsem_ref"
@@ -272,16 +272,29 @@ bowtie2_rsem_pipeline() {
 
 	mkdir -p "$RSEM_INDEX_ROOT" "$quant_root" "$matrix_dir"
 
+	# Convert line endings only if CRLF detected in first 100KB (avoids full-file scan
+	# on multi-GB FASTA references; CRLF is always present in the header if present at all).
+	# Write to a method-local copy to avoid modifying the shared reference FASTA
+	# (which could race with concurrent M3/M4 runs or invalidate cache sentinels).
+	local fasta_use="$fasta"
+	if [[ "$_M5_HAS_DOS2UNIX" == "true" ]] && head -c 102400 "$fasta" 2>/dev/null | grep -q $'\r'; then
+		local _m5_clean="${RSEM_INDEX_ROOT}/${tag}_nodoscr.fa"
+		if [[ ! -f "$_m5_clean" || "$fasta" -nt "$_m5_clean" ]]; then
+			dos2unix < "$fasta" > "$_m5_clean" 2>/dev/null || { log_warn "dos2unix copy failed, using original FASTA"; _m5_clean="$fasta"; }
+		fi
+		fasta_use="$_m5_clean"
+	fi
+
 	# Create gene-transcript mapping BEFORE building reference (needed for proper
 	# gene-level aggregation when using transcript FASTAs with multiple isoforms)
-	local gene_trans_map="${fasta}.gene_trans_map"
+	local gene_trans_map="${fasta_use}.gene_trans_map"
 	if [[ ! -s "$gene_trans_map" ]]; then
-		create_gene_trans_map "$fasta" "$gene_trans_map"
+		create_gene_trans_map "$fasta_use" "$gene_trans_map"
 	fi
 
 	# AUTO-DETECT STRANDEDNESS (runs once, caches result)
 	if [[ "$RSEM_STRANDEDNESS" == "auto" ]]; then
-		_rsem_detect_strandedness "$fasta" "${rnaseq_list[0]}" "$RSEM_INDEX_ROOT"
+		_rsem_detect_strandedness "$fasta_use" "${rnaseq_list[0]}" "$RSEM_INDEX_ROOT"
 	fi
 
 	# BUILD RSEM REFERENCE
@@ -300,9 +313,9 @@ bowtie2_rsem_pipeline() {
 		fi
 	else
 		log_step "Building RSEM reference for $tag"
-		log_file_size "$fasta" "Input FASTA for RSEM index - $tag"
-		run_with_space_time_log --input "$fasta" --output "$RSEM_INDEX_ROOT" \
-			rsem-prepare-reference --bowtie2 -p "$THREADS" "${_gtm_args[@]}" "$fasta" "$rsem_idx"
+		log_file_size "$fasta_use" "Input FASTA for RSEM index - $tag"
+		run_with_space_time_log --input "$fasta_use" --output "$RSEM_INDEX_ROOT" \
+			rsem-prepare-reference --bowtie2 -p "$THREADS" "${_gtm_args[@]}" "$fasta_use" "$rsem_idx"
 		log_file_size "$RSEM_INDEX_ROOT" "RSEM index output - $tag"
 		# Mark that this reference was built with gene-transcript mapping
 		[[ ${#_gtm_args[@]} -gt 0 ]] && touch "$RSEM_INDEX_ROOT/.has_gene_trans_map"
@@ -318,7 +331,7 @@ bowtie2_rsem_pipeline() {
 	fi
 
 	# GENERATE MATRICES
-	_create_rsem_matrices "$fasta" "$tag" "$quant_root" "$matrix_dir" rnaseq_list[@] || \
+	_create_rsem_matrices "$fasta_use" "$tag" "$quant_root" "$matrix_dir" rnaseq_list[@] || \
 		log_warn "[RSEM] Matrix generation failed for $tag"
 
 	log_step "COMPLETED: Bowtie2-RSEM pipeline for $tag"
@@ -373,15 +386,20 @@ _rsem_parallel_worker() {
 	_plog() {
 		local level="$1"; shift
 		local ts
-		printf -v ts '%(%Y-%m-%d %H:%M:%S)T' -1
+		printf -v ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || ts=$(date '+%Y-%m-%d %H:%M:%S')
 		echo "[$ts] [$level] [RSEM-$SRR] $*"
-		[[ "$level" != "INFO" && -n "${abs_error_warn_file:-}" ]] && echo "[$ts] [$level] [RSEM-$SRR] $*" >> "$abs_error_warn_file"
+		if [[ "$level" != "INFO" && -n "${abs_error_warn_file:-}" ]]; then
+			# Use per-method error log when _PARALLEL_METHOD_ID is set (avoids write contention)
+			local _ew="${abs_error_warn_file}"
+			[[ -n "${_PARALLEL_METHOD_ID:-}" ]] && _ew="${abs_error_warn_file%.log}_${_PARALLEL_METHOD_ID}.log"
+			echo "[$ts] [$level] [RSEM-$SRR] $*" >> "$_ew"
+		fi
 	}
 
 	[[ -z "$SRR" ]] && { _plog "ERROR" "Empty SRR ID - skipping"; return 1; }
 
-	# Reactivate conda in subshell if needed (uses cached path to avoid dirname subshell)
-	if [[ -n "${CONDA_PREFIX:-}" && -n "${CONDA_EXE:-}" ]]; then
+	# Reactivate conda in subshell if needed (skip when orchestrator manages env)
+	if [[ -z "${WF_MANAGED_ENV:-}" && -n "${CONDA_PREFIX:-}" && -n "${CONDA_EXE:-}" ]]; then
 		source "${_CONDA_PROFILE_SCRIPT:-${CONDA_EXE%/*}/../etc/profile.d/conda.sh}" 2>/dev/null || true
 		conda activate "${CONDA_DEFAULT_ENV:-base}" 2>/dev/null || true
 	fi
@@ -503,7 +521,7 @@ _rsem_quantify_parallel() {
 		return 1
 	fi
 
-	local parallel_jobs="${MAX_PARALLEL_SAMPLES:-2}"
+	local parallel_jobs="${PARALLEL_JOBS:-${JOBS:-2}}"
 	# Adaptive: cap parallel jobs at sample count to maximize per-job thread allocation
 	(( parallel_jobs > num_samples )) && parallel_jobs=$num_samples
 	(( parallel_jobs < 1 )) && parallel_jobs=1
@@ -514,7 +532,7 @@ _rsem_quantify_parallel() {
 	log_info "[RSEM QUANT] Sample list: ${valid_samples[*]}"
 
 	# Set up environment for parallel subshells using shared utility
-	_prepare_parallel_env
+	_prepare_parallel_env "M5"
 	export rsem_idx quant_root threads_per_job OVERWRITE_MODE BOWTIE2_MODE RSEM_STRANDEDNESS RSEM_SEED
 
 	# O(S/parallel_jobs × (N log N + T)) — S samples batched across parallel_jobs slots;
@@ -525,6 +543,7 @@ _rsem_quantify_parallel() {
 		--env CONDA_DEFAULT_ENV \
 		--env CONDA_EXE \
 		--env _CONDA_PROFILE_SCRIPT \
+		--env WF_MANAGED_ENV \
 		--env abs_trim_dir_root \
 		--env abs_error_warn_file \
 		--env keep_bam_global \
@@ -537,7 +556,7 @@ _rsem_quantify_parallel() {
 		--env RSEM_SEED \
 		-j "$parallel_jobs" \
 		--halt soon,fail,1 \
-		--joblog "$quant_root/parallel_rsem.log" \
+		--joblog "$quant_root/parallel_rsem_${BASHPID:-$$}.log" \
 		--progress \
 		_rsem_parallel_worker {} \
 		< <(printf "%s\n" "${valid_samples[@]}")
@@ -551,10 +570,10 @@ _rsem_quantify_parallel() {
 	done
 	log_info "[RSEM QUANT] Parallel quantification complete: $successful/$num_samples samples succeeded"
 
-	if [[ -f "$quant_root/parallel_rsem.log" ]]; then
+	if [[ -f "$quant_root/parallel_rsem_${BASHPID:-$$}.log" ]]; then
 		local failed
-		failed=$(awk 'NR>1 && $7!=0 {n++} END{print n+0}' "$quant_root/parallel_rsem.log")
-		[[ $failed -gt 0 ]] && log_warn "[RSEM QUANT] $failed sample(s) failed - check $quant_root/parallel_rsem.log"
+		failed=$(awk 'NR>1 && $7!=0 {n++} END{print n+0}' "$quant_root/parallel_rsem_${BASHPID:-$$}.log")
+		[[ $failed -gt 0 ]] && log_warn "[RSEM QUANT] $failed sample(s) failed - check $quant_root/parallel_rsem_${BASHPID:-$$}.log"
 	fi
 
 	return $parallel_exit
@@ -713,9 +732,9 @@ _create_manual_rsem_matrix() {
 	{ printf 'gene_id%s\n' "$header"; paste "$temp_gene_ids" "${fpkm_files[@]}"; } > "$matrix_dir/genes.FPKM.not_cross_norm" &
 	local _pid_fpkm=$!
 	local _matrix_fail=0
-	wait $_pid_counts || { log_warn "[RSEM MATRIX] Count matrix assembly failed"; _matrix_fail=1; }
-	wait $_pid_tpm    || { log_warn "[RSEM MATRIX] TPM matrix assembly failed"; _matrix_fail=1; }
-	wait $_pid_fpkm   || { log_warn "[RSEM MATRIX] FPKM matrix assembly failed"; _matrix_fail=1; }
+	wait "$_pid_counts" || { log_warn "[RSEM MATRIX] Count matrix assembly failed"; _matrix_fail=1; }
+	wait "$_pid_tpm"   || { log_warn "[RSEM MATRIX] TPM matrix assembly failed"; _matrix_fail=1; }
+	wait "$_pid_fpkm"  || { log_warn "[RSEM MATRIX] FPKM matrix assembly failed"; _matrix_fail=1; }
 
 	rm -f "$temp_gene_ids" "$matrix_dir"/*_counts.tmp "$matrix_dir"/*_tpm.tmp "$matrix_dir"/*_fpkm.tmp
 
@@ -784,10 +803,13 @@ _prepare_rsem_deseq2_output() {
 	fi
 
 	# Wait for all CSV conversions to complete before proceeding
-	local _csv_pid
+	local _csv_pid _csv_fail=0
 	for _csv_pid in "${_csv_pids[@]+${_csv_pids[@]}}"; do
-		wait "$_csv_pid" 2>/dev/null || true
+		wait "$_csv_pid" 2>/dev/null || { log_warn "[RSEM MATRIX] CSV conversion job (PID=$_csv_pid) failed"; _csv_fail=1; }
 	done
+	if (( _csv_fail )); then
+		log_error "[RSEM MATRIX] One or more CSV conversions failed in $deseq2_dir"
+	fi
 
 	# Create sample metadata (regenerate if missing or samples changed)
 	create_sample_metadata "$sample_metadata" "${srr_list[@]}"
@@ -895,10 +917,10 @@ _create_rsem_summary() {
 # ==============================================================================
 
 # Check if GNU Parallel should be used for sample processing.
-# Consistent with M1-M4 inline guards: requires USE_GNU_PARALLEL=TRUE,
+# Consistent with M1-M4 inline guards: default TRUE (opt-out, not opt-in),
 # parallel binary available, AND JOBS > 1 (single-job parallel is wasteful).
 _rsem_should_use_parallel() {
-	[[ "${USE_GNU_PARALLEL:-FALSE}" != "TRUE" ]] && return 1
+	[[ "${USE_GNU_PARALLEL:-TRUE}" == "FALSE" ]] && return 1
 	$_SHARED_HAS_PARALLEL || return 1
 	[[ "${JOBS:-1}" -gt 1 ]] || return 1
 	return 0
