@@ -4,33 +4,40 @@ set -euo pipefail
 
 SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
-SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
+SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)" || { echo "[ERROR] compress_folders.sh: Failed to resolve script directory" >&2; exit 1; }
 # Resolve project root (this script lives in modules/other_tools/)
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-cd "$PROJECT_ROOT"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)" || { echo "[ERROR] compress_folders.sh: Failed to resolve PROJECT_ROOT" >&2; exit 1; }
+cd "$PROJECT_ROOT" || { echo "[ERROR] compress_folders.sh: Cannot cd to PROJECT_ROOT: $PROJECT_ROOT" >&2; exit 1; }
 
-# Use available cores (nproc), fallback to 64 for systems without nproc
-THREADS=$(nproc 2>/dev/null || echo 64)
+# Respect pre-set THREADS; check HPC scheduler vars before nproc
+THREADS="${THREADS:-${SLURM_CPUS_PER_TASK:-${PBS_NCPUS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 64)}}}"
 printf -v TIMESTAMP '%(%Y%m%d_%H%M%S)T' -1 2>/dev/null || TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-mkdir -p HPC
-OUTPUT="HPC/HeatSeq_archive_${TIMESTAMP}.7z"
+mkdir -p "$PROJECT_ROOT/HPC"
+OUTPUT="$PROJECT_ROOT/HPC/HeatSeq_archive_${TIMESTAMP}.7z"
 
 FOLDERS=(
-    "1_SRRs/3_FastQC_v2"
-    "1_SRRs/C_FastQC"
-    "2_ALIGNMENT_RESULTs"
-    "3_POST_PROC"
-    "logs"
-    "z_archive"
+    "${SRR_OUTPUT_ROOT:-$PROJECT_ROOT/1_SRRs}/C_FastQC"
+    "${ALIGNMENT_RESULTS_ROOT:-$PROJECT_ROOT/2_ALIGNMENT_RESULTs}"
+    "${POST_PROCESSING_ROOT:-$PROJECT_ROOT/3_POST_PROC}"
+    "${CONCORDANCE_OUTPUT_ROOT:-$PROJECT_ROOT/4_CONCORDANCE_ANALYSIS}"
+    "$PROJECT_ROOT/logs"
+    "$PROJECT_ROOT/z_archive"
 )
 
-# Verify all folders exist
+# Filter to existing folders, warn about missing ones
+_valid_folders=()
 for folder in "${FOLDERS[@]}"; do
-    if [[ ! -d "$folder" ]]; then
-        echo "ERROR: Directory not found: $folder"
-        exit 1
+    if [[ -d "$folder" ]]; then
+        _valid_folders+=("$folder")
+    else
+        echo "[WARN] compress_folders.sh: Skipping missing directory: $folder" >&2
     fi
 done
+if [[ ${#_valid_folders[@]} -eq 0 ]]; then
+    echo "[ERROR] compress_folders.sh: No directories found to compress" >&2
+    exit 1
+fi
+FOLDERS=("${_valid_folders[@]}")
 
 echo "=== Compressing ${#FOLDERS[@]} folders into $OUTPUT ==="
 echo "    Compression: LZMA2, ultra (mx=9), threads=$THREADS"
