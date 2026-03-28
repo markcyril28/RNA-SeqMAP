@@ -15,10 +15,22 @@
 
 # Skip re-sourcing when running under concordance_batch_dispatcher.R (already loaded)
 if (!exists(".CONC_BATCH_CONFIG_LOADED") || !isTRUE(.CONC_BATCH_CONFIG_LOADED)) {
-  source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
+  .conc_dir <- Sys.getenv("CONCORDANCE_SCRIPT_DIR", {
+    if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+      stop("[LOAD_MATRICES_CROSS_GENOME] CONCORDANCE_SCRIPT_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+    "."
+  })
+  source(file.path(.conc_dir, "0_concordance_config.R"))
 }
 if (!exists(".METHOD_LOADERS_SOURCED") || !isTRUE(.METHOD_LOADERS_SOURCED)) {
-  source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_method_loaders.R"))
+  if (!exists(".conc_dir")) {
+    .conc_dir <- Sys.getenv("CONCORDANCE_SCRIPT_DIR", {
+      if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+        stop("[LOAD_MATRICES_CROSS_GENOME] CONCORDANCE_SCRIPT_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+      "."
+    })
+  }
+  source(file.path(.conc_dir, "0_method_loaders.R"))
 }
 
 cat("\n=== STEP 1: Loading Expression Matrices (Cross-Genome Mode) ===\n\n")
