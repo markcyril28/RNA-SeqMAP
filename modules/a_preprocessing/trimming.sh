@@ -9,13 +9,15 @@
 
 # Guard against double-sourcing
 [[ "${TRIMMING_SOURCED:-}" == "true" ]] && return 0
-export TRIMMING_SOURCED="true"
+TRIMMING_SOURCED="true"
 
 # Source dependencies
 # Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
 SCRIPT_DIR="${MODULES_DIR:+${MODULES_DIR}/a_preprocessing}"
-if [[ -z "$SCRIPT_DIR" ]]; then SCRIPT_DIR="${BASH_SOURCE[0]%/*}"; [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."; fi
-_TRIMMING_SCRIPT_DIR="$SCRIPT_DIR"
+if [[ -z "$SCRIPT_DIR" ]]; then
+	SCRIPT_DIR="${BASH_SOURCE[0]%/*}"; [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+	SCRIPT_DIR="$(cd "$SCRIPT_DIR" 2>/dev/null && pwd)"
+fi
 source "$SCRIPT_DIR/shared_utils_preproc.sh"
 
 # ==============================================================================
@@ -91,10 +93,14 @@ _trim_single_srr() {
 
 		if [[ "${TAILCROP_BASES}" -gt 0 ]]; then
 			log_info "Applying TAILCROP:${TAILCROP_BASES} for $SRR..."
-			run_with_error_capture cutadapt -u -${TAILCROP_BASES} -U -${TAILCROP_BASES} \
-				-o "${tg_r1}.tmp" -p "${tg_r2}.tmp" "$tg_r1" "$tg_r2"
-			mv "${tg_r1}.tmp" "$tg_r1"
-			mv "${tg_r2}.tmp" "$tg_r2"
+			if run_with_error_capture cutadapt -u -${TAILCROP_BASES} -U -${TAILCROP_BASES} \
+				-o "${tg_r1}.tmp" -p "${tg_r2}.tmp" "$tg_r1" "$tg_r2"; then
+				mv "${tg_r1}.tmp" "$tg_r1"
+				mv "${tg_r2}.tmp" "$tg_r2"
+			else
+				log_warn "TAILCROP failed for $SRR — continuing with headcropped files"
+				rm -f "${tg_r1}.tmp" "${tg_r2}.tmp"
+			fi
 		fi
 
 		verify_trimming_and_cleanup "$SRR" "$tg_r1" "$tg_r2" "$raw1" "$raw2"
@@ -115,9 +121,13 @@ _trim_single_srr() {
 
 		if [[ "${TAILCROP_BASES}" -gt 0 ]]; then
 			log_info "Applying TAILCROP:${TAILCROP_BASES} for $SRR..."
-			run_with_error_capture cutadapt -u -${TAILCROP_BASES} \
-				-o "${tg_r1}.tmp" "$tg_r1"
-			mv "${tg_r1}.tmp" "$tg_r1"
+			if run_with_error_capture cutadapt -u -${TAILCROP_BASES} \
+				-o "${tg_r1}.tmp" "$tg_r1"; then
+				mv "${tg_r1}.tmp" "$tg_r1"
+			else
+				log_warn "TAILCROP failed for $SRR — continuing with headcropped file"
+				rm -f "${tg_r1}.tmp"
+			fi
 		fi
 
 		verify_trimming_and_cleanup "$SRR" "$tg_r1" "" "$raw1" ""
@@ -156,21 +166,48 @@ trim_srrs_trimmomatic() {
 		get_trim_params "$SRR"
 		log_info "Trimming $SRR with Trimmomatic (HEADCROP:$HEADCROP_BASES, TAILCROP:$TAILCROP_BASES, MINLEN:$MINLEN, SW:$SW_SIZE:$SW_QUAL)..."
 		
-		run_with_space_time_log trimmomatic PE -threads "$THREADS" \
-			"$raw1" "$raw2" "$out1" /dev/null "$out2" /dev/null \
-			ILLUMINACLIP:TruSeq3-PE-2.fa:2:30:10:2:True \
-			HEADCROP:${HEADCROP_BASES} SLIDINGWINDOW:${SW_SIZE}:${SW_QUAL} MINLEN:${MINLEN}
-		
-		# Trim last N bases using cutadapt if TAILCROP > 0
-		if [[ "${TAILCROP_BASES}" -gt 0 ]]; then
-			log_info "Applying TAILCROP:${TAILCROP_BASES} for $SRR..."
-			run_with_error_capture cutadapt -u -${TAILCROP_BASES} -U -${TAILCROP_BASES} \
-				-o "${out1}.tmp" -p "${out2}.tmp" "$out1" "$out2"
-			mv "${out1}.tmp" "$out1"
-			mv "${out2}.tmp" "$out2"
+		if [[ -n "$raw2" && -f "$raw2" ]]; then
+			# ── Paired-end ──
+			run_with_space_time_log trimmomatic PE -threads "${THREADS_PER_JOB:-${THREADS:-4}}" \
+				"$raw1" "$raw2" "$out1" /dev/null "$out2" /dev/null \
+				ILLUMINACLIP:TruSeq3-PE-2.fa:2:30:10:2:True \
+				HEADCROP:${HEADCROP_BASES} SLIDINGWINDOW:${SW_SIZE}:${SW_QUAL} MINLEN:${MINLEN}
+
+			# Trim last N bases using cutadapt if TAILCROP > 0
+			if [[ "${TAILCROP_BASES}" -gt 0 ]]; then
+				log_info "Applying TAILCROP:${TAILCROP_BASES} for $SRR..."
+				if run_with_error_capture cutadapt -u -${TAILCROP_BASES} -U -${TAILCROP_BASES} \
+					-o "${out1}.tmp" -p "${out2}.tmp" "$out1" "$out2"; then
+					mv "${out1}.tmp" "$out1"
+					mv "${out2}.tmp" "$out2"
+				else
+					log_warn "TAILCROP failed for $SRR — continuing with trimmed files"
+					rm -f "${out1}.tmp" "${out2}.tmp"
+				fi
+			fi
+
+			verify_trimming_and_cleanup "$SRR" "$out1" "$out2" "$raw1" "$raw2"
+		else
+			# ── Single-end ──
+			local se_out="$trim_dir/${SRR}_trimmed.fq"
+			run_with_space_time_log trimmomatic SE -threads "${THREADS_PER_JOB:-${THREADS:-4}}" \
+				"$raw1" "$se_out" \
+				ILLUMINACLIP:TruSeq3-SE.fa:2:30:10 \
+				HEADCROP:${HEADCROP_BASES} SLIDINGWINDOW:${SW_SIZE}:${SW_QUAL} MINLEN:${MINLEN}
+
+			if [[ "${TAILCROP_BASES}" -gt 0 ]]; then
+				log_info "Applying TAILCROP:${TAILCROP_BASES} for $SRR..."
+				if run_with_error_capture cutadapt -u -${TAILCROP_BASES} \
+					-o "${se_out}.tmp" "$se_out"; then
+					mv "${se_out}.tmp" "$se_out"
+				else
+					log_warn "TAILCROP failed for $SRR — continuing with trimmed file"
+					rm -f "${se_out}.tmp"
+				fi
+			fi
+
+			verify_trimming_and_cleanup "$SRR" "$se_out" "" "$raw1" ""
 		fi
-		
-		verify_trimming_and_cleanup "$SRR" "$out1" "$out2" "$raw1" "$raw2"
 	done
 	gzip_trimmed_fastq_files
 }
@@ -219,9 +256,11 @@ download_and_trim_srrs() {
 				"$raw_dir/$SRR/$SRR.sra" -O "$raw_dir"
 			local -a _ccmd=(gzip)
 			[[ "$_TRIMMING_HAS_PIGZ" == "true" ]] && _ccmd=(pigz -p "${THREADS:-4}")
-			[[ -f "$raw_dir/${SRR}_1.fastq" ]] && "${_ccmd[@]}" "$raw_dir/${SRR}_1.fastq" &
-			[[ -f "$raw_dir/${SRR}_2.fastq" ]] && "${_ccmd[@]}" "$raw_dir/${SRR}_2.fastq" &
-			wait
+			local _cw1=0 _cw2=0
+			[[ -f "$raw_dir/${SRR}_1.fastq" ]] && { "${_ccmd[@]}" "$raw_dir/${SRR}_1.fastq" & _cw1=$!; }
+			[[ -f "$raw_dir/${SRR}_2.fastq" ]] && { "${_ccmd[@]}" "$raw_dir/${SRR}_2.fastq" & _cw2=$!; }
+			[[ "$_cw1" -ne 0 ]] && wait "$_cw1"
+			[[ "$_cw2" -ne 0 ]] && wait "$_cw2"
 			find_raw_fastq "$SRR"
 		fi
 
@@ -257,18 +296,22 @@ download_and_trim_srrs_parallel() {
 
 	# Export _log_impl (core logger) alongside its callers — without it, log_info/log_warn/log_error
 	# fail silently in GNU Parallel subshells because they delegate to _log_impl.
+	# Also export strip_ansi_stream and capture_stderr_errors — transitive deps of
+	# run_with_space_time_log (pipes to strip_ansi_stream) and run_with_error_capture
+	# (pipes to capture_stderr_errors).
 	export -f _log_impl timestamp log log_info log_warn log_error run_with_space_time_log run_with_error_capture
+	export -f strip_ansi_stream capture_stderr_errors
 	export -f find_trimmed_fastq find_raw_fastq verify_trimming_and_cleanup
 
 	_parallel_worker() {
 		local SRR="$1"
-		
-		# Activate conda environment in subshell
-		if [[ -n "$CONDA_PREFIX" ]]; then
+
+		# Activate conda environment in subshell (skip when orchestrator manages env)
+		if [[ -z "${WF_MANAGED_ENV:-}" && -n "${CONDA_PREFIX:-}" ]]; then
 			source "${_CONDA_PROFILE_SCRIPT:-${CONDA_EXE%/*}/../etc/profile.d/conda.sh}" 2>/dev/null || true
 			conda activate "$CONDA_DEFAULT_ENV" 2>/dev/null || true
 		fi
-		
+
 		local raw_dir="$RAW_DIR_ROOT/$SRR"
 		local trim_dir="$TRIM_DIR_ROOT/$SRR"
 		mkdir -p "$raw_dir" "$trim_dir"
@@ -282,9 +325,11 @@ download_and_trim_srrs_parallel() {
 			fasterq-dump --split-files --threads "${THREADS_PER_JOB:-4}" "$raw_dir/$SRR/$SRR.sra" -O "$raw_dir" || return 1
 			local -a _ccmd=(gzip)
 			[[ "$_TRIMMING_HAS_PIGZ" == "true" ]] && _ccmd=(pigz -p "${THREADS_PER_JOB:-4}")
-			[[ -f "$raw_dir/${SRR}_1.fastq" ]] && "${_ccmd[@]}" "$raw_dir/${SRR}_1.fastq" &
-			[[ -f "$raw_dir/${SRR}_2.fastq" ]] && "${_ccmd[@]}" "$raw_dir/${SRR}_2.fastq" &
-			wait
+			local _cw1=0 _cw2=0
+			[[ -f "$raw_dir/${SRR}_1.fastq" ]] && { "${_ccmd[@]}" "$raw_dir/${SRR}_1.fastq" & _cw1=$!; }
+			[[ -f "$raw_dir/${SRR}_2.fastq" ]] && { "${_ccmd[@]}" "$raw_dir/${SRR}_2.fastq" & _cw2=$!; }
+			[[ "$_cw1" -ne 0 ]] && wait "$_cw1"
+			[[ "$_cw2" -ne 0 ]] && wait "$_cw2"
 			find_raw_fastq "$SRR"
 		fi
 
@@ -324,10 +369,14 @@ download_and_trim_srrs_parallel() {
 
 			if [[ "${TAILCROP_BASES:-0}" -gt 0 ]]; then
 				log_info "Applying TAILCROP:${TAILCROP_BASES} for $SRR..."
-				cutadapt -u -${TAILCROP_BASES} -U -${TAILCROP_BASES} \
-					-o "${tg_r1}.tmp" -p "${tg_r2}.tmp" "$tg_r1" "$tg_r2"
-				mv "${tg_r1}.tmp" "$tg_r1"
-				mv "${tg_r2}.tmp" "$tg_r2"
+				if cutadapt -u -${TAILCROP_BASES} -U -${TAILCROP_BASES} \
+					-o "${tg_r1}.tmp" -p "${tg_r2}.tmp" "$tg_r1" "$tg_r2"; then
+					mv "${tg_r1}.tmp" "$tg_r1"
+					mv "${tg_r2}.tmp" "$tg_r2"
+				else
+					log_warn "cutadapt TAILCROP failed for $SRR (exit $?) — keeping un-tailcropped files"
+					rm -f "${tg_r1}.tmp" "${tg_r2}.tmp"
+				fi
 			fi
 
 			verify_trimming_and_cleanup "$SRR" "$tg_r1" "$tg_r2" "$raw1" "$raw2"
@@ -343,20 +392,31 @@ download_and_trim_srrs_parallel() {
 
 			if [[ "${TAILCROP_BASES:-0}" -gt 0 ]]; then
 				log_info "Applying TAILCROP:${TAILCROP_BASES} for $SRR..."
-				cutadapt -u -${TAILCROP_BASES} -o "${tg_r1}.tmp" "$tg_r1"
-				mv "${tg_r1}.tmp" "$tg_r1"
+				if cutadapt -u -${TAILCROP_BASES} -o "${tg_r1}.tmp" "$tg_r1"; then
+					mv "${tg_r1}.tmp" "$tg_r1"
+				else
+					log_warn "cutadapt TAILCROP failed for $SRR (exit $?) — keeping un-tailcropped file"
+					rm -f "${tg_r1}.tmp"
+				fi
 			fi
 
 			verify_trimming_and_cleanup "$SRR" "$tg_r1" "" "$raw1" ""
 		fi
 	}
 	export -f _parallel_worker
-	
+
+	# Ensure joblog parent dir exists (created by orchestrator in bash mode,
+	# but may be absent when called directly from Nextflow/Snakemake)
+	mkdir -p "$TRIM_DIR_ROOT"
 	parallel \
-		--env PATH --env CONDA_PREFIX \
+		--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
+		--env _CONDA_PROFILE_SCRIPT --env WF_MANAGED_ENV \
+		--env RAW_DIR_ROOT --env TRIM_DIR_ROOT --env THREADS_PER_JOB \
+		--env LOG_FILE --env ERROR_WARN_FILE --env _SHARED_GZIP_C --env _SHARED_GZIP_DC \
+		--env _TRIMMING_HAS_PIGZ \
 		-j "${JOBS:-2}" \
 		--halt soon,fail,1 \
-		--joblog "$TRIM_DIR_ROOT/parallel_trim_galore.log" \
+		--joblog "$TRIM_DIR_ROOT/parallel_trim_galore_${BASHPID:-$$}.log" \
 		_parallel_worker {} \
 		< <(printf "%s\n" "${SRR_LIST[@]}")
 	gzip_trimmed_fastq_files
@@ -387,22 +447,24 @@ trim_srrs_trimmomatic_parallel() {
 
 	# Export _log_impl (core logger) alongside its callers — without it, log_info/log_warn/log_error
 	# fail silently in GNU Parallel subshells because they delegate to _log_impl.
+	# Also export strip_ansi_stream and capture_stderr_errors — transitive deps of
+	# run_with_space_time_log (pipes to strip_ansi_stream) and run_with_error_capture
+	# (pipes to capture_stderr_errors).
 	export -f _log_impl timestamp log log_info log_warn log_error run_with_space_time_log run_with_error_capture
+	export -f strip_ansi_stream capture_stderr_errors
 	export -f find_trimmed_fastq find_raw_fastq verify_trimming_and_cleanup
 
 	_trimmomatic_parallel_worker() {
 		local SRR="$1"
-		
-		# Activate conda environment in subshell
-		if [[ -n "$CONDA_PREFIX" ]]; then
+
+		# Activate conda environment in subshell (skip when orchestrator manages env)
+		if [[ -z "${WF_MANAGED_ENV:-}" && -n "${CONDA_PREFIX:-}" ]]; then
 			source "${_CONDA_PROFILE_SCRIPT:-${CONDA_EXE%/*}/../etc/profile.d/conda.sh}" 2>/dev/null || true
 			conda activate "$CONDA_DEFAULT_ENV" 2>/dev/null || true
 		fi
 		
 		local raw_dir="$RAW_DIR_ROOT/$SRR"
 		local trim_dir="$TRIM_DIR_ROOT/$SRR"
-		local out1="$trim_dir/${SRR}_1_val_1.fq"
-		local out2="$trim_dir/${SRR}_2_val_2.fq"
 
 		mkdir -p "$trim_dir"
 
@@ -418,11 +480,13 @@ trim_srrs_trimmomatic_parallel() {
 		profile="${profile:-$TRIM_PROFILE_DEFAULT}"
 
 		IFS=':' read -r HEADCROP_BASES TAILCROP_BASES MINLEN SW_SIZE SW_QUAL <<< "$profile"
-		
+
 		log_info "Trimming $SRR with Trimmomatic (HEADCROP:$HEADCROP_BASES, TAILCROP:$TAILCROP_BASES, MINLEN:$MINLEN, SW:$SW_SIZE:$SW_QUAL)..."
 
 		if [[ -n "$raw2" && -f "$raw2" ]]; then
 			# ── Paired-end ──
+			local out1="$trim_dir/${SRR}_1_val_1.fq"
+			local out2="$trim_dir/${SRR}_2_val_2.fq"
 			run_with_space_time_log trimmomatic PE -threads "${THREADS_PER_JOB:-${THREADS:-4}}" \
 				"$raw1" "$raw2" "$out1" /dev/null "$out2" /dev/null \
 				ILLUMINACLIP:TruSeq3-PE-2.fa:2:30:10:2:True \
@@ -430,36 +494,50 @@ trim_srrs_trimmomatic_parallel() {
 
 			if [[ "${TAILCROP_BASES:-0}" -gt 0 ]]; then
 				log_info "Applying TAILCROP:${TAILCROP_BASES} for $SRR..."
-				run_with_error_capture cutadapt -u -${TAILCROP_BASES} -U -${TAILCROP_BASES} \
-					-o "${out1}.tmp" -p "${out2}.tmp" "$out1" "$out2"
-				mv "${out1}.tmp" "$out1"
-				mv "${out2}.tmp" "$out2"
+				if run_with_error_capture cutadapt -u -${TAILCROP_BASES} -U -${TAILCROP_BASES} \
+					-o "${out1}.tmp" -p "${out2}.tmp" "$out1" "$out2"; then
+					mv "${out1}.tmp" "$out1"
+					mv "${out2}.tmp" "$out2"
+				else
+					log_warn "cutadapt TAILCROP failed for $SRR (exit $?) — keeping un-tailcropped files"
+					rm -f "${out1}.tmp" "${out2}.tmp"
+				fi
 			fi
 
 			verify_trimming_and_cleanup "$SRR" "$out1" "$out2" "$raw1" "$raw2"
 		else
-			# ── Single-end ──
+			# ── Single-end: use _trimmed.fq to match find_trimmed_fastq() convention ──
+			local se_out="$trim_dir/${SRR}_trimmed.fq"
 			run_with_space_time_log trimmomatic SE -threads "${THREADS_PER_JOB:-${THREADS:-4}}" \
-				"$raw1" "$out1" \
+				"$raw1" "$se_out" \
 				ILLUMINACLIP:TruSeq3-SE.fa:2:30:10 \
 				HEADCROP:${HEADCROP_BASES} SLIDINGWINDOW:${SW_SIZE}:${SW_QUAL} MINLEN:${MINLEN}
 
 			if [[ "${TAILCROP_BASES:-0}" -gt 0 ]]; then
 				log_info "Applying TAILCROP:${TAILCROP_BASES} for $SRR..."
-				run_with_error_capture cutadapt -u -${TAILCROP_BASES} -o "${out1}.tmp" "$out1"
-				mv "${out1}.tmp" "$out1"
+				if run_with_error_capture cutadapt -u -${TAILCROP_BASES} -o "${se_out}.tmp" "$se_out"; then
+					mv "${se_out}.tmp" "$se_out"
+				else
+					log_warn "cutadapt TAILCROP failed for $SRR (exit $?) — keeping un-tailcropped file"
+					rm -f "${se_out}.tmp"
+				fi
 			fi
 
-			verify_trimming_and_cleanup "$SRR" "$out1" "" "$raw1" ""
+			verify_trimming_and_cleanup "$SRR" "$se_out" "" "$raw1" ""
 		fi
 	}
 	export -f _trimmomatic_parallel_worker
 
+	# Ensure joblog parent dir exists (see download.sh comment)
+	mkdir -p "$TRIM_DIR_ROOT"
 	parallel \
-		--env PATH --env CONDA_PREFIX \
+		--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
+		--env _CONDA_PROFILE_SCRIPT --env WF_MANAGED_ENV \
+		--env RAW_DIR_ROOT --env TRIM_DIR_ROOT --env THREADS_PER_JOB \
+		--env LOG_FILE --env ERROR_WARN_FILE --env _SHARED_GZIP_C --env _SHARED_GZIP_DC \
 		-j "${JOBS:-2}" \
 		--halt soon,fail,1 \
-		--joblog "$TRIM_DIR_ROOT/parallel_trimmomatic.log" \
+		--joblog "$TRIM_DIR_ROOT/parallel_trimmomatic_${BASHPID:-$$}.log" \
 		_trimmomatic_parallel_worker {} \
 		< <(printf "%s\n" "${SRR_LIST[@]}")
 	gzip_trimmed_fastq_files

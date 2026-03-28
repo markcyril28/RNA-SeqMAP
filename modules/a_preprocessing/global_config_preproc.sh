@@ -10,14 +10,14 @@
 
 # Guard against double-sourcing
 [[ "${PREPROC_CONFIG_SOURCED:-}" == "true" ]] && return 0
-export PREPROC_CONFIG_SOURCED="true"
+PREPROC_CONFIG_SOURCED="true"
 
 # ==============================================================================
 # IMPORTANT PARAMETERS (tweak here)
 # ==============================================================================
 
 # Total CPU threads available to the pipeline (auto-detect if not set)
-THREADS="${THREADS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 12)}"
+THREADS="${THREADS:-${SLURM_CPUS_PER_TASK:-${PBS_NCPUS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 12)}}}"
 # Number of parallel jobs (GNU Parallel); THREADS_PER_JOB is auto-calculated
 # Set to "auto" to calculate from THREADS / OPTIMAL_THREADS_PER_JOB
 JOBS="${JOBS:-2}"
@@ -26,9 +26,12 @@ OPTIMAL_THREADS_PER_JOB="${OPTIMAL_THREADS_PER_JOB:-4}"
 # Resolve JOBS="auto" → numeric (uses _resolve_auto_jobs from runtime_defaults.sh
 # if already sourced, otherwise inline resolution for standalone use)
 if [[ "${JOBS}" == "auto" || "${JOBS}" == "AUTO" ]]; then
+	(( OPTIMAL_THREADS_PER_JOB < 1 )) && OPTIMAL_THREADS_PER_JOB=4
 	JOBS=$(( THREADS / OPTIMAL_THREADS_PER_JOB ))
 	(( JOBS < 1 )) && JOBS=1
 fi
+# Guard: ensure JOBS >= 1 before division (prevents bash arithmetic error if externally set to 0)
+(( JOBS < 1 )) && JOBS=1
 THREADS_PER_JOB="${THREADS_PER_JOB:-$((THREADS / JOBS))}"
 [[ $THREADS_PER_JOB -lt 1 ]] && THREADS_PER_JOB=1
 
@@ -41,9 +44,15 @@ DELETE_RAW_SRR_AFTER_DOWNLOAD_and_TRIMMING="${DELETE_RAW_SRR_AFTER_DOWNLOAD_and_
 # ==============================================================================
 # DIRECTORY STRUCTURE
 # ==============================================================================
-RAW_DIR_ROOT="${RAW_DIR_ROOT:-1_SRRs/A_RAW_SRR}"
-TRIM_DIR_ROOT="${TRIM_DIR_ROOT:-1_SRRs/B_TRIMMED_SRR}"
-FASTQC_ROOT="${FASTQC_ROOT:-1_SRRs/C_FastQC}"
+# Orchestrated execution (Nextflow/Snakemake) must set PROJECT_ROOT explicitly;
+# the "." fallback only works when CWD is the repo root (standalone bash mode).
+if [[ -n "${WF_MANAGED_ENV:-}" && -z "${PROJECT_ROOT:-}" ]]; then
+	echo "ERROR: WF_MANAGED_ENV is set but PROJECT_ROOT is not. Orchestrators must export PROJECT_ROOT." >&2
+	return 1
+fi
+RAW_DIR_ROOT="${RAW_DIR_ROOT:-${PROJECT_ROOT:-.}/1_SRRs/A_RAW_SRR}"
+TRIM_DIR_ROOT="${TRIM_DIR_ROOT:-${PROJECT_ROOT:-.}/1_SRRs/B_TRIMMED_SRR}"
+FASTQC_ROOT="${FASTQC_ROOT:-${PROJECT_ROOT:-.}/1_SRRs/C_FastQC}"
 
 # ==============================================================================
 # TRIMMING PARAMETER PROFILES
@@ -57,7 +66,7 @@ FASTQC_ROOT="${FASTQC_ROOT:-1_SRRs/C_FastQC}"
 TRIM_PROFILE_DEFAULT="12:0:36:4:20"
 
 # Declare associative array to map SRR IDs to their trim profiles
-declare -gA SRR_TRIM_PROFILE_MAP
+declare -gA SRR_TRIM_PROFILE_MAP 2>/dev/null || declare -A SRR_TRIM_PROFILE_MAP
 
 # ==============================================================================
 # SRR TO TRIM PROFILE MAPPING

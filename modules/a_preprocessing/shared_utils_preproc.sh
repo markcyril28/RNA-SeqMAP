@@ -10,14 +10,17 @@
 
 # Guard against double-sourcing
 [[ "${PREPROC_SHARED_SOURCED:-}" == "true" ]] && return 0
-export PREPROC_SHARED_SOURCED="true"
+PREPROC_SHARED_SOURCED="true"
 
 # Source dependencies
 # Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
 SCRIPT_DIR="${MODULES_DIR:+${MODULES_DIR}/a_preprocessing}"
-if [[ -z "$SCRIPT_DIR" ]]; then SCRIPT_DIR="${BASH_SOURCE[0]%/*}"; [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."; fi
+if [[ -z "$SCRIPT_DIR" ]]; then
+	SCRIPT_DIR="${BASH_SOURCE[0]%/*}"; [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+	SCRIPT_DIR="$(cd "$SCRIPT_DIR" 2>/dev/null && pwd)"
+fi
 source "$SCRIPT_DIR/global_config_preproc.sh"
-source "$SCRIPT_DIR/../logging/logging_utils.sh"
+source "${MODULES_DIR:-$SCRIPT_DIR/..}/logging/logging_utils.sh"
 
 # ==============================================================================
 # SHARED COMPRESSION DETECTION (preprocessing)
@@ -39,15 +42,16 @@ if [[ -z "${_SHARED_GZIP_C:-}" ]]; then
 fi
 
 # Cache conda profile path at module load — avoids dirname subshell per parallel worker.
+# Validate file exists before exporting — path is host-specific and invalid in containers.
 if [[ -z "${_CONDA_PROFILE_SCRIPT+x}" && -n "${CONDA_EXE:-}" ]]; then
 	_CONDA_PROFILE_SCRIPT="${CONDA_EXE%/*}/../etc/profile.d/conda.sh"
-	export _CONDA_PROFILE_SCRIPT
+	[[ -f "$_CONDA_PROFILE_SCRIPT" ]] && export _CONDA_PROFILE_SCRIPT || _CONDA_PROFILE_SCRIPT=""
 fi
 
 # Cache CPU count at module load — avoids nproc subprocess spawn per function call.
 # Used by gzip_trimmed_fastq_files() and other utilities as thread count fallback.
 if [[ -z "${_CACHED_NPROC:-}" ]]; then
-	_CACHED_NPROC=$(nproc 2>/dev/null || echo 4)
+	_CACHED_NPROC="${SLURM_CPUS_PER_TASK:-${PBS_NCPUS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}}"
 	export _CACHED_NPROC
 fi
 
@@ -240,10 +244,20 @@ gzip_trimmed_fastq_files() {
 		log_info "Using gzip with ${_parallel_jobs} parallel jobs"
 	fi
 	local _compress_rc=0
-	# -r (--no-run-if-empty): xargs exits 0 without spawning compress if find yields nothing.
-	# No -I {}: lets xargs batch multiple files per invocation (fewer process spawns)
-	find "$TRIM_DIR_ROOT" -type f -name "*.fq" -print0 | \
-		xargs -0 -r -P "$_parallel_jobs" $_compress_cmd 2>/dev/null || _compress_rc=$?
+	# POSIX-portable compression: find -exec works on GNU and BSD (macOS/Alpine).
+	# Previous xargs -0 -r -P flags were GNU-only; BSD xargs lacks -0 and -r.
+	local _fq_count
+	_fq_count=$(find "$TRIM_DIR_ROOT" -type f -name "*.fq" 2>/dev/null | wc -l)
+	if [[ "${_fq_count:-0}" -gt 0 ]]; then
+		if [[ "$_parallel_jobs" -gt 1 ]] && command -v parallel &>/dev/null; then
+			find "$TRIM_DIR_ROOT" -type f -name "*.fq" | \
+				parallel -j "$_parallel_jobs" --joblog "${TRIM_DIR_ROOT}/parallel_compress_${BASHPID:-$$}.log" \
+				$_compress_cmd 2>/dev/null || _compress_rc=$?
+			rm -f "${TRIM_DIR_ROOT}/parallel_compress_${BASHPID:-$$}.log" 2>/dev/null
+		else
+			find "$TRIM_DIR_ROOT" -type f -name "*.fq" -exec $_compress_cmd {} + 2>/dev/null || _compress_rc=$?
+		fi
+	fi
 	if [[ $_compress_rc -ne 0 ]]; then
 		log_warn "Compression finished with errors (exit code: $_compress_rc) — some .fq files may not have been compressed."
 	else
