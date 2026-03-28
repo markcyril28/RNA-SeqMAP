@@ -10,15 +10,18 @@
 
 # Guard against double-sourcing
 [[ "${METHOD_SHARED_SOURCED:-}" == "true" ]] && return 0
-export METHOD_SHARED_SOURCED="true"
+METHOD_SHARED_SOURCED="true"
 
 # Source dependencies
 # Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
 SCRIPT_DIR="${MODULES_DIR:+${MODULES_DIR}/b_main_methods}"
-if [[ -z "$SCRIPT_DIR" ]]; then SCRIPT_DIR="${BASH_SOURCE[0]%/*}"; [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."; fi
+if [[ -z "$SCRIPT_DIR" ]]; then
+	SCRIPT_DIR="${BASH_SOURCE[0]%/*}"; [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+	SCRIPT_DIR="$(cd "$SCRIPT_DIR" 2>/dev/null && pwd)"
+fi
 source "$SCRIPT_DIR/global_config_method.sh"
-source "$SCRIPT_DIR/../logging/logging_utils.sh"
-source "$SCRIPT_DIR/../a_preprocessing/shared_utils_preproc.sh"
+source "${MODULES_DIR:-$SCRIPT_DIR/..}/logging/logging_utils.sh"
+source "${MODULES_DIR:-$SCRIPT_DIR/..}/a_preprocessing/shared_utils_preproc.sh"
 
 # ==============================================================================
 # SHARED COMPRESSION DETECTION
@@ -58,9 +61,10 @@ fi
 
 # Cache conda profile path at module load — avoids dirname subshell per parallel worker.
 # Workers use $_CONDA_PROFILE_SCRIPT instead of source "$(dirname "$CONDA_EXE")/../etc/...".
+# Validate file exists before exporting — path is host-specific and invalid in containers.
 if [[ -z "${_CONDA_PROFILE_SCRIPT+x}" && -n "${CONDA_EXE:-}" ]]; then
 	_CONDA_PROFILE_SCRIPT="${CONDA_EXE%/*}/../etc/profile.d/conda.sh"
-	export _CONDA_PROFILE_SCRIPT
+	[[ -f "$_CONDA_PROFILE_SCRIPT" ]] && export _CONDA_PROFILE_SCRIPT || _CONDA_PROFILE_SCRIPT=""
 fi
 
 # ==============================================================================
@@ -172,7 +176,7 @@ create_sample_metadata() {
 # Get the helper scripts directory (method-specific tximport helpers in subfolders)
 # Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
 HELPERS_DIR="${MODULES_DIR:+${MODULES_DIR}/c_post_processing/preprocessing}"
-if [[ -z "$HELPERS_DIR" ]]; then HELPERS_DIR="${BASH_SOURCE[0]%/*}/../c_post_processing/preprocessing"; fi
+if [[ -z "$HELPERS_DIR" ]]; then HELPERS_DIR="${SCRIPT_DIR}/../c_post_processing/preprocessing"; fi
 
 # Generate tximport R script (copies method-specific helper to output location)
 generate_tximport_script() {
@@ -362,12 +366,12 @@ export -f _bam_is_valid
 _init_parallel_worker() {
 	local SRR="$1"
 
-	# Reactivate conda in subshell if needed (skip if already active)
+	# Reactivate conda in subshell if needed (skip when orchestrator manages env)
 	# Uses cached _CONDA_PROFILE_SCRIPT to avoid dirname subshell per worker
-	if [[ -n "${CONDA_PREFIX:-}" && -n "${CONDA_EXE:-}" && "${_PARALLEL_CONDA_READY:-}" != "true" ]]; then
+	if [[ -z "${WF_MANAGED_ENV:-}" && -n "${CONDA_PREFIX:-}" && -n "${CONDA_EXE:-}" && "${_PARALLEL_CONDA_READY:-}" != "true" ]]; then
 		source "${_CONDA_PROFILE_SCRIPT:-${CONDA_EXE%/*}/../etc/profile.d/conda.sh}" 2>/dev/null || true
 		conda activate "${CONDA_DEFAULT_ENV:-base}" 2>/dev/null || true
-		export _PARALLEL_CONDA_READY="true"
+		_PARALLEL_CONDA_READY="true"
 	fi
 
 	# Inline find_trimmed_fastq (avoids function export issues)
@@ -408,25 +412,35 @@ export -f _init_parallel_worker
 _parallel_log() {
 	local method="$1" SRR="$2" level="$3"; shift 3
 	local ts
-	printf -v ts '%(%Y-%m-%d %H:%M:%S)T' -1
+	printf -v ts '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || ts=$(date '+%Y-%m-%d %H:%M:%S')
 	printf '[%s] [%s] [%s-%s] %s\n' "$ts" "$level" "$method" "$SRR" "$*"
-	[[ "$level" != "INFO" && -n "${abs_error_warn_file:-}" ]] && \
-		printf '[%s] [%s] [%s-%s] %s\n' "$ts" "$level" "$method" "$SRR" "$*" >> "$abs_error_warn_file"
+	if [[ "$level" != "INFO" && -n "${abs_error_warn_file:-}" ]]; then
+		# Use per-method error log when available to avoid write contention in parallel execution
+		local _ew_file="${abs_error_warn_file}"
+		[[ -n "${method:-}" && -n "${_PARALLEL_METHOD_ID:-}" ]] && \
+			_ew_file="${abs_error_warn_file%.log}_${_PARALLEL_METHOD_ID}.log"
+		printf '[%s] [%s] [%s-%s] %s\n' "$ts" "$level" "$method" "$SRR" "$*" >> "$_ew_file"
+	fi
 }
 export -f _parallel_log
 
 # Export common environment variables for parallel workers
-# Call before dispatching parallel jobs
+# Call before dispatching parallel jobs.  Accepts optional method ID (e.g. "M1")
+# to enable per-method error log separation via _PARALLEL_METHOD_ID.
 _prepare_parallel_env() {
+	# Set per-method ID if provided — activates method-namespaced error logs in _parallel_log()
+	if [[ -n "${1:-}" ]]; then
+		export _PARALLEL_METHOD_ID="$1"
+	fi
 	export PATH CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_EXE
 	export keep_bam_global
 
 	abs_trim_dir_root="$TRIM_DIR_ROOT"
-	[[ "$abs_trim_dir_root" != /* ]] && abs_trim_dir_root="$PWD/$abs_trim_dir_root"
+	[[ "$abs_trim_dir_root" != /* ]] && abs_trim_dir_root="${PROJECT_ROOT:-$PWD}/$abs_trim_dir_root"
 	export abs_trim_dir_root
 
 	abs_error_warn_file="${ERROR_WARN_FILE:-}"
-	[[ -n "$abs_error_warn_file" && "$abs_error_warn_file" != /* ]] && abs_error_warn_file="$PWD/$abs_error_warn_file"
+	[[ -n "$abs_error_warn_file" && "$abs_error_warn_file" != /* ]] && abs_error_warn_file="${PROJECT_ROOT:-$PWD}/$abs_error_warn_file"
 	export abs_error_warn_file
 }
 
