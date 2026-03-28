@@ -4,6 +4,7 @@
 import re
 import csv
 import sys
+from pathlib import Path
 
 # Pre-compiled regex — avoids re-compilation per FASTA header line. O(H) total
 # instead of O(H × compile_cost) where H = number of header lines.
@@ -27,10 +28,8 @@ def extract_gene_info(input_fasta, output_csv):
 
 if __name__ == '__main__':
     if len(sys.argv) == 3:
-        extract_gene_info(sys.argv[1], sys.argv[2])
+        extract_gene_info(str(Path(sys.argv[1]).resolve()), str(Path(sys.argv[2]).resolve()))
     else:
-        # Default behavior for backward compatibility
-        extract_gene_info(
-            "Eggplant_V4.1_transcripts.function.fa",
-            "Eggplant_V4.1_transcripts.function.gene_info.csv"
-        )
+        print(f"Usage: {sys.argv[0]} <input.fasta> <output.csv>", file=sys.stderr)
+        print("Example: python3 extract_gene_info.py Eggplant_V4.1_transcripts.function.fa output.csv", file=sys.stderr)
+        sys.exit(1)

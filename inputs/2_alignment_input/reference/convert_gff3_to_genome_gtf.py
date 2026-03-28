@@ -23,6 +23,7 @@ Example:
 """
 
 import sys
+from pathlib import Path
 
 # Pre-compiled regex patterns for GFF3 attribute extraction.
 # Avoids re.compile() + re.escape() on every get_attr() call.
@@ -30,6 +31,10 @@ import sys
 # eliminates ~1.4M regex compilations. O(L) total vs O(L×K×compile).
 import re
 _ATTR_PATTERNS: dict[str, re.Pattern] = {}
+
+# O(1) hash lookup for valid CDS frame values (vs O(3) tuple linear scan).
+# Used once per CDS line; eliminates redundant double-check at lines 127-129.
+_VALID_FRAMES = frozenset(('0', '1', '2'))
 
 
 def _get_attr_pattern(key: str) -> re.Pattern:
@@ -123,9 +128,12 @@ def gff3_to_gtf(input_gff, output_gtf):
                 if not parent or not gene_id:
                     continue
                 # Use frame from GFF3 for CDS; warn if unknown and defaulting to 0
-                if frame not in ('0', '1', '2'):
+                # Single O(1) frozenset lookup replaces double tuple membership test
+                if frame in _VALID_FRAMES:
+                    cds_frame = frame
+                else:
                     print(f"  Warning: CDS with unknown frame '{frame}' for {parent}, defaulting to 0", file=sys.stderr)
-                cds_frame = frame if frame in ('0', '1', '2') else '0'
+                    cds_frame = '0'
                 gtf_attr = f'gene_id "{gene_id}"; transcript_id "{parent}";'
                 out.write('\t'.join([seqname, source, 'CDS',
                                      start, end, score, strand, cds_frame,
@@ -144,4 +152,4 @@ if __name__ == '__main__':
     if len(sys.argv) != 3:
         print(f"Usage: python3 {sys.argv[0]} <input.gff> <output.gtf>")
         sys.exit(1)
-    gff3_to_gtf(sys.argv[1], sys.argv[2])
+    gff3_to_gtf(str(Path(sys.argv[1]).resolve()), str(Path(sys.argv[2]).resolve()))
