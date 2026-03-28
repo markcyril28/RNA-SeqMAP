@@ -21,13 +21,25 @@
 
 # Skip re-sourcing when running under concordance_batch_dispatcher.R (already loaded)
 if (!exists(".CONC_BATCH_CONFIG_LOADED") || !isTRUE(.CONC_BATCH_CONFIG_LOADED)) {
-  source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_concordance_config.R"))
+  .conc_dir <- Sys.getenv("CONCORDANCE_SCRIPT_DIR", {
+    if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+      stop("[LOAD_MATRICES] CONCORDANCE_SCRIPT_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+    "."
+  })
+  source(file.path(.conc_dir, "0_concordance_config.R"))
 }
 # Source shared method loaders — provides .use_dt, .use_parallel, .n_cores,
 # .par_lapply, .fast_read_tsv, .assemble_tpm_matrix (with double-source guard).
 # Eliminates ~75 lines of duplicated helper definitions.
 if (!exists(".METHOD_LOADERS_SOURCED") || !isTRUE(.METHOD_LOADERS_SOURCED)) {
-  source(file.path(Sys.getenv("CONCORDANCE_SCRIPT_DIR", "."), "0_method_loaders.R"))
+  if (!exists(".conc_dir")) {
+    .conc_dir <- Sys.getenv("CONCORDANCE_SCRIPT_DIR", {
+      if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+        stop("[LOAD_MATRICES] CONCORDANCE_SCRIPT_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+      "."
+    })
+  }
+  source(file.path(.conc_dir, "0_method_loaders.R"))
 }
 
 cat("\n=== STEP 1: Loading Expression Matrices ===\n\n")
