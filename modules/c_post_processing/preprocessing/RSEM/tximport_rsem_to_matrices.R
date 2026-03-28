@@ -11,7 +11,11 @@ suppressPackageStartupMessages({
 })
 
 # Source shared utilities (provides ensure_output_dir, convert_to_organ_labels, etc.)
-SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", ".")
+SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", {
+  if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+    stop("[RSEM_TXIMPORT] ANALYSIS_MODULES_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+  "."
+})
 source(file.path(SCRIPT_DIR, "0_shared_config.R"))
 source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
 source(file.path(SCRIPT_DIR, "3_Matrix_Creation_utils.R"))
@@ -19,7 +23,12 @@ source(file.path(SCRIPT_DIR, "3_Matrix_Creation_utils.R"))
 # Ensure match_gene_ids is available (fallback to standalone utility if not in 1_utility_functions.R)
 if (!exists("match_gene_ids", mode = "function")) {
   .match_ids_path <- file.path(dirname(SCRIPT_DIR), "utilities", "match_gene_ids.R")
-  if (file.exists(.match_ids_path)) source(.match_ids_path)
+  if (file.exists(.match_ids_path)) {
+    source(.match_ids_path)
+  } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+    stop("[RSEM TXIMPORT] match_gene_ids.R not found at ", .match_ids_path,
+         ". Ensure ANALYSIS_MODULES_DIR points to a directory whose sibling 'utilities/' contains match_gene_ids.R.")
+  }
 }
 
 # Thin wrapper around shared save_count_matrices() for backward compatibility.
@@ -44,12 +53,20 @@ QUANT_DIR <- if (QUANT_DIR_INCLUDES_REF) {
   RSEM_QUANT_ROOT_ENV
 } else if (nzchar(base_dir)) {
   file.path(base_dir, "2_ALIGNMENT_RESULTs", "M5_RSEM_Bowtie2", "RSEM_Quant_WD")
+} else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+  stop("[RSEM TXIMPORT] BASE_DIR or RSEM_QUANT_ROOT is required under workflow manager (WF_MANAGED_ENV is set).")
 } else {
+  message("[RSEM TXIMPORT] WARN: BASE_DIR and RSEM_QUANT_ROOT not set; using relative 'RSEM_Quant_WD/'. ",
+          "Set BASE_DIR for orchestrated execution (Nextflow/Snakemake).")
   "RSEM_Quant_WD"  # fallback for standalone execution
 }
 MATRICES_OUTPUT_DIR <- if (nzchar(base_dir)) {
   file.path(base_dir, "3_POST_PROC", "M5_RSEM_Bowtie2", "count_matrices_from_RSEM_Quant")
+} else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+  stop("[RSEM TXIMPORT] BASE_DIR is required for output directory under workflow manager.")
 } else {
+  message("[RSEM TXIMPORT] WARN: BASE_DIR not set; using relative 'count_matrices_from_RSEM_Quant/'. ",
+          "Set BASE_DIR for orchestrated execution (Nextflow/Snakemake).")
   "count_matrices_from_RSEM_Quant"  # relative fallback when called from pushd context
 }
 # Use shared GENE_GROUPS_DIR from 0_shared_config.R (already sourced)
@@ -289,7 +306,9 @@ for (level_name in names(processing_levels)) {
   # Reuse pre-computed gene group file list (hoisted above level loop to avoid
   # repeated list.files() filesystem traversals — same result across levels)
   if (!exists(".gg_files_cached")) {
-    .gg_files_cached <- list.files(GENE_GROUPS_DIR, pattern = "\\.(csv|txt|tsv)$", recursive = TRUE, full.names = TRUE)
+    .gg_files_cached <- if (dir.exists(GENE_GROUPS_DIR)) {
+      list.files(GENE_GROUPS_DIR, pattern = "\\.(csv|txt|tsv)$", recursive = TRUE, full.names = TRUE)
+    } else character(0)
     .gg_base_cached <- tools::file_path_sans_ext(basename(.gg_files_cached))
     if (length(.gg_files_cached) > 1) {
       dup_idx <- duplicated(.gg_base_cached)
