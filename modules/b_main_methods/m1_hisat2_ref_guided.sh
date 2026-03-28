@@ -11,12 +11,15 @@
 
 # Guard against double-sourcing
 [[ "${M1_HISAT2_REF_SOURCED:-}" == "true" ]] && return 0
-export M1_HISAT2_REF_SOURCED="true"
+M1_HISAT2_REF_SOURCED="true"
 
 # Source dependencies
 # Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
 SCRIPT_DIR="${MODULES_DIR:+${MODULES_DIR}/b_main_methods}"
-if [[ -z "$SCRIPT_DIR" ]]; then SCRIPT_DIR="${BASH_SOURCE[0]%/*}"; [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."; fi
+if [[ -z "$SCRIPT_DIR" ]]; then
+	SCRIPT_DIR="${BASH_SOURCE[0]%/*}"; [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+	SCRIPT_DIR="$(cd "$SCRIPT_DIR" 2>/dev/null && pwd)"
+fi
 source "$SCRIPT_DIR/shared_utils_method.sh"
 
 # Binary availability cached in shared_utils_method.sh: _SHARED_HAS_SAMTOOLS, _SHARED_HAS_PARALLEL
@@ -333,6 +336,7 @@ hisat2_ref_guided_pipeline() {
 	[[ -z "$gtf" ]] && { log_error "No GTF file specified. Use --GTF <annotation_gtf>."; return 1; }
 	[[ ! -f "$gtf" ]] && { log_error "GTF file '$gtf' not found."; return 1; }
 	[[ ${#rnaseq_list[@]} -eq 0 ]] && rnaseq_list=("${SRR_COMBINED_LIST[@]}")
+	[[ ${#rnaseq_list[@]} -eq 0 ]] && { log_error "No RNA-seq samples provided."; return 1; }
 
 	# Derive strandness flags from --STRANDNESS (RF | FR | "" for unstranded)
 	local hisat2_strand_opts="" stringtie_strand_opt=""
@@ -428,7 +432,8 @@ hisat2_ref_guided_pipeline() {
 
 		log_file_size "$fasta" "Input FASTA for HISAT2 index"
 		run_with_space_time_log --input "$fasta" --output "$HISAT2_REF_GUIDED_INDEX_DIR" \
-			hisat2-build -p "${THREADS}" $build_opts "$fasta" "$index_prefix"
+			hisat2-build -p "${THREADS}" $build_opts "$fasta" "$index_prefix" \
+			|| { log_error "[INDEX] HISAT2 ref-guided index build failed for $fasta_tag"; rm -f "${index_prefix}".*.ht2; return 1; }
 		log_file_size "$HISAT2_REF_GUIDED_INDEX_DIR" "HISAT2 index output"
 	fi
 
@@ -449,17 +454,17 @@ hisat2_ref_guided_pipeline() {
 
 	if $_SHARED_HAS_PARALLEL && [[ "$parallel_jobs" -gt 1 ]] && [[ "${USE_GNU_PARALLEL:-TRUE}" != "FALSE" ]]; then
 		log_step "[PARALLEL] HISAT2 Ref-Guided Align+StringTie: ${#rnaseq_list[@]} samples, $parallel_jobs jobs x $threads_per_job threads"
-		_prepare_parallel_env
+		_prepare_parallel_env "M1"
 
 		# Pre-compute index directory outside worker (avoids dirname subshell per sample)
 		local abs_index_dir="${index_prefix%/*}"
 		export fasta_tag index_prefix abs_index_dir threads_per_job hisat2_strand_opts stringtie_strand_opt OVERWRITE_MODE
 		local abs_hisat2_rg_root="$HISAT2_REF_GUIDED_ROOT"
-		[[ "$abs_hisat2_rg_root" != /* ]] && abs_hisat2_rg_root="$PWD/$abs_hisat2_rg_root"
+		[[ "$abs_hisat2_rg_root" != /* ]] && abs_hisat2_rg_root="${PROJECT_ROOT:-$PWD}/$abs_hisat2_rg_root"
 		local abs_stringtie_rg_root="$STRINGTIE_HISAT2_REF_GUIDED_ROOT"
-		[[ "$abs_stringtie_rg_root" != /* ]] && abs_stringtie_rg_root="$PWD/$abs_stringtie_rg_root"
+		[[ "$abs_stringtie_rg_root" != /* ]] && abs_stringtie_rg_root="${PROJECT_ROOT:-$PWD}/$abs_stringtie_rg_root"
 		local abs_gtf="$gtf"
-		[[ "$abs_gtf" != /* ]] && abs_gtf="$PWD/$abs_gtf"
+		[[ "$abs_gtf" != /* ]] && abs_gtf="${PROJECT_ROOT:-$PWD}/$abs_gtf"
 		export abs_hisat2_rg_root abs_stringtie_rg_root abs_gtf
 
 		_m1_align_parallel_worker() {
@@ -561,6 +566,7 @@ hisat2_ref_guided_pipeline() {
 		# each worker runs HISAT2 O(N log N) + samtools sort O(N log N) + StringTie O(T×G)
 		parallel \
 			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
+			--env _CONDA_PROFILE_SCRIPT --env WF_MANAGED_ENV \
 			--env abs_trim_dir_root --env abs_error_warn_file --env keep_bam_global \
 			--env fasta_tag --env index_prefix --env threads_per_job \
 			--env abs_hisat2_rg_root --env abs_stringtie_rg_root --env abs_gtf \
@@ -568,13 +574,16 @@ hisat2_ref_guided_pipeline() {
 			--env OVERWRITE_MODE --env _SAMTOOLS_HAS_WRITE_INDEX --env _CACHED_AVAIL_MB \
 			-j "$parallel_jobs" \
 			--halt soon,fail,1 \
-			--joblog "$HISAT2_REF_GUIDED_ROOT/parallel_hisat2_refguided_align.log" \
+			--joblog "$HISAT2_REF_GUIDED_ROOT/parallel_hisat2_refguided_align_${BASHPID:-$$}.log" \
 			_m1_align_parallel_worker {} \
 			< <(printf '%s\n' "${rnaseq_list[@]}")
 
 		local par_exit=$?
 		log_info "[PARALLEL] HISAT2 Ref-Guided align+assembly complete (exit=$par_exit)"
-		[[ $par_exit -ne 0 ]] && log_warn "[PARALLEL] Some jobs failed - check $HISAT2_REF_GUIDED_ROOT/parallel_hisat2_refguided_align.log"
+		if [[ $par_exit -ne 0 ]]; then
+			log_error "[PARALLEL] Some jobs failed - check $HISAT2_REF_GUIDED_ROOT/parallel_hisat2_refguided_align_${BASHPID:-$$}.log"
+			return $par_exit
+		fi
 	else
 		# Sequential fallback
 		# Pre-compute sort params once (invariant across samples in sequential mode)
@@ -657,7 +666,8 @@ hisat2_ref_guided_pipeline() {
 				run_with_space_time_log --input "$bam" --output "$out_dir" \
 					stringtie -e $stringtie_strand_opt -p "$THREADS" "$bam" -G "$gtf" -o "$out_gtf" \
 						-A "$out_dir/${SRR}_${fasta_tag}_ref_guided_gene_abundances.tsv" \
-						-B -C "$out_dir/${SRR}_${fasta_tag}_ref_guided_cov_refs.gtf"
+						-B -C "$out_dir/${SRR}_${fasta_tag}_ref_guided_cov_refs.gtf" \
+					|| { log_error "[STRINGTIE] Ref-guided quantification failed for $SRR"; rm -f "$out_gtf"; continue; }
 			fi
 
 			# Collect BAM metrics before potential deletion
