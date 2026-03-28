@@ -37,10 +37,19 @@ if (length(steps) == 0) {
   stop("No valid --stepN=<script> arguments provided")
 }
 
-CONCORDANCE_SCRIPT_DIR <- Sys.getenv("CONCORDANCE_SCRIPT_DIR", ".")
+CONCORDANCE_SCRIPT_DIR <- Sys.getenv("CONCORDANCE_SCRIPT_DIR", {
+  if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+    stop("[CONCORDANCE BATCH] CONCORDANCE_SCRIPT_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+  "."
+})
 
 # Source shared config ONCE (all 3 steps re-source this; we do it first)
-source(file.path(CONCORDANCE_SCRIPT_DIR, "0_concordance_config.R"))
+.config_path <- file.path(CONCORDANCE_SCRIPT_DIR, "0_concordance_config.R")
+if (!file.exists(.config_path)) {
+  stop("[CONCORDANCE BATCH] Configuration file not found: ", .config_path,
+       "\n  Ensure CONCORDANCE_SCRIPT_DIR points to the correct directory.")
+}
+source(.config_path)
 # Set guard so child scripts skip redundant re-sourcing
 .CONC_BATCH_CONFIG_LOADED <- TRUE
 
