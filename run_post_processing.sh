@@ -5,12 +5,32 @@
 
 set -o pipefail   # -e/-u omitted intentionally (sourced functions use boolean returns)
 
+# Script-level child PID array — must be declared before traps so cleanup can reap
+# child processes spawned in parallel config dispatch (prevents orphans on SIGTERM/SIGINT)
+declare -a _cfg_pids=()
+
+# Clean up background logging processes on exit/signal (prevents zombie processes
+# in Nextflow/Snakemake containers that would stall work-dir cleanup)
+_postproc_cleanup() {
+    local rc=$?
+    # Kill any background child config processes to prevent orphans on HPC
+    if [[ ${#_cfg_pids[@]} -gt 0 ]]; then
+        kill "${_cfg_pids[@]}" 2>/dev/null || true
+        wait "${_cfg_pids[@]}" 2>/dev/null || true
+    fi
+    type -t _logging_cleanup_bg &>/dev/null && _logging_cleanup_bg
+    exit $rc
+}
+trap _postproc_cleanup EXIT
+trap 'type -t _logging_cleanup_bg &>/dev/null && _logging_cleanup_bg; exit 143' TERM
+trap 'type -t _logging_cleanup_bg &>/dev/null && _logging_cleanup_bg; exit 130' INT
+
 # ==============================================================================
 # SYSTEM RESOURCES
 # ==============================================================================
 
-# Respect pre-set THREADS from environment; only probe nproc if unset
-THREADS="${THREADS:-$(nproc 2>/dev/null || echo 12)}"
+# Respect pre-set THREADS from environment; check HPC scheduler vars before nproc
+THREADS="${THREADS:-${SLURM_CPUS_PER_TASK:-${PBS_NCPUS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 12)}}}"
 ENABLE_GPU="TRUE"
 ENABLE_GNU_PARALLEL="TRUE"
 DESIRED_CPU_PER_JOB=1
@@ -52,7 +72,7 @@ elif command -v sysctl &>/dev/null; then
 fi
 # Fallback covers both unset and empty (e.g., MemAvailable line missing from /proc/meminfo)
 AVAILABLE_RAM_GB="${AVAILABLE_RAM_GB:-24}"
-# Ensure numeric (strip non-digits) before arithmetic
+# Ensure numeric (reset to default if non-numeric) before arithmetic
 [[ "$AVAILABLE_RAM_GB" =~ ^[0-9]+$ ]] || AVAILABLE_RAM_GB=24
 # Floor: ensure at least 4 GB to avoid starving R scripts
 (( AVAILABLE_RAM_GB < 4 )) && AVAILABLE_RAM_GB=4
@@ -63,8 +83,9 @@ GPU_VRAM_GB=8
 # LOGGING AND OUTPUT
 # ==============================================================================
 
-CLEAR_LOGS="TRUE"
-CLEAR_OUTPUT_FOLDER="TRUE"
+CLEAR_LOGS="${CLEAR_LOGS:-TRUE}"
+CLEAR_OUTPUT_FOLDER="${CLEAR_OUTPUT_FOLDER:-TRUE}"
+CLEAR_CACHE="${CLEAR_CACHE:-FALSE}"
 
 # Figure resolution in DPI (300–600)
 FIGURE_DPI="${FIGURE_DPI:-300}"
@@ -78,6 +99,7 @@ GENERATE_HTML_VIEWER="${GENERATE_HTML_VIEWER:-TRUE}"
 if [[ -n "${__PP_SINGLE_CONFIG:-}" ]]; then
     PIPELINE_CONFIGS=("$__PP_SINGLE_CONFIG")
     CLEAR_LOGS="FALSE"      # Don't clear shared logs from parent
+    CLEAR_CACHE="FALSE"      # Don't re-clear caches from child
     PARALLEL_CONFIGS=1       # Don't recurse into parallel dispatch
     # Unique RUN_ID per child to avoid log file contention
     _cfg_basename="${__PP_SINGLE_CONFIG##*/}"
@@ -85,11 +107,8 @@ if [[ -n "${__PP_SINGLE_CONFIG:-}" ]]; then
     printf -v RUN_ID '%(%Y%m%d_%H%M%S)T' -1 2>/dev/null || RUN_ID=$(date +%Y%m%d_%H%M%S)
     RUN_ID="${RUN_ID}_${_cfg_basename}"
     unset _cfg_basename
-    # Clear exported sentinel variables inherited from parent so modules re-source
-    # their function definitions in this new bash process. (The parent exports these
-    # sentinels for GNU Parallel subshells, but child processes started via
-    # `bash "$0"` need to re-source the files since function definitions don't
-    # survive across process boundaries.)
+    # Clear sentinel variables so modules re-source their function definitions
+    # in this child process (function definitions don't cross process boundaries).
     unset PIPELINE_UTILS_SOURCED LOGGING_UTILS_SOURCED _TOML_PARSER_SOURCED LOGGING_INITIALIZED
 else
 
@@ -102,11 +121,11 @@ PIPELINE_CONFIGS=(
     "config/3_post_proc_configs/HPC_full_M5_Eggplant_V4.1.toml"    # M5 RSEM Bowtie2       Eggplant_V4.1 transcript
 
     # ── Full — GPE001970 ──
-    "config/3_post_proc_configs/HPC_full_M1_GPE001970.toml"         # M1 HISAT2 RefGuided   GPE001970 genome
-    "config/3_post_proc_configs/HPC_full_M2_GPE001970.toml"         # M2 HISAT2 DeNovo      GPE001970 transcript
-    "config/3_post_proc_configs/HPC_full_M3_GPE001970.toml"         # M3 STAR Align         GPE001970 genome
-    "config/3_post_proc_configs/HPC_full_M4_GPE001970.toml"         # M4 Salmon SAF         GPE001970 transcript
-    "config/3_post_proc_configs/HPC_full_M5_GPE001970.toml"         # M5 RSEM Bowtie2       GPE001970 transcript
+    #"config/3_post_proc_configs/HPC_full_M1_GPE001970.toml"         # M1 HISAT2 RefGuided   GPE001970 genome
+    #"config/3_post_proc_configs/HPC_full_M2_GPE001970.toml"         # M2 HISAT2 DeNovo      GPE001970 transcript
+    #"config/3_post_proc_configs/HPC_full_M3_GPE001970.toml"         # M3 STAR Align         GPE001970 genome
+    #"config/3_post_proc_configs/HPC_full_M4_GPE001970.toml"         # M4 Salmon SAF         GPE001970 transcript
+    #"config/3_post_proc_configs/HPC_full_M5_GPE001970.toml"         # M5 RSEM Bowtie2       GPE001970 transcript
 )
 
 fi  # end of single-config child mode check
@@ -115,19 +134,37 @@ fi  # end of single-config child mode check
 # PATHS AND UTILITIES
 #===============================================================================
 
-# Resolve script directory: parameter expansion avoids nested $(dirname) subshell
-SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
-[[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
-SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
-BASE_DIR="$SCRIPT_DIR"
-ANALYSIS_MODULES_DIR="$BASE_DIR/modules/c_post_processing/analysis_modules"
-GENE_GROUPS_DIR="$BASE_DIR/inputs/3_post_proc_inputs/gene_groups_csv"
-SRR_CSV_DIR="$BASE_DIR/inputs/3_post_proc_inputs/SRR_csv"
-UTILITIES_DIR="$BASE_DIR/modules/c_post_processing/utilities"
+# Resolve script directory: honour pre-set BASE_DIR from orchestrators (Nextflow/Snakemake)
+if [[ -z "${BASE_DIR:-}" ]]; then
+    SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+    [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+    SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)" || { echo "[ERROR] run_post_processing.sh: Failed to resolve script directory" >&2; exit 1; }
+    BASE_DIR="$SCRIPT_DIR"
+else
+    # Validate BASE_DIR is absolute; resolve if relative (defensive against misconfigured orchestrators)
+    if [[ "$BASE_DIR" != /* ]]; then
+        BASE_DIR="$(cd "$BASE_DIR" 2>/dev/null && pwd)" || { echo "[ERROR] BASE_DIR is set but invalid: $BASE_DIR" >&2; exit 1; }
+    fi
+    SCRIPT_DIR="$BASE_DIR"
+fi
+_SELF_SCRIPT="$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"
+ANALYSIS_MODULES_DIR="${ANALYSIS_MODULES_DIR:-$BASE_DIR/modules/c_post_processing/analysis_modules}"
+GENE_GROUPS_DIR="${GENE_GROUPS_DIR:-$BASE_DIR/inputs/3_post_proc_inputs/gene_groups_csv}"
+SRR_CSV_DIR="${SRR_CSV_DIR:-$BASE_DIR/inputs/3_post_proc_inputs/SRR_csv}"
+UTILITIES_DIR="${UTILITIES_DIR:-$BASE_DIR/modules/c_post_processing/utilities}"
 
-source "$BASE_DIR/modules/logging/logging_utils.sh"
-source "$UTILITIES_DIR/pipeline_utils.sh"
-source "$BASE_DIR/config/shared/toml_parser.sh"
+source "$BASE_DIR/modules/logging/logging_utils.sh" || {
+    echo "[ERROR] Failed to source logging_utils.sh: $BASE_DIR/modules/logging/logging_utils.sh" >&2
+    exit 1
+}
+source "$UTILITIES_DIR/pipeline_utils.sh" || {
+    echo "[ERROR] Failed to source pipeline_utils.sh: $UTILITIES_DIR/pipeline_utils.sh" >&2
+    exit 1
+}
+source "$BASE_DIR/config/shared/toml_parser.sh" || {
+    echo "[ERROR] Failed to source TOML parser: $BASE_DIR/config/shared/toml_parser.sh" >&2
+    exit 1
+}
 
 if [[ ! -d "$ANALYSIS_MODULES_DIR" ]]; then
     log_warn "Analysis modules directory not found: $ANALYSIS_MODULES_DIR"
@@ -146,8 +183,16 @@ fi
 
 [[ ${#PIPELINE_CONFIGS[@]} -eq 0 ]] && { log_error "No configs enabled in PIPELINE_CONFIGS"; exit 1; }
 
+# Absolutize relative config paths against BASE_DIR so the pipeline works when
+# CWD differs from project root (e.g., Nextflow scratch workDir, Snakemake shadow).
+for _i in "${!PIPELINE_CONFIGS[@]}"; do
+    [[ "${PIPELINE_CONFIGS[$_i]}" != /* ]] && PIPELINE_CONFIGS[$_i]="${BASE_DIR}/${PIPELINE_CONFIGS[$_i]}"
+done
+unset _i
+
+# Skip conda activation when orchestrator manages the environment (Nextflow/Snakemake)
 # Skip conda hook (~0.3-0.5s) if already in the correct environment
-if [[ "${CONDA_DEFAULT_ENV:-}" != "gea" ]]; then
+if [[ -z "${WF_MANAGED_ENV:-}" && "${CONDA_DEFAULT_ENV:-}" != "gea" ]]; then
     eval "$(conda shell.bash hook 2>/dev/null)" 2>/dev/null || true
     conda activate gea 2>/dev/null || log_warn "conda env 'gea' not found, using current env"
 fi
@@ -161,6 +206,11 @@ ERROR_WARN_DIR="$BASE_DIR/3_POST_PROC/logs/error_warn_logs"
 SOFTWARE_CATALOG_DIR="$BASE_DIR/3_POST_PROC/logs/software_catalogs"
 GPU_LOG_DIR="$BASE_DIR/3_POST_PROC/logs/gpu_log"
 export LOG_DIR TIME_DIR SPACE_DIR SPACE_TIME_DIR ERROR_WARN_DIR SOFTWARE_CATALOG_DIR GPU_LOG_DIR
+
+# Ensure log directories exist before setup_logging (under Nextflow/Snakemake, output
+# directories may not be pre-created by the orchestrator)
+mkdir -p "$LOG_DIR" "$TIME_DIR" "$SPACE_DIR" "$SPACE_TIME_DIR" \
+         "$ERROR_WARN_DIR" "$SOFTWARE_CATALOG_DIR" "$GPU_LOG_DIR" 2>/dev/null || true
 
 setup_logging "$CLEAR_LOGS"
 export LOG_FILE TIME_FILE SPACE_FILE SPACE_TIME_FILE ERROR_WARN_FILE SOFTWARE_FILE GPU_LOG_FILE
@@ -212,6 +262,11 @@ if [[ "$PARALLEL_CONFIGS" == "auto" ]]; then
 fi
 # Ensure numeric
 [[ "$PARALLEL_CONFIGS" =~ ^[0-9]+$ ]] || PARALLEL_CONFIGS=1
+# Under orchestration (Nextflow/Snakemake), force serial dispatch unless explicitly
+# overridden — the orchestrator manages parallelism at the workflow level.
+if [[ -n "${WF_MANAGED_ENV:-}" && -z "${WF_ALLOW_INTERNAL_PARALLEL:-}" ]]; then
+    PARALLEL_CONFIGS=1
+fi
 
 #===============================================================================
 # PARALLEL CONFIG DISPATCH
@@ -229,14 +284,22 @@ if [[ "$PARALLEL_CONFIGS" -gt 1 && ${#PIPELINE_CONFIGS[@]} -gt 1 ]]; then
 
     declare -a _cfg_pids=() _cfg_logs=()
     _cfg_active=0
+    # Detect wait -n support once (bash 4.3+); avoids conflating
+    # "child exited with error" (non-zero rc) with "unsupported flag" (rc=2).
+    _has_wait_n=false
+    if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3) )); then
+        _has_wait_n=true
+    fi
 
     for _cfg_file in "${PIPELINE_CONFIGS[@]}"; do
         # Throttle: wait for a slot when at concurrency limit
         while (( _cfg_active >= PARALLEL_CONFIGS )); do
-            if wait -n 2>/dev/null; then
+            if $_has_wait_n; then
+                # wait -n returns child's exit code; slot freed regardless of success/failure
+                wait -n 2>/dev/null
                 (( _cfg_active-- ))
             else
-                # Fallback for bash < 4.3: wait for all and reset counter
+                # bash < 4.3: wait for all children and reset counter
                 wait; _cfg_active=0
             fi
         done
@@ -247,7 +310,10 @@ if [[ "$PARALLEL_CONFIGS" -gt 1 && ${#PIPELINE_CONFIGS[@]} -gt 1 ]]; then
         _cfg_logs+=("$_cfg_log")
 
         log_info "  Dispatching: ${_cfg_file##*/}"
-        __PP_SINGLE_CONFIG="$_cfg_file" bash "$0" > "$_cfg_log" 2>&1 &
+        # Export orchestrator flag and all key paths so child process inherits them
+        export WF_MANAGED_ENV BASE_DIR ANALYSIS_MODULES_DIR GENE_GROUPS_DIR SRR_CSV_DIR UTILITIES_DIR
+        export THREADS ENABLE_GPU AVAILABLE_RAM_GB GPU_VRAM_GB FIGURE_DPI
+        __PP_SINGLE_CONFIG="$_cfg_file" bash "$_SELF_SCRIPT" > "$_cfg_log" 2>&1 &
         _cfg_pids+=($!)
         (( _cfg_active++ ))
     done
@@ -280,6 +346,27 @@ if [[ "$PARALLEL_CONFIGS" -gt 1 && ${#PIPELINE_CONFIGS[@]} -gt 1 ]]; then
     PIPELINE_CONFIGS=()
 fi
 
+# Clear persistent R caches if requested (once before config loop — caches are shared)
+if [[ "$CLEAR_CACHE" == "TRUE" ]]; then
+    log_info "Clearing persistent pipeline caches..."
+    _cache_count=0
+    # Sample labels cache
+    [[ -f "$SRR_CSV_DIR/.sample_labels_cache.rds" ]] && rm -f "$SRR_CSV_DIR/.sample_labels_cache.rds" && _cache_count=$((_cache_count + 1))
+    # Gene name mapping caches (*.namemap.rds beside gene group CSVs)
+    while IFS= read -r -d '' _f; do
+        rm -f "$_f" && _cache_count=$((_cache_count + 1))
+    done < <(find "$GENE_GROUPS_DIR" -name '*.namemap.rds' -print0 2>/dev/null)
+    # GPU detection cache (R tempdir varies per session; search common temp roots)
+    for _tmp_root in "${TMPDIR:-/tmp}" "${TEMP:-}" "${TMP:-}"; do
+        [[ -z "$_tmp_root" || ! -d "$_tmp_root" ]] && continue
+        while IFS= read -r -d '' _f; do
+            rm -f "$_f" && _cache_count=$((_cache_count + 1))
+        done < <(find "$_tmp_root" -maxdepth 2 -name '.gpu_detect_cache.rds' -print0 2>/dev/null)
+    done
+    log_info "  Cleared $_cache_count cache file(s)"
+    unset _cache_count _f _tmp_root
+fi
+
 #===============================================================================
 # CONFIG LOOP
 #===============================================================================
@@ -299,11 +386,16 @@ declare -A _FOLDER_NAME_MAP=(
     [Matrix_Creation]="0_Matrix_Creation"
     [Basic_Heatmap]="I_Basic_Heatmap"
     [Heatmap_with_CV]="II_Heatmap_with_CV"
+    # Preprocessing analyses — no figure output folders (suppress spurious warnings)
+    [Stringtie_Matrix]=""
+    [Tximport_STAR]=""
+    [Tximport_Salmon]=""
+    [Tximport_RSEM]=""
 )
 
 for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
 
-    [[ "$CONFIG_FILE" != /* ]] && CONFIG_FILE="$SCRIPT_DIR/$CONFIG_FILE"
+    [[ "$CONFIG_FILE" != /* ]] && CONFIG_FILE="$BASE_DIR/$CONFIG_FILE"
     if [[ ! -f "$CONFIG_FILE" ]]; then
         log_warn "Config file not found, skipping: $CONFIG_FILE"
         continue
@@ -326,7 +418,8 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
         log_warn "MASTER_REFERENCES has ${#MASTER_REFERENCES[@]} entries but only the first ('$MASTER_REFERENCE') is used."
         log_warn "Use separate per-reference configs to process multiple references."
     fi
-    [[ "$CLEAR_OUTPUT_FOLDER" == "TRUE" ]] && OVERWRITE_EXISTING="TRUE" || OVERWRITE_EXISTING="FALSE"
+    # Respect externally-set OVERWRITE_EXISTING; default to CLEAR_OUTPUT_FOLDER value
+    OVERWRITE_EXISTING="${OVERWRITE_EXISTING:-$( [[ "$CLEAR_OUTPUT_FOLDER" == "TRUE" ]] && echo TRUE || echo FALSE )}"
     export OVERWRITE_EXISTING
 
     # Build combined SRR list using global cache — avoids re-parsing CSVs across configs
@@ -370,9 +463,15 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
             output_base="$BASE_DIR/3_POST_PROC/$method/Figure_Outputs"
             [[ -d "$output_base" ]] || continue
             for analysis in "${ANALYSES[@]}"; do
+                if [[ -z "${_FOLDER_NAME_MAP[$analysis]+x}" ]]; then
+                    log_warn "Unrecognized analysis '$analysis' — not in folder name map, skipping clear"
+                    continue
+                fi
                 folder_name="${_FOLDER_NAME_MAP[$analysis]}"
+                # Preprocessing analyses have empty folder name — no figures to clear
+                [[ -z "$folder_name" ]] && continue
                 target="$output_base/$folder_name/$MASTER_REFERENCE"
-                [[ -n "$folder_name" && -d "$target" ]] && _clear_targets+=("$target")
+                [[ -d "$target" ]] && _clear_targets+=("$target")
             done
         done
         if [[ ${#_clear_targets[@]} -gt 0 ]]; then
@@ -497,7 +596,7 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
             parallel \
                 -j "$_p1_n_methods" \
                 --halt soon,fail,30% \
-                --joblog "$LOG_DIR/parallel_preproc_${dataset}.log" \
+                --joblog "$LOG_DIR/parallel_preproc_${dataset}_${BASHPID:-$$}.log" \
                 run_method_preprocessing {} "$MASTER_REFERENCE" \
                 < <(printf '%s\n' "${METHODS[@]}") \
                 || log_warn "Phase 1: Some preprocessing tasks failed for dataset '$dataset' (see joblog)"
@@ -517,7 +616,7 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
                 parallel \
                     -j "$_n_methods" \
                     --halt soon,fail,30% \
-                    --joblog "$LOG_DIR/parallel_heavy_${dataset}.log" \
+                    --joblog "$LOG_DIR/parallel_heavy_${dataset}_${BASHPID:-$$}.log" \
                     _run_heavy_for_method {} "$MASTER_REFERENCE" "${HEAVY_ANALYSES[@]}" \
                     < <(printf '%s\n' "${METHODS[@]}") \
                     || log_warn "Phase 2: Some heavy analyses failed for dataset '$dataset' (see joblog)"
@@ -539,7 +638,7 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
                 parallel \
                     -j "$JOBS" \
                     --halt soon,fail,30% \
-                    --joblog "$LOG_DIR/parallel_figures_${dataset}.log" \
+                    --joblog "$LOG_DIR/parallel_figures_${dataset}_${BASHPID:-$$}.log" \
                     _run_figures_for_method {} "$MASTER_REFERENCE" \
                     < <(printf '%s\n' "${METHODS[@]}") \
                     || log_warn "Phase 3: Some figure tasks failed for dataset '$dataset' (see joblog)"
