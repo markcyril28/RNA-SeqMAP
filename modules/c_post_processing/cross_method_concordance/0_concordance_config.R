@@ -11,7 +11,11 @@
 # Source pipeline shared infrastructure
 # -----------------------------------------------
 
-ANALYSIS_MODULES_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", ".")
+ANALYSIS_MODULES_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", {
+  if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+    stop("[CONCORDANCE CONFIG] ANALYSIS_MODULES_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+  "."
+})
 
 # Source pipeline shared infrastructure if available; concordance defines its own
 # helpers below and reads critical values from environment variables, so these are
@@ -35,11 +39,36 @@ rm(.shared_config_path, .utility_funcs_path)
 # Concordance-specific configuration
 # -----------------------------------------------
 
-CONCORDANCE_SCRIPT_DIR <- Sys.getenv("CONCORDANCE_SCRIPT_DIR", ".")
-OUTPUT_DIR <- Sys.getenv("OUTPUT_DIR", "3_POST_PROC")
-ALIGNMENT_BASE <- Sys.getenv("ALIGNMENT_BASE", "2_ALIGNMENT_RESULTs")
-POST_PROC_BASE <- Sys.getenv("POST_PROC_BASE", "3_POST_PROC")
-BASE_DIR <- Sys.getenv("BASE_DIR", ".")
+CONCORDANCE_SCRIPT_DIR <- Sys.getenv("CONCORDANCE_SCRIPT_DIR", {
+  if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+    stop("[CONCORDANCE CONFIG] CONCORDANCE_SCRIPT_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+  "."
+})
+BASE_DIR <- Sys.getenv("BASE_DIR", {
+  if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+    stop("[CONCORDANCE CONFIG] BASE_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+  "."
+})
+# Derive stage dirs from BASE_DIR when set (avoids bare relative paths in orchestrated contexts)
+.base_set <- nzchar(BASE_DIR) && BASE_DIR != "."
+OUTPUT_DIR <- Sys.getenv("OUTPUT_DIR", {
+  if (.base_set) file.path(BASE_DIR, "3_POST_PROC")
+  else if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+    stop("[CONCORDANCE CONFIG] BASE_DIR is required when running under a workflow manager (WF_MANAGED_ENV is set).")
+  else "3_POST_PROC"
+})
+ALIGNMENT_BASE <- Sys.getenv("ALIGNMENT_BASE", {
+  if (.base_set) file.path(BASE_DIR, "2_ALIGNMENT_RESULTs")
+  else if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+    stop("[CONCORDANCE CONFIG] BASE_DIR is required when running under a workflow manager (WF_MANAGED_ENV is set).")
+  else "2_ALIGNMENT_RESULTs"
+})
+POST_PROC_BASE <- Sys.getenv("POST_PROC_BASE", {
+  if (.base_set) file.path(BASE_DIR, "3_POST_PROC")
+  else if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+    stop("[CONCORDANCE CONFIG] BASE_DIR is required when running under a workflow manager (WF_MANAGED_ENV is set).")
+  else "3_POST_PROC"
+})
 
 # Ensure MASTER_REFERENCE is set (may already be defined by 0_shared_config.R).
 # Default matches 0_shared_config.R ("Eggplant_V4.1") to avoid silent mismatch.
@@ -51,6 +80,8 @@ if (!exists("MASTER_REFERENCE") || !nzchar(MASTER_REFERENCE)) {
 if (!exists("GENE_GROUPS_DIR") || !nzchar(GENE_GROUPS_DIR)) {
   GENE_GROUPS_DIR <- Sys.getenv("GENE_GROUPS_DIR", "")
   if (!nzchar(GENE_GROUPS_DIR)) {
+    if (!.base_set && nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+      stop("[CONCORDANCE CONFIG] GENE_GROUPS_DIR or BASE_DIR is required under workflow manager.")
     GENE_GROUPS_DIR <- file.path(BASE_DIR, "inputs", "3_post_proc_inputs", "gene_groups_csv")
   }
 }
@@ -120,9 +151,12 @@ if (nzchar(GENOME_GENE_GROUPS_MAP_STR)) {
       GENOME_GENE_GROUPS_MAP[[.genome]] <- .csvs
     }
   }
-  # Guard: .genome/.csvs are only assigned when at least one entry has a valid "=" separator
-  # suppressWarnings avoids "object not found" if var was never assigned; skips ls() env scan
-  suppressWarnings(rm(".ggm_pairs", ".ggm_kv", ".kv", ".genome", ".csvs"))
+  # Guard: .genome/.csvs are only assigned when at least one entry has a valid "=" separator.
+  # rm() throws errors (not warnings) for nonexistent objects, so use envir/inherits to safely
+  # remove only the variables that actually exist.
+  for (.v in c(".ggm_pairs", ".ggm_kv", ".kv", ".genome", ".csvs"))
+    if (exists(.v, inherits = FALSE)) rm(list = .v)
+  rm(.v)
 }
 if (length(GENOME_GENE_GROUPS_MAP) > 0) {
   cat("[CONCORDANCE CONFIG] Genome gene groups map:\n")
@@ -134,7 +168,7 @@ if (length(GENOME_GENE_GROUPS_MAP) > 0) {
 
 # Figure resolution (DPI) — reuse value from 0_shared_config.R if already set,
 # otherwise compute from env var (300–600, default 300). Avoids redundant Sys.getenv().
-if (!exists("FIGURE_DPI") || !is.integer(FIGURE_DPI)) {
+if (!exists("FIGURE_DPI") || !is.numeric(FIGURE_DPI)) {
   FIGURE_DPI <- as.integer(Sys.getenv("FIGURE_DPI", "300"))
   if (is.na(FIGURE_DPI) || FIGURE_DPI < 72) FIGURE_DPI <- 300L
   FIGURE_DPI <- max(300L, min(600L, FIGURE_DPI))
@@ -276,3 +310,7 @@ cat("[CONCORDANCE CONFIG] Reference:", MASTER_REFERENCE, "\n")
 if (length(CONCORDANCE_GENOMES) > 0) cat("[CONCORDANCE CONFIG] Genomes:", paste(CONCORDANCE_GENOMES, collapse = ", "), "\n")
 cat("[CONCORDANCE CONFIG] Gene groups:", paste(CONCORDANCE_GENE_GROUPS, collapse = ", "), "\n")
 cat("[CONCORDANCE CONFIG] Output:", OUTPUT_DIR, "\n")
+
+# Sentinel: prevents redundant re-sourcing when scripts check
+# if (!exists(".CONC_BATCH_CONFIG_LOADED") || !isTRUE(.CONC_BATCH_CONFIG_LOADED))
+.CONC_BATCH_CONFIG_LOADED <- TRUE
