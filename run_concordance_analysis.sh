@@ -8,7 +8,7 @@
 #
 # Steps:
 #   1. Load & harmonize TPM matrices from all methods
-#   2. Compute pairwise Spearman/Pearson correlations; identify discordant genes
+#   2. Compute pairwise Spearman correlations
 #   3. Generate unified Markdown report
 #
 # Usage:
@@ -128,6 +128,11 @@ CONFIG_INPUT="${1:-}"
 # CWD differs from project root (e.g., Nextflow scratch workDir, Snakemake shadow).
 [[ -n "$CONFIG_INPUT" && "$CONFIG_INPUT" != /* ]] && CONFIG_INPUT="${BASE_DIR}/${CONFIG_INPUT}"
 CONFIG_CROSS_DIR="${CONCORDANCE_CONFIG_CROSS_DIR:-${BASE_DIR}/config/4_concordance_combination}"
+if [[ ! -d "$CONFIG_CROSS_DIR" ]]; then
+    log_error "Concordance config directory not found: $CONFIG_CROSS_DIR"
+    log_error "Ensure BASE_DIR is correct or set CONCORDANCE_CONFIG_CROSS_DIR explicitly."
+    exit 1
+fi
 
 # Analysis steps to run (comment out entries to skip)
 # ─────────────────────────────────────────────────────
@@ -292,6 +297,8 @@ if [[ "${CLEAR_OUTPUT_FOLDER:-FALSE}" == "TRUE" && -d "${OUTPUT_DIR}" ]]; then
 fi
 # Logs always live under the top-level REPORT_BASE (4_CONCORDANCE_ANALYSIS/logs/),
 # even when child processes override REPORT_BASE to per-config subdirectories.
+# NOTE: When OUTPUT_DIR == REPORT_BASE (default), the rm -rf above already deleted logs.
+# This block only has effect when OUTPUT_DIR is a subdirectory of REPORT_BASE.
 CONCORDANCE_LOG_BASE="${CONCORDANCE_LOG_BASE:-${REPORT_BASE}/logs}"
 if [[ "${CLEAR_LOGS:-FALSE}" == "TRUE" && -d "${CONCORDANCE_LOG_BASE}" ]]; then
     log_info "Clearing previous logs: ${CONCORDANCE_LOG_BASE}"

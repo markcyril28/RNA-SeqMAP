@@ -27,7 +27,7 @@ OVERWRITE_MODE="${OVERWRITE_MODE:-skip}"
 export OVERWRITE_MODE
 
 # Clear persistent R/.rds pipeline caches before running (sample labels, gene name maps, GPU detection)
-CLEAR_CACHE="${CLEAR_CACHE:-FALSE}"
+CLEAR_CACHE="${CLEAR_CACHE:-TRUE}"
 
 # Active configuration file — uncomment as needed:
 CONFIG_FILES=(
@@ -411,6 +411,8 @@ for config_file in "${CONFIG_FILES[@]}"; do
 
 	# Re-derive THREADS_PER_JOB from potentially updated THREADS/JOBS
 	if [[ "${USE_GNU_PARALLEL:-FALSE}" == "TRUE" ]]; then
+		# Guard: ensure JOBS >= 1 before division (prevents bash arithmetic error if config sets jobs=0)
+		(( ${JOBS:-1} < 1 )) && JOBS=1
 		THREADS_PER_JOB=$((${THREADS:-4} / ${JOBS:-1}))
 		[[ $THREADS_PER_JOB -lt 1 ]] && THREADS_PER_JOB=1
 	else
