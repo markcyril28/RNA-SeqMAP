@@ -9,12 +9,15 @@
 
 # Guard against double-sourcing
 [[ "${M3_STAR_SOURCED:-}" == "true" ]] && return 0
-export M3_STAR_SOURCED="true"
+M3_STAR_SOURCED="true"
 
 # Source dependencies
 # Use exported MODULES_DIR to avoid cd+dirname+pwd subshell fork; fallback for standalone sourcing
 SCRIPT_DIR="${MODULES_DIR:+${MODULES_DIR}/b_main_methods}"
-if [[ -z "$SCRIPT_DIR" ]]; then SCRIPT_DIR="${BASH_SOURCE[0]%/*}"; [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."; fi
+if [[ -z "$SCRIPT_DIR" ]]; then
+	SCRIPT_DIR="${BASH_SOURCE[0]%/*}"; [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+	SCRIPT_DIR="$(cd "$SCRIPT_DIR" 2>/dev/null && pwd)"
+fi
 _M3_SCRIPT_DIR="$SCRIPT_DIR"
 source "$SCRIPT_DIR/shared_utils_method.sh"
 
@@ -334,7 +337,10 @@ star_alignment_pipeline() {
 	abs_star_index_root="${abs_star_index_root//\/\//\/}"
 	abs_star_align_root="${abs_star_align_root//\/\//\/}"
 
-	mkdir -p "$abs_star_index_root" "$abs_star_align_root" 2>/dev/null || true
+	mkdir -p "$abs_star_index_root" "$abs_star_align_root" || {
+		log_error "Failed to create STAR output directories: $abs_star_index_root, $abs_star_align_root"
+		return 1
+	}
 
 	# Set directories based on fasta_tag and tissue_tag (using absolute paths).
 	# STAR_INDEX_ROOT already contains {fasta_tag} (set by set_fasta_output_dirs).
@@ -528,7 +534,7 @@ star_alignment_pipeline() {
 	if $_SHARED_HAS_PARALLEL && [[ "$parallel_jobs" -gt 1 ]] && [[ "${USE_GNU_PARALLEL:-TRUE}" != "FALSE" ]]; then
 		log_step "[PARALLEL] STAR alignment: ${#rnaseq_list[@]} samples, $parallel_jobs jobs x $threads_per_job threads"
 		log_warn "[PARALLEL] STAR is memory-intensive (~30GB/instance). Ensure sufficient RAM for $parallel_jobs concurrent jobs."
-		_prepare_parallel_env
+		_prepare_parallel_env "M3"
 
 		export fasta_tag threads_per_job
 		export star_index_dir star_genome_dir
@@ -560,7 +566,8 @@ star_alignment_pipeline() {
 			rm -f "${star_genome_dir}/${SRR}_Log.out" "${star_genome_dir}/${SRR}_Log.progress.out" \
 				"${star_genome_dir}/${SRR}_Log.final.out" "${star_genome_dir}/${SRR}_SJ.out.tab" 2>/dev/null || true
 			rm -rf "${star_genome_dir}/${SRR}__STARgenome" "${star_genome_dir}/${SRR}__STARpass1" \
-				"${star_genome_dir}/${SRR}_STARtmp" "${star_genome_dir}/_STARtmp_${SRR}" 2>/dev/null || true
+				"${star_genome_dir}/${SRR}_STARtmp" "${star_genome_dir}/_STARtmp_${SRR}" \
+				"${star_genome_dir}/_STARtmp_${fasta_tag}_${SRR}" 2>/dev/null || true
 
 			local star_reads_args=("$trimmed1")
 			if [[ -n "$trimmed2" && -f "$trimmed2" ]]; then
@@ -573,7 +580,7 @@ star_alignment_pipeline() {
 				_par_read_cmd_args=(--readFilesCommand "$_STAR_READ_CMD")
 			fi
 
-			local star_tmp_dir="${star_genome_dir}/_STARtmp_${SRR}"
+			local star_tmp_dir="${star_genome_dir}/_STARtmp_${fasta_tag}_${SRR}"
 			rm -rf "$star_tmp_dir" 2>/dev/null || true
 
 			local out_prefix="${star_genome_dir}/${SRR}_"
@@ -612,7 +619,7 @@ star_alignment_pipeline() {
 
 			local final_bam_size
 			final_bam_size=$(_bam_is_valid "$bam_output" 1000) || {
-				_parallel_log STAR "$SRR" ERROR "Sorted BAM is empty/corrupt (${final_bam_size} bytes)"
+				_parallel_log STAR "$SRR" ERROR "Sorted BAM is empty/corrupt ($(stat -c%s "$bam_output" 2>/dev/null || stat -f%z "$bam_output" 2>/dev/null || echo 0) bytes)"
 				return 1
 			}
 
@@ -628,7 +635,8 @@ star_alignment_pipeline() {
 			rm -rf "$star_tmp_dir" 2>/dev/null || true
 			if [[ "${STAR_DELETE_TRANSIENT:-true}" == "true" ]]; then
 				rm -rf "${star_genome_dir}/${SRR}__STARgenome" "${star_genome_dir}/${SRR}__STARpass1" \
-					"${star_genome_dir}/${SRR}_STARtmp" "${star_genome_dir}/_STARtmp_${SRR}" 2>/dev/null || true
+					"${star_genome_dir}/${SRR}_STARtmp" "${star_genome_dir}/_STARtmp_${SRR}" \
+					"${star_genome_dir}/_STARtmp_${fasta_tag}_${SRR}" 2>/dev/null || true
 				rm -f "${star_genome_dir}/${SRR}_Log.progress.out" 2>/dev/null || true
 			fi
 
@@ -641,6 +649,7 @@ star_alignment_pipeline() {
 		# each worker runs STAR 2-pass O(N log N) alignment + in-process BAM sort O(N log N)
 		parallel \
 			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
+			--env _CONDA_PROFILE_SCRIPT --env WF_MANAGED_ENV \
 			--env abs_trim_dir_root --env abs_error_warn_file --env keep_bam_global \
 			--env fasta_tag --env threads_per_job --env parallel_jobs \
 			--env star_index_dir --env star_genome_dir \
@@ -650,13 +659,16 @@ star_alignment_pipeline() {
 			--env _STAR_READ_CMD --env _star_sort_ram_bytes \
 			-j "$parallel_jobs" \
 			--halt soon,fail,1 \
-			--joblog "$star_genome_dir/parallel_star_align.log" \
+			--joblog "$star_genome_dir/parallel_star_align_${BASHPID:-$$}.log" \
 			_m3_star_parallel_worker {} \
 			< <(printf '%s\n' "${rnaseq_list[@]}")
 
 		local par_exit=$?
 		log_info "[PARALLEL] STAR alignment complete (exit=$par_exit)"
-		[[ $par_exit -ne 0 ]] && log_warn "[PARALLEL] Some jobs failed - check $star_genome_dir/parallel_star_align.log"
+		if [[ $par_exit -ne 0 ]]; then
+			log_error "[PARALLEL] Some jobs failed - check $star_genome_dir/parallel_star_align_${BASHPID:-$$}.log"
+			return $par_exit
+		fi
 	else
 		# Sequential fallback — recompute RAM budget for a single concurrent job
 		# (the initial _star_sort_ram was computed for parallel_jobs instances)
@@ -672,7 +684,7 @@ star_alignment_pipeline() {
 			log_error "[STAR] FATAL: Cannot create output directory: $star_genome_dir"
 			return 1
 		fi
-		local _preflight_test="${star_genome_dir}/_star_write_test_$$"
+		local _preflight_test="${star_genome_dir}/_star_write_test_${BASHPID:-$$}"
 		if ! touch "$_preflight_test" 2>/dev/null; then
 			log_error "[STAR] FATAL: Output directory not writable: $star_genome_dir"
 			return 1
@@ -687,20 +699,24 @@ star_alignment_pipeline() {
 				return 1
 			fi
 		fi
-		# Clean up any stray project-root temp dirs once
-		rm -rf "${PROJECT_ROOT:-.}/_STARtmp" 2>/dev/null || true
+		# Clean up any stray project-root temp dirs once (skip if PROJECT_ROOT unset —
+		# avoids deleting from CWD under orchestration where CWD may be a scratch dir)
+		[[ -n "${PROJECT_ROOT:-}" ]] && rm -rf "${PROJECT_ROOT}/_STARtmp" 2>/dev/null || true
 
-		# Clean up stale files from ALL previous failed STAR runs in a single find pass
-		# O(1) directory scan instead of O(S) per-sample scans — 50x faster for 50 samples
-		log_info "[STAR] Cleaning up stale files from previous runs..."
+		# Clean up stale TEMP files from previous failed STAR runs in a single find pass.
+		# O(1) directory scan instead of O(S) per-sample scans — 50x faster for 50 samples.
+		# NOTE: Preserve *_Log.final.out — these are needed for QC on resume/skip runs.
+		# Only delete intermediate logs and temp dirs that indicate incomplete runs.
+		log_info "[STAR] Cleaning up stale temp files from previous runs..."
 		find "$star_genome_dir" -maxdepth 1 \( \
 			-name "*_Log.out" -o -name "*_Log.progress.out" \
-			-o -name "*_Log.final.out" -o -name "*_SJ.out.tab" \
+			-o -name "*_SJ.out.tab" \
 			-o -name "*__STARgenome" -o -name "*__STARpass1" \
 			-o -name "*_STARtmp" -o -name "*_*.tmp" \
 			-o -name "_STARtmp_*" \
 		\) -exec rm -rf {} + 2>/dev/null || true
 
+		local _seq_failures=0
 		for SRR in "${rnaseq_list[@]}"; do
 			local bam_output="$star_genome_dir/${SRR}_Aligned.sortedByCoord.out.bam"
 
@@ -736,9 +752,9 @@ star_alignment_pipeline() {
 
 			# Configure STAR temp directory - ALWAYS use output directory for temp
 			# This ensures all STAR operations happen on the same filesystem
-			local star_tmp_dir="${star_genome_dir}/_STARtmp_${SRR}"
+			local star_tmp_dir="${star_genome_dir}/_STARtmp_${fasta_tag}_${SRR}"
 			rm -rf "$star_tmp_dir" 2>/dev/null || true
-			rm -rf "${PROJECT_ROOT:-.}/_STARtmp_${SRR}" 2>/dev/null || true
+			[[ -n "${PROJECT_ROOT:-}" ]] && rm -rf "${PROJECT_ROOT}/_STARtmp_${SRR}" 2>/dev/null || true
 			log_info "[STAR] Using temp directory: $star_tmp_dir"
 
 			# Construct output prefix - ensure no double slashes and path is clean
@@ -776,16 +792,16 @@ star_alignment_pipeline() {
 				_star_log_tail=$(tail -30 "${out_prefix}Log.out" 2>/dev/null)
 				log_error "[STAR] Last 30 lines of STAR log:"
 				log_error "$_star_log_tail"
-				return 1
+				((_seq_failures++)) || true; continue
 			fi
 
 			local final_bam_size
 			final_bam_size=$(_bam_is_valid "$bam_output" 1000) || {
-				log_error "[STAR] FATAL: Sorted BAM is empty/corrupt for $SRR (${final_bam_size} bytes)"
+				log_error "[STAR] FATAL: Sorted BAM is empty/corrupt for $SRR ($(stat -c%s "$bam_output" 2>/dev/null || stat -f%z "$bam_output" 2>/dev/null || echo '?') bytes)"
 				[[ -z "$_star_log_tail" ]] && _star_log_tail=$(tail -30 "${out_prefix}Log.out" 2>/dev/null)
 				log_error "[STAR] Last 30 lines of STAR log:"
 				log_error "$_star_log_tail"
-				return 1
+				((_seq_failures++)) || true; continue
 			}
 
 			log_info "[STAR] BAM sorted successfully: $final_bam_size bytes"
@@ -802,7 +818,8 @@ star_alignment_pipeline() {
 			fi
 
 			# Clean up temp directories after successful alignment
-			rm -rf "$star_tmp_dir" "${PROJECT_ROOT:-.}/_STARtmp" 2>/dev/null || true
+			rm -rf "$star_tmp_dir" 2>/dev/null || true
+			[[ -n "${PROJECT_ROOT:-}" ]] && rm -rf "${PROJECT_ROOT}/_STARtmp" 2>/dev/null || true
 
 			# Delete transient big files if enabled (saves significant disk space)
 			if [[ "${STAR_DELETE_TRANSIENT:-true}" == "true" ]]; then
@@ -813,6 +830,7 @@ star_alignment_pipeline() {
 					"${star_genome_dir}/${SRR}__STARpass1" \
 					"${star_genome_dir}/${SRR}_STARtmp" \
 					"${star_genome_dir}/_STARtmp_${SRR}" \
+					"${star_genome_dir}/_STARtmp_${fasta_tag}_${SRR}" \
 					"${star_genome_dir}/${SRR}_Log.progress.out" 2>/dev/null || true
 
 				log_info "[STAR] Transient files cleaned up for $SRR"
@@ -820,6 +838,11 @@ star_alignment_pipeline() {
 
 			log_info "[STAR] Successfully aligned: $SRR"
 		done
+
+		if [[ $_seq_failures -gt 0 ]]; then
+			log_warn "[SEQUENTIAL] $_seq_failures sample(s) failed during STAR alignment"
+			return 1
+		fi
 	fi
 
 	log_info "[STAR] All samples aligned successfully"
@@ -906,7 +929,7 @@ star_alignment_pipeline() {
 	# Use cached parallel availability (set at module load) to avoid per-invocation command -v
 	if $_SHARED_HAS_PARALLEL && [[ "$parallel_jobs" -gt 1 ]] && [[ "${USE_GNU_PARALLEL:-TRUE}" != "FALSE" ]]; then
 		log_step "[PARALLEL] Salmon quant (STAR): ${#rnaseq_list[@]} samples, $parallel_jobs jobs x $threads_per_job threads"
-		_prepare_parallel_env
+		_prepare_parallel_env "M3"
 
 		export fasta_tag threads_per_job salmon_idx quant_root
 		export _sal_lib_pe _sal_lib_se
@@ -947,19 +970,20 @@ star_alignment_pipeline() {
 
 		parallel \
 			--env PATH --env CONDA_PREFIX --env CONDA_DEFAULT_ENV --env CONDA_EXE \
+			--env _CONDA_PROFILE_SCRIPT --env WF_MANAGED_ENV \
 			--env abs_trim_dir_root --env abs_error_warn_file --env keep_bam_global \
 			--env fasta_tag --env threads_per_job --env salmon_idx --env quant_root \
 			--env _sal_lib_pe --env _sal_lib_se \
-			--env OVERWRITE_MODE \
+			--env OVERWRITE_MODE --env PROJECT_ROOT \
 			-j "$parallel_jobs" \
 			--halt soon,fail,1 \
-			--joblog "$quant_root/parallel_salmon_star_quant.log" \
+			--joblog "$quant_root/parallel_salmon_star_quant_${BASHPID:-$$}.log" \
 			_m3_salmon_parallel_worker {} \
 			< <(printf '%s\n' "${rnaseq_list[@]}")
 
 		local par_exit_salmon=$?
 		log_info "[PARALLEL] Salmon quant complete (exit=$par_exit_salmon)"
-		[[ $par_exit_salmon -ne 0 ]] && log_warn "[PARALLEL] Some Salmon jobs failed - check $quant_root/parallel_salmon_star_quant.log"
+		[[ $par_exit_salmon -ne 0 ]] && log_warn "[PARALLEL] Some Salmon jobs failed - check $quant_root/parallel_salmon_star_quant_${BASHPID:-$$}.log"
 	else
 		# Sequential fallback
 		for SRR in "${rnaseq_list[@]}"; do
@@ -1086,7 +1110,7 @@ star_alignment_pipeline() {
 # before output_script — accept and ignore them for backward compatibility.
 generate_tximport_star_script() {
 	local output_script="${!#}"  # last argument
-	local helper_script="$_M3_SCRIPT_DIR/../c_post_processing/preprocessing/STAR/tximport_star_helper.R"
+	local helper_script="${MODULES_DIR:-$_M3_SCRIPT_DIR/..}/c_post_processing/preprocessing/STAR/tximport_star_helper.R"
 
 	if [[ -f "$helper_script" ]]; then
 		cp "$helper_script" "$output_script"
