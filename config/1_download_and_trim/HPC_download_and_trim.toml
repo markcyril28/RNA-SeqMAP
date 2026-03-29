@@ -11,8 +11,8 @@
 
 # Runtime
 threads = 12
-jobs = 3
-optimal_threads_per_job = 4
+jobs = 1
+optimal_threads_per_job = 12
 use_gnu_parallel = true
 keep_bam_global = "n"
 
