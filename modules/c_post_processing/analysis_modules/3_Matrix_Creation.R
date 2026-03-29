@@ -451,11 +451,11 @@ run_matrix_creation_main <- function() {
   method_type <- get_method_type(CURRENT_METHOD)
   quant_dir <- if (nzchar(base_dir)) {
     switch(method_type,
-      "rsem"   = file.path(base_dir, "2_ALIGNMENT_RESULTs", "M5_RSEM_Bowtie2",
+      "rsem"   = file.path(base_dir, "2_ALIGNMENT_RESULTs", CURRENT_METHOD,
                            "RSEM_Quant_WD", MASTER_REFERENCE),
-      "salmon" = file.path(base_dir, "2_ALIGNMENT_RESULTs", "M4_Salmon_Saf",
+      "salmon" = file.path(base_dir, "2_ALIGNMENT_RESULTs", CURRENT_METHOD,
                            "Salmon_Quant", MASTER_REFERENCE),
-      "star"   = file.path(base_dir, "2_ALIGNMENT_RESULTs", "M3_STAR_Align",
+      "star"   = file.path(base_dir, "2_ALIGNMENT_RESULTs", CURRENT_METHOD,
                            MASTER_REFERENCE, "6_salmon", "quant"),
       get_quant_dir(CURRENT_METHOD)  # fallback: relative path for other methods
     )

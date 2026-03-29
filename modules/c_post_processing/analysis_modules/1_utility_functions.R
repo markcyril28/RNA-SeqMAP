@@ -13,13 +13,12 @@ if (!exists("CURRENT_METHOD")) {
   # interactive/direct-source calls. The env var path is reliable in Nextflow/Snakemake scratch dirs.
   .utils_dir <- Sys.getenv("ANALYSIS_MODULES_DIR", "")
   if (!nzchar(.utils_dir)) {
+    # Under orchestrators, fail fast — sys.frame(1)$ofile may resolve to a misleading scratch path
+    if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+      stop("[UTILITY_FUNCTIONS] ANALYSIS_MODULES_DIR env var is required under workflow manager (WF_MANAGED_ENV is set).")
     .utils_dir <- tryCatch(
       dirname(sys.frame(1)$ofile),
-      error = function(e) {
-        if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
-          stop("[UTILITY_FUNCTIONS] ANALYSIS_MODULES_DIR env var is required under workflow manager (WF_MANAGED_ENV is set).")
-        "."
-      }
+      error = function(e) "."
     )
   }
   source(file.path(.utils_dir, "0_shared_config.R"))
