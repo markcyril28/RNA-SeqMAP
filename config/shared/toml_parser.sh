@@ -37,6 +37,17 @@ _TOML_PARSER_SOURCED="true"
 load_toml() {
     local toml_file="$1"
 
+    # Resolve relative paths to absolute — ensures correct file lookup when
+    # orchestrators (Nextflow/Snakemake) invoke scripts from arbitrary workDirs
+    if [[ "$toml_file" != /* ]]; then
+        local _toml_dir
+        _toml_dir="$(cd "$(dirname "$toml_file")" 2>/dev/null && pwd)" || {
+            echo "[ERROR] TOML config: failed to resolve relative path: $1" >&2
+            return 1
+        }
+        toml_file="${_toml_dir}/$(basename "$toml_file")"
+    fi
+
     if [[ ! -f "$toml_file" ]]; then
         echo "[ERROR] TOML config not found: $toml_file" >&2
         return 1
@@ -251,6 +262,16 @@ _toml_parse_array_elements() {
 load_toml_srr_datasets() {
     local toml_file="$1"
 
+    # Resolve relative paths to absolute (same as load_toml)
+    if [[ "$toml_file" != /* ]]; then
+        local _toml_dir
+        _toml_dir="$(cd "$(dirname "$toml_file")" 2>/dev/null && pwd)" || {
+            echo "[ERROR] SRR datasets TOML: failed to resolve relative path: $1" >&2
+            return 1
+        }
+        toml_file="${_toml_dir}/$(basename "$toml_file")"
+    fi
+
     if [[ ! -f "$toml_file" ]]; then
         echo "[ERROR] SRR datasets TOML not found: $toml_file" >&2
         return 1
@@ -358,8 +379,10 @@ load_toml_srr_datasets() {
                     for _ds in "${_active_datasets[@]}"; do
                         local _ds_var="SRR_LIST_${_ds^^}"
                         if [[ -n "${!_ds_var+x}" ]]; then
-                            local -n _ds_ref="$_ds_var"
-                            SRR_COMBINED_LIST+=("${_ds_ref[@]}")
+                            # Use eval instead of local -n: bash's local -n inside a
+                            # loop only binds on the first iteration, silently aliasing
+                            # the wrong variable on subsequent iterations.
+                            eval 'SRR_COMBINED_LIST+=("${'"$_ds_var"'[@]}")'
                         fi
                     done
                 fi
@@ -374,8 +397,9 @@ load_toml_srr_datasets() {
         for _ds in "${__ACTIVE_DATASETS_TMP[@]}"; do
             _ds_var="SRR_LIST_${_ds^^}"
             if [[ -n "${!_ds_var+x}" ]]; then
-                local -n _ds_ref="$_ds_var"
-                SRR_COMBINED_LIST+=("${_ds_ref[@]}")
+                # Use eval instead of local -n: bash's local -n inside a
+                # loop only binds on the first iteration (see above).
+                eval 'SRR_COMBINED_LIST+=("${'"$_ds_var"'[@]}")'
             fi
         done
         unset __ACTIVE_DATASETS_TMP

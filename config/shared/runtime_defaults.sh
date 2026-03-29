@@ -29,8 +29,12 @@ fi
 # ==============================================================================
 
 # Prefer MODULES_DIR env var (set by orchestrators); fall back to relative resolution
+# Under WF_MANAGED_ENV, MODULES_DIR is required — fail fast instead of silent BASH_SOURCE fallback
 if [[ -n "${MODULES_DIR:-}" && -f "${MODULES_DIR}/modules_loader.sh" ]]; then
     source "${MODULES_DIR}/modules_loader.sh"
+elif [[ -n "${WF_MANAGED_ENV:-}" ]]; then
+    echo "[ERROR] runtime_defaults.sh: MODULES_DIR is required under WF_MANAGED_ENV but is unset or invalid (MODULES_DIR=${MODULES_DIR:-})" >&2
+    return 1
 else
     _RUNTIME_DEFAULTS_DIR="${BASH_SOURCE[0]%/*}"
     [[ "$_RUNTIME_DEFAULTS_DIR" == "${BASH_SOURCE[0]}" ]] && _RUNTIME_DEFAULTS_DIR="."
