@@ -82,6 +82,12 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
+# Resolve user-supplied paths to absolute (defensive: works from any cwd)
+if [[ "$CONCORDANCE_DIR" != /* ]]; then
+    _orig_concordance_dir="$CONCORDANCE_DIR"
+    CONCORDANCE_DIR="$(cd "$CONCORDANCE_DIR" 2>/dev/null && pwd)" || { echo "[ERROR] --concordance-dir path is invalid: $_orig_concordance_dir" >&2; exit 1; }
+fi
+
 #===============================================================================
 # LOGGING
 #===============================================================================

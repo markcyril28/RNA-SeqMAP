@@ -81,6 +81,12 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
+# Resolve user-supplied paths to absolute (defensive: works from any cwd)
+if [[ "$POST_PROC_DIR" != /* ]]; then
+    _orig_post_proc_dir="$POST_PROC_DIR"
+    POST_PROC_DIR="$(cd "$POST_PROC_DIR" 2>/dev/null && pwd)" || { echo "[ERROR] --post-proc-dir path is invalid: $_orig_post_proc_dir" >&2; exit 1; }
+fi
+
 #===============================================================================
 # LOGGING
 #===============================================================================

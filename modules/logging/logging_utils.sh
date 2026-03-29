@@ -66,7 +66,7 @@ if [[ -z "${_GNU_TIME_CMD:-}" ]]; then
 		_GNU_TIME_CMD="/usr/bin/time"
 	elif command -v gtime &>/dev/null && gtime --version &>/dev/null; then
 		_GNU_TIME_CMD="gtime"
-	elif command -v time &>/dev/null && time --version &>/dev/null 2>&1; then
+	elif command -v time &>/dev/null && time --version &>/dev/null; then
 		_GNU_TIME_CMD="time"
 	else
 		_GNU_TIME_CMD=""
@@ -166,9 +166,9 @@ _logging_setup_redirect() {
 	else
 		exec > >(tee >(strip_ansi_stream >> "$LOG_FILE")) 2>&1
 	fi
-	# Capture the PID of the outermost process substitution
-	# ($! is set by exec > >(...) in bash)
-	[[ -n "${!:-}" ]] && _LOGGING_BG_PIDS+=("$!")
+	# Capture the PID of the outermost process substitution.
+	# $! is set by exec > >(...) in bash.
+	[[ -n "$!" ]] && _LOGGING_BG_PIDS+=("$!")
 }
 
 setup_logging() {
@@ -591,9 +591,12 @@ catalog_all_software() {
 
 	# Record pipeline git commit SHA for provenance
 	if command -v git >/dev/null 2>&1; then
-		# Cache repo root path — avoids 3 redundant dirname subshell forks
-		local _repo_root
-		_repo_root="$(cd "${BASH_SOURCE[0]%/*}/../.." 2>/dev/null && pwd)" || _repo_root=""
+		# Prefer PROJECT_ROOT (always correct under orchestrators); fall back to
+		# BASH_SOURCE-relative navigation for standalone bash mode.
+		local _repo_root="${PROJECT_ROOT:-}"
+		if [[ -z "$_repo_root" ]]; then
+			_repo_root="$(cd "${BASH_SOURCE[0]%/*}/../.." 2>/dev/null && pwd)" || _repo_root=""
+		fi
 		[[ -z "$_repo_root" ]] && return 0
 		local git_sha
 		git_sha=$(git -C "$_repo_root" rev-parse --short HEAD 2>/dev/null || echo "not_a_git_repo")
@@ -630,7 +633,7 @@ catalog_all_software() {
 		"prepDE.py:prepDE.py --version"
 		"python:python3 --version"
 		"parallel:parallel --version"
-		"R:R --version"
+		"R:R --version 2>&1 | awk '/^R version/{print \$3;exit}'"
 	)
 
 	# O(F) wall-clock (parallel) vs O(F) sequential — F tool version subshells run concurrently;
