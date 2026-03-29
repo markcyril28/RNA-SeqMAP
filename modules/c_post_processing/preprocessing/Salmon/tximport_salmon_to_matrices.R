@@ -19,6 +19,12 @@ suppressPackageStartupMessages({
 # CONFIGURATION
 # ===============================================
 
+# Default CURRENT_METHOD for this Salmon-specific script before shared config
+# sets a generic fallback (M5). Prevents wrong-directory lookups in standalone mode.
+if (!nzchar(Sys.getenv("CURRENT_METHOD", unset = ""))) {
+  Sys.setenv(CURRENT_METHOD = "M4_Salmon_Saf")
+}
+
 # Source shared config and utilities (DRY principle)
 SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", {
   if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
@@ -64,7 +70,7 @@ QUANT_DIR_INCLUDES_REF <- nzchar(SALMON_QUANT_ROOT_ENV)
 QUANT_DIR <- if (QUANT_DIR_INCLUDES_REF) {
   SALMON_QUANT_ROOT_ENV
 } else if (nzchar(BASE_DIR)) {
-  file.path(BASE_DIR, "2_ALIGNMENT_RESULTs", "M4_Salmon_Saf", "Salmon_Quant")
+  file.path(BASE_DIR, "2_ALIGNMENT_RESULTs", CURRENT_METHOD, "Salmon_Quant")
 } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
   stop("[SALMON TXIMPORT] BASE_DIR or SALMON_QUANT_ROOT is required under workflow manager (WF_MANAGED_ENV is set).")
 } else {
@@ -77,7 +83,7 @@ QUANT_DIR <- if (QUANT_DIR_INCLUDES_REF) {
 # Use an absolute path when BASE_DIR is available (run_method_analysis does pushd, so the
 # working directory is correct, but an absolute path allows the script to be run standalone).
 MATRICES_OUTPUT_DIR <- if (nzchar(BASE_DIR)) {
-  file.path(BASE_DIR, "3_POST_PROC", "M4_Salmon_Saf", "count_matrices_from_Salmon_Quant")
+  file.path(BASE_DIR, "3_POST_PROC", CURRENT_METHOD, "count_matrices_from_Salmon_Quant")
 } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
   stop("[SALMON TXIMPORT] BASE_DIR is required for output directory under workflow manager.")
 } else {
@@ -502,6 +508,8 @@ for (level_name in names(processing_levels)) {
         cat("    Error reading file:", conditionMessage(e), "\n")
         character(0)
       })
+      # Filter empty strings/NAs after trimming (matches STAR pattern at tximport_star_to_matrices.R)
+      gene_list <- gene_list[nzchar(gene_list) & !is.na(gene_list)]
 
       if (length(gene_list) == 0) {
         cat("    Skipping: No genes in list\n")

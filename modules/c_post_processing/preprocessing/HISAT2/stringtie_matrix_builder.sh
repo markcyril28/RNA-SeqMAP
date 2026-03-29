@@ -75,7 +75,6 @@ if [[ -n "${GENE_GROUPS_STR:-}" ]]; then
 elif [[ -z "${GENE_GROUPS:-}" ]]; then
     GENE_GROUPS=(
         "SmelDMPs"
-        "SmelGRFs"
         "SmelGIF"
     )
 fi
@@ -328,8 +327,13 @@ merge_group_counts() {
         return 1
     fi
 
+    # Declare once before the loop; reset to empty inside each iteration.
+    # (local -a VAR=() inside a loop only initializes on the FIRST iteration;
+    # subsequent local -a calls are no-ops, causing silent accumulation.)
+    local -a sample_files=() matched_srrs=()
     for count_type in coverage fpkm tpm; do
-        local -a sample_files=()
+        sample_files=()
+        matched_srrs=()
         local ext
         case "$count_type" in
             coverage) ext="cov" ;;
@@ -338,7 +342,6 @@ merge_group_counts() {
         esac
 
         # Build sample_files and matched_srrs in a single pass (was two identical loops)
-        local -a matched_srrs=()
         for srr in "${processed_srrs[@]}"; do
             local extracted="$tmpdir/${srr}.${ext}"
             if [[ -f "$extracted" ]]; then

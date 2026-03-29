@@ -6,8 +6,8 @@
 # Processes Salmon quantification output from STAR alignment (M3) using tximport.
 # Produces standardized count matrices consumed by all downstream analysis modules.
 #
-# Runs from: 3_POST_PROC/M3_STAR_Align/   (via pushd in run_method_analysis)
-# Quant files: ../../2_ALIGNMENT_RESULTs/M3_STAR_Align/{MASTER_REFERENCE}/6_salmon/quant/{SRR_ID}/quant.sf
+# Runs from: 3_POST_PROC/{CURRENT_METHOD}/   (via pushd in run_method_analysis)
+# Quant files: ../../2_ALIGNMENT_RESULTs/{CURRENT_METHOD}/{MASTER_REFERENCE}/6_salmon/quant/{SRR_ID}/quant.sf
 # tx2gene:     count_matrices_from_STAR/{MASTER_REFERENCE}/tx2gene_{MASTER_REFERENCE}.tsv
 # Output:      count_matrices_from_STAR/{MASTER_REFERENCE}/{level}/{gene_group}/
 #
@@ -22,6 +22,12 @@ suppressPackageStartupMessages({
 # ===============================================
 # CONFIGURATION
 # ===============================================
+
+# Default CURRENT_METHOD for this STAR-specific script before shared config
+# sets a generic fallback (M5). Prevents wrong-directory lookups in standalone mode.
+if (!nzchar(Sys.getenv("CURRENT_METHOD", unset = ""))) {
+  Sys.setenv(CURRENT_METHOD = "M3_STAR_Align")
+}
 
 SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", {
   if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
@@ -46,21 +52,21 @@ if (!exists("match_gene_ids", mode = "function")) {
 # Salmon quant output is in the alignment results directory, NOT post-proc.
 # Path includes MASTER_REFERENCE (= fasta_tag) to isolate per-reference outputs.
 # Use BASE_DIR (absolute path set by run_post_processing.sh) when available;
-# fall back to relative path for standalone usage (script runs from 3_POST_PROC/M3_STAR_Align/).
+# fall back to relative path for standalone usage (script runs from 3_POST_PROC/{CURRENT_METHOD}/).
 .base_dir     <- Sys.getenv("BASE_DIR", unset = "")
 QUANT_DIR     <- if (nzchar(.base_dir)) {
-  file.path(.base_dir, "2_ALIGNMENT_RESULTs", "M3_STAR_Align",
+  file.path(.base_dir, "2_ALIGNMENT_RESULTs", CURRENT_METHOD,
             MASTER_REFERENCE, "6_salmon", "quant")
 } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
   stop("[STAR TXIMPORT] BASE_DIR is required when running under a workflow manager (WF_MANAGED_ENV is set).")
 } else {
   message("[STAR TXIMPORT] WARN: BASE_DIR not set; using relative path '../..'. ",
           "Set BASE_DIR for orchestrated execution (Nextflow/Snakemake).")
-  file.path("..", "..", "2_ALIGNMENT_RESULTs", "M3_STAR_Align",
+  file.path("..", "..", "2_ALIGNMENT_RESULTs", CURRENT_METHOD,
             MASTER_REFERENCE, "6_salmon", "quant")
 }
 MATRICES_DIR  <- if (nzchar(.base_dir)) {
-  file.path(.base_dir, "3_POST_PROC", "M3_STAR_Align", "count_matrices_from_STAR")
+  file.path(.base_dir, "3_POST_PROC", CURRENT_METHOD, "count_matrices_from_STAR")
 } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
   stop("[STAR TXIMPORT] BASE_DIR is required for output directory under workflow manager (WF_MANAGED_ENV is set).")
 } else {
@@ -462,7 +468,7 @@ for (level_name in names(processing_levels)) {
         cat("    Error reading gene list:", conditionMessage(e), "\n")
         character(0)
       })
-      gene_list <- trimws(gene_list[nzchar(gene_list)])
+      gene_list <- trimws(gene_list[nzchar(gene_list) & !is.na(gene_list)])
 
       if (length(gene_list) == 0) {
         cat("    Skipping: empty gene list\n")
