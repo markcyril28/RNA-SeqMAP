@@ -284,7 +284,7 @@ run_all() {
 
 # Source logging early so log_step/log_error/log_info are available before configs.
 # The modules_loader double-source guard ensures this is safe when configs re-source it.
-source "${PROJECT_ROOT}/modules/logging/logging_utils.sh" 2>/dev/null || {
+source "${PROJECT_ROOT}/modules_gea/logging/logging_utils.sh" 2>/dev/null || {
 	# Minimal fallback if logging module cannot be loaded
 	log_info()  { echo "[INFO]  $*"; }
 	log_warn()  { echo "[WARN]  $*"; }

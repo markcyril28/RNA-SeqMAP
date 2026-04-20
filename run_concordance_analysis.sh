@@ -105,7 +105,7 @@ if [[ -z "${WF_MANAGED_ENV:-}" ]]; then
 fi
 
 # Source logging utilities for consistent output
-source "${SCRIPT_DIR}/modules/logging/logging_utils.sh" 2>/dev/null || {
+source "${SCRIPT_DIR}/modules_gea/logging/logging_utils.sh" 2>/dev/null || {
     # Minimal fallback if logging module unavailable
     log_info()  { echo "[INFO]  $*"; }
     log_warn()  { echo "[WARN]  $*"; }
@@ -286,9 +286,9 @@ REPORT_BASE="${REPORT_BASE:-${BASE_DIR}/4_CONCORDANCE_ANALYSIS}"
 OUTPUT_DIR="${OUTPUT_DIR:-${REPORT_BASE}}"
 ALIGNMENT_BASE="${ALIGNMENT_BASE:-${BASE_DIR}/2_ALIGNMENT_RESULTs}"
 POST_PROC_BASE="${POST_PROC_BASE:-${BASE_DIR}/3_POST_PROC}"
-ANALYSIS_MODULES_DIR="${BASE_DIR}/modules/c_post_processing/analysis_modules"
-UTILITIES_DIR="${BASE_DIR}/modules/c_post_processing/utilities"
-CONCORDANCE_SCRIPT_DIR="${BASE_DIR}/modules/c_post_processing/cross_method_concordance"
+ANALYSIS_MODULES_DIR="${BASE_DIR}/modules_gea/c_post_processing/analysis_modules"
+UTILITIES_DIR="${BASE_DIR}/modules_gea/c_post_processing/utilities"
+CONCORDANCE_SCRIPT_DIR="${BASE_DIR}/modules_gea/c_post_processing/cross_method_concordance"
 
 # Clear previous outputs if requested
 if [[ "${CLEAR_OUTPUT_FOLDER:-FALSE}" == "TRUE" && -d "${OUTPUT_DIR}" ]]; then

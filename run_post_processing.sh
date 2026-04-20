@@ -148,13 +148,13 @@ else
     SCRIPT_DIR="$BASE_DIR"
 fi
 _SELF_SCRIPT="$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"
-ANALYSIS_MODULES_DIR="${ANALYSIS_MODULES_DIR:-$BASE_DIR/modules/c_post_processing/analysis_modules}"
+ANALYSIS_MODULES_DIR="${ANALYSIS_MODULES_DIR:-$BASE_DIR/modules_gea/c_post_processing/analysis_modules}"
 GENE_GROUPS_DIR="${GENE_GROUPS_DIR:-$BASE_DIR/inputs/3_post_proc_inputs/gene_groups_csv}"
 SRR_CSV_DIR="${SRR_CSV_DIR:-$BASE_DIR/inputs/3_post_proc_inputs/SRR_csv}"
-UTILITIES_DIR="${UTILITIES_DIR:-$BASE_DIR/modules/c_post_processing/utilities}"
+UTILITIES_DIR="${UTILITIES_DIR:-$BASE_DIR/modules_gea/c_post_processing/utilities}"
 
-source "$BASE_DIR/modules/logging/logging_utils.sh" || {
-    echo "[ERROR] Failed to source logging_utils.sh: $BASE_DIR/modules/logging/logging_utils.sh" >&2
+source "$BASE_DIR/modules_gea/logging/logging_utils.sh" || {
+    echo "[ERROR] Failed to source logging_utils.sh: $BASE_DIR/modules_gea/logging/logging_utils.sh" >&2
     exit 1
 }
 source "$UTILITIES_DIR/pipeline_utils.sh" || {
@@ -673,7 +673,7 @@ done
 #===============================================================================
 
 if [[ "${GENERATE_HTML_VIEWER:-TRUE}" == "TRUE" && -z "${__PP_SINGLE_CONFIG:-}" ]]; then
-    _viewer_script="$BASE_DIR/modules/c_post_processing/utilities/generate_html_viewer.py"
+    _viewer_script="$BASE_DIR/modules_gea/c_post_processing/utilities/generate_html_viewer.py"
     _post_proc_dir="$BASE_DIR/3_POST_PROC"
     if command -v python3 &>/dev/null && [[ -f "$_viewer_script" ]]; then
         log_step "Generating HTML Results Viewer"
