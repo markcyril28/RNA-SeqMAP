@@ -13,13 +13,13 @@
 #   - viewer_manifest.json — pre-cached index of all figures
 #
 # Usage (from project root):
-#   bash modules/other_tools/run_post_processing_html_viewer.sh                    # Generate viewer (default)
-#   bash modules/other_tools/run_post_processing_html_viewer.sh --serve            # Generate + serve on localhost
-#   bash modules/other_tools/run_post_processing_html_viewer.sh --serve --port 9090
-#   bash modules/other_tools/run_post_processing_html_viewer.sh --manifest-only    # Only rebuild manifest JSON
-#   bash modules/other_tools/run_post_processing_html_viewer.sh --open             # Generate + open in browser
-#   bash modules/other_tools/run_post_processing_html_viewer.sh --output path.html # Custom output path
-#   bash modules/other_tools/run_post_processing_html_viewer.sh --dry-run          # Show what would be done
+#   bash modules_gea/other_tools/run_post_processing_html_viewer.sh                    # Generate viewer (default)
+#   bash modules_gea/other_tools/run_post_processing_html_viewer.sh --serve            # Generate + serve on localhost
+#   bash modules_gea/other_tools/run_post_processing_html_viewer.sh --serve --port 9090
+#   bash modules_gea/other_tools/run_post_processing_html_viewer.sh --manifest-only    # Only rebuild manifest JSON
+#   bash modules_gea/other_tools/run_post_processing_html_viewer.sh --open             # Generate + open in browser
+#   bash modules_gea/other_tools/run_post_processing_html_viewer.sh --output path.html # Custom output path
+#   bash modules_gea/other_tools/run_post_processing_html_viewer.sh --dry-run          # Show what would be done
 #
 # Output:
 #   3_POST_PROC/alignment_results_viewer.html
@@ -33,7 +33,7 @@ if [[ -z "${BASE_DIR:-}" ]]; then
     SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
     [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
     SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)" || { echo "[ERROR] run_post_processing_html_viewer.sh: Failed to resolve script directory" >&2; exit 1; }
-    # Navigate up two levels: modules/other_tools/ -> project root
+    # Navigate up two levels: modules_gea/other_tools/ -> project root
     BASE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)" || { echo "[ERROR] run_post_processing_html_viewer.sh: Failed to resolve project root from $SCRIPT_DIR" >&2; exit 1; }
 else
     if [[ "$BASE_DIR" != /* ]]; then
@@ -47,7 +47,7 @@ fi
 #===============================================================================
 
 POST_PROC_DIR="$BASE_DIR/3_POST_PROC"
-VIEWER_SCRIPT="$BASE_DIR/modules/c_post_processing/utilities/generate_html_viewer.py"
+VIEWER_SCRIPT="$BASE_DIR/modules_gea/c_post_processing/utilities/generate_html_viewer.py"
 OUTPUT_HTML=""          # Empty = default (3_POST_PROC/alignment_results_viewer.html)
 SERVE_PORT="${SERVE_PORT:-8080}"
 SERVE_HOST="${SERVE_HOST:-0.0.0.0}"
@@ -91,7 +91,7 @@ fi
 # LOGGING
 #===============================================================================
 
-source "$BASE_DIR/modules/logging/logging_utils.sh" 2>/dev/null || {
+source "$BASE_DIR/modules_gea/logging/logging_utils.sh" 2>/dev/null || {
     log_info()  { echo "[INFO]  $*"; }
     log_warn()  { echo "[WARN]  $*"; }
     log_error() { echo "[ERROR] $*" >&2; }
@@ -248,5 +248,5 @@ if [[ "$MANIFEST_ONLY" == true ]]; then
 else
     log_info "Open the viewer:"
     log_info "  File browser : $_html_out"
-    log_info "  Local server : bash modules/other_tools/run_post_processing_html_viewer.sh --serve"
+    log_info "  Local server : bash modules_gea/other_tools/run_post_processing_html_viewer.sh --serve"
 fi

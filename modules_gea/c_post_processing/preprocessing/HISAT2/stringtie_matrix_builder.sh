@@ -29,7 +29,7 @@ if [[ -n "${WF_MANAGED_ENV:-}" && -z "${BASE_DIR:-}" && -z "${PROJECT_ROOT:-}" ]
 fi
 
 # Source logging utilities for consistent pipeline logging (minimal fallback if unavailable)
-source "${BASE_DIR:-${PROJECT_ROOT:-$PWD}}/modules/logging/logging_utils.sh" 2>/dev/null || {
+source "${BASE_DIR:-${PROJECT_ROOT:-$PWD}}/modules_gea/logging/logging_utils.sh" 2>/dev/null || {
     log_info()  { echo "[INFO] $*"; }
     log_warn()  { echo "[WARN] $*" >&2; }
     log_error() { echo "[ERROR] $*" >&2; }
@@ -95,7 +95,7 @@ ABUNDANCE_SUFFIX="${ABUNDANCE_SUFFIX:-$_DEFAULT_ABUNDANCE_SUFFIX}"
 GENENAME_COL="${GENENAME_COL:-$_DEFAULT_GENENAME_COL}"
 
 # Utilities directory (contains matrix_builder.py)
-UTILITIES_DIR="${UTILITIES_DIR:-${BASE_DIR}/modules/c_post_processing/utilities}"
+UTILITIES_DIR="${UTILITIES_DIR:-${BASE_DIR}/modules_gea/c_post_processing/utilities}"
 
 # Create output directory and logging
 mkdir -p "$OUT_DIR/logs" || { log_error "Failed to create output directory: $OUT_DIR/logs"; exit 1; }

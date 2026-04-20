@@ -14,13 +14,13 @@
 #   - Zoom controls (buttons + Ctrl+scroll)
 #
 # Usage (from project root):
-#   bash modules/other_tools/run_concordance_viewer.sh                    # Generate viewer
-#   bash modules/other_tools/run_concordance_viewer.sh --serve            # Generate + serve
-#   bash modules/other_tools/run_concordance_viewer.sh --serve --port 9090
-#   bash modules/other_tools/run_concordance_viewer.sh --manifest-only    # Only rebuild manifest
-#   bash modules/other_tools/run_concordance_viewer.sh --open             # Generate + open
-#   bash modules/other_tools/run_concordance_viewer.sh --output path.html # Custom output path
-#   bash modules/other_tools/run_concordance_viewer.sh --dry-run          # Preview without changes
+#   bash modules_gea/other_tools/run_concordance_viewer.sh                    # Generate viewer
+#   bash modules_gea/other_tools/run_concordance_viewer.sh --serve            # Generate + serve
+#   bash modules_gea/other_tools/run_concordance_viewer.sh --serve --port 9090
+#   bash modules_gea/other_tools/run_concordance_viewer.sh --manifest-only    # Only rebuild manifest
+#   bash modules_gea/other_tools/run_concordance_viewer.sh --open             # Generate + open
+#   bash modules_gea/other_tools/run_concordance_viewer.sh --output path.html # Custom output path
+#   bash modules_gea/other_tools/run_concordance_viewer.sh --dry-run          # Preview without changes
 #
 # Output:
 #   4_CONCORDANCE_ANALYSIS/concordance_viewer.html
@@ -34,7 +34,7 @@ if [[ -z "${BASE_DIR:-}" ]]; then
     SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
     [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
     SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)" || { echo "[ERROR] run_concordance_viewer.sh: Failed to resolve script directory" >&2; exit 1; }
-    # Navigate up two levels: modules/other_tools/ -> project root
+    # Navigate up two levels: modules_gea/other_tools/ -> project root
     BASE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)" || { echo "[ERROR] run_concordance_viewer.sh: Failed to resolve project root from $SCRIPT_DIR" >&2; exit 1; }
 else
     if [[ "$BASE_DIR" != /* ]]; then
@@ -48,7 +48,7 @@ fi
 #===============================================================================
 
 CONCORDANCE_DIR="$BASE_DIR/4_CONCORDANCE_ANALYSIS"
-VIEWER_SCRIPT="$BASE_DIR/modules/c_post_processing/utilities/generate_concordance_viewer.py"
+VIEWER_SCRIPT="$BASE_DIR/modules_gea/c_post_processing/utilities/generate_concordance_viewer.py"
 OUTPUT_HTML=""          # Empty = default
 SERVE_PORT="${SERVE_PORT:-8081}"
 SERVE_HOST="${SERVE_HOST:-0.0.0.0}"
@@ -92,7 +92,7 @@ fi
 # LOGGING
 #===============================================================================
 
-source "$BASE_DIR/modules/logging/logging_utils.sh" 2>/dev/null || {
+source "$BASE_DIR/modules_gea/logging/logging_utils.sh" 2>/dev/null || {
     log_info()  { echo "[INFO]  $*"; }
     log_warn()  { echo "[WARN]  $*"; }
     log_error() { echo "[ERROR] $*" >&2; }
@@ -265,5 +265,5 @@ if [[ "$MANIFEST_ONLY" == true ]]; then
 else
     log_info "Open the viewer:"
     log_info "  File browser : $_html_out"
-    log_info "  Local server : bash modules/other_tools/run_concordance_viewer.sh --serve"
+    log_info "  Local server : bash modules_gea/other_tools/run_concordance_viewer.sh --serve"
 fi

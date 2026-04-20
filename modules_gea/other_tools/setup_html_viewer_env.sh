@@ -35,11 +35,11 @@ DO_GENERATE=false
 SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
 SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)" || { echo "[ERROR] setup_html_viewer_env.sh: Failed to resolve script directory" >&2; exit 1; }
-# Resolve project root (this script lives in modules/other_tools/)
+# Resolve project root (this script lives in modules_gea/other_tools/)
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)" || { echo "[ERROR] setup_html_viewer_env.sh: Failed to resolve PROJECT_ROOT" >&2; exit 1; }
 
 POST_PROC_DIR="$PROJECT_ROOT/3_POST_PROC"
-VIEWER_SCRIPT="$PROJECT_ROOT/modules/c_post_processing/utilities/generate_html_viewer.py"
+VIEWER_SCRIPT="$PROJECT_ROOT/modules_gea/c_post_processing/utilities/generate_html_viewer.py"
 VIEWER_HTML="$POST_PROC_DIR/alignment_results_viewer.html"
 
 #===============================================================================
@@ -189,7 +189,7 @@ log_info "Setup complete: $ENV_NAME"
 log_info "========================================"
 log_info ""
 log_info "Generate viewer:  python3 $VIEWER_SCRIPT $POST_PROC_DIR"
-log_info "Serve locally:    bash modules/other_tools/setup_html_viewer_env.sh --serve"
+log_info "Serve locally:    bash modules_gea/other_tools/setup_html_viewer_env.sh --serve"
 log_info "Open viewer:      $VIEWER_HTML"
 log_info ""
 log_info "Or activate env and run manually:"

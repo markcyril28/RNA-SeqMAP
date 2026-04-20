@@ -17,8 +17,8 @@ if [[ -n "${WF_MANAGED_ENV:-}" && -z "${BASE_DIR:-}" ]]; then
 	echo "ERROR: WF_MANAGED_ENV is set but BASE_DIR is not. Orchestrators must export BASE_DIR." >&2
 	return 1
 fi
-_PIPELINE_UTIL_DIR="${UTILITIES_DIR:-${BASE_DIR:-.}/modules/c_post_processing/utilities}"
-_PIPELINE_MODS_DIR="${ANALYSIS_MODULES_DIR:-${BASE_DIR:-.}/modules/c_post_processing/analysis_modules}"
+_PIPELINE_UTIL_DIR="${UTILITIES_DIR:-${BASE_DIR:-.}/modules_gea/c_post_processing/utilities}"
+_PIPELINE_MODS_DIR="${ANALYSIS_MODULES_DIR:-${BASE_DIR:-.}/modules_gea/c_post_processing/analysis_modules}"
 
 #===============================================================================
 # CSV PARSING
@@ -97,7 +97,7 @@ get_matrix_creation_script() {
 # Returns the full path to the script that converts raw quant output to count matrices
 get_preprocessing_script() {
     local method=$1
-    local PREPROCESSING_DIR="${BASE_DIR:-.}/modules/c_post_processing/preprocessing"
+    local PREPROCESSING_DIR="${BASE_DIR:-.}/modules_gea/c_post_processing/preprocessing"
     
     case "$method" in
         "M1_HISAT2_RefGuided")

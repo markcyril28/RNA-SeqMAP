@@ -4,12 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
 SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)" || { echo "[ERROR] extract_archive.sh: Failed to resolve script directory" >&2; exit 1; }
-# Resolve project root (this script lives in modules/other_tools/)
+# Resolve project root (this script lives in modules_gea/other_tools/)
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)" || { echo "[ERROR] extract_archive.sh: Failed to resolve PROJECT_ROOT" >&2; exit 1; }
 ARCHIVE_DIR="${PROJECT_ROOT}/HPC"
 
 # Source logging utilities for consistent output
-source "${PROJECT_ROOT}/modules/logging/logging_utils.sh" 2>/dev/null || {
+source "${PROJECT_ROOT}/modules_gea/logging/logging_utils.sh" 2>/dev/null || {
     log_info()  { echo "[INFO]  $*"; }
     log_warn()  { echo "[WARN]  $*"; }
     log_error() { echo "[ERROR] $*" >&2; }

@@ -32,7 +32,7 @@ MASTER_REFERENCE="${MASTER_REFERENCE:-All_Smel_Genes}"
 SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
 SCRIPT_DIR="$(cd "$SCRIPT_DIR" 2>/dev/null && pwd)" || SCRIPT_DIR="."
-source "${BASE_DIR}/modules/logging/logging_utils.sh" 2>/dev/null || {
+source "${BASE_DIR}/modules_gea/logging/logging_utils.sh" 2>/dev/null || {
     log_info()  { echo "[INFO] $*"; }
     log_warn()  { echo "[WARN] $*" >&2; }
     log_error() { echo "[ERROR] $*" >&2; }
