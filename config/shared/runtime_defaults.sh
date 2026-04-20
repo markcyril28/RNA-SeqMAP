@@ -42,7 +42,7 @@ else
         echo "[ERROR] runtime_defaults.sh: Failed to resolve script directory from BASH_SOURCE=${BASH_SOURCE[0]}" >&2
         return 1
     }
-    source "${_RUNTIME_DEFAULTS_DIR}/../../modules/modules_loader.sh"
+    source "${_RUNTIME_DEFAULTS_DIR}/../../modules_gea/modules_loader.sh"
     unset _RUNTIME_DEFAULTS_DIR
 fi
 

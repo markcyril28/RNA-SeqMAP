@@ -60,7 +60,7 @@ fi
 # SOURCE MODULES
 # ==============================================================================
 
-source "modules/modules_loader.sh"
+source "modules_gea/modules_loader.sh"
 #bash init_setup.sh
 
 # Calculate threads per job
