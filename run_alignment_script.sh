@@ -152,7 +152,7 @@ run_all() {
 		run_quality_control_all "${rnaseq_list[@]}"
 	fi
 
-	switch_log_stage "2_ALIGNMENT_RESULTs"
+	switch_log_stage "II_RESULTS/2_ALIGNMENT_RESULTs"
 
 	# --- Alignment Methods (parallel when independent) ---
 	# M1-M5 produce output in isolated directories and do not depend on each other.
@@ -306,8 +306,8 @@ source "${PROJECT_ROOT}/config/shared/runtime_defaults.sh" || {
 if [[ "$CLEAR_CACHE" == "TRUE" ]]; then
 	log_info "Clearing persistent pipeline caches..."
 	_cache_count=0
-	_srr_dir="${PROJECT_ROOT}/inputs/3_post_proc_inputs/SRR_csv"
-	_gg_dir="${PROJECT_ROOT}/inputs/3_post_proc_inputs/gene_groups_csv"
+	_srr_dir="${PROJECT_ROOT}/I_INPUTS/inputs/3_post_proc_inputs/SRR_csv"
+	_gg_dir="${PROJECT_ROOT}/I_INPUTS/inputs/3_post_proc_inputs/gene_groups_csv"
 	# Sample labels cache
 	[[ -f "$_srr_dir/.sample_labels_cache.rds" ]] && rm -f "$_srr_dir/.sample_labels_cache.rds" && _cache_count=$((_cache_count + 1))
 	# Gene name mapping caches (*.namemap.rds beside gene group CSVs)
@@ -334,7 +334,7 @@ _STAR_WAS_USED=false
 # Cleanup trap: log summary on exit; clean up STAR temp dirs on signal kill
 _pipeline_cleanup() {
 	local rc=$?
-	local _ar="${ALIGNMENT_RESULTS_ROOT:-${PROJECT_ROOT}/2_ALIGNMENT_RESULTs}"
+	local _ar="${ALIGNMENT_RESULTS_ROOT:-${PROJECT_ROOT}/II_RESULTS/2_ALIGNMENT_RESULTs}"
 	# Only search for orphan STAR temp dirs when STAR was actually used in any config
 	# (avoids traversing entire PROJECT_ROOT on every exit — saves ~0.5-2s on large trees)
 	if [[ "$_STAR_WAS_USED" == "true" ]]; then

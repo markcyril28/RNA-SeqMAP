@@ -90,7 +90,7 @@ CLEAR_CACHE="${CLEAR_CACHE:-FALSE}"
 # Figure resolution in DPI (300–600)
 FIGURE_DPI="${FIGURE_DPI:-300}"
 
-# HTML viewer: auto-generate an interactive results viewer in 3_POST_PROC/
+# HTML viewer: auto-generate an interactive results viewer in II_RESULTS/3_POST_PROC/
 # Set to "TRUE" to generate alignment_results_viewer.html after all configs run.
 GENERATE_HTML_VIEWER="${GENERATE_HTML_VIEWER:-TRUE}"
 
@@ -149,8 +149,8 @@ else
 fi
 _SELF_SCRIPT="$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"
 ANALYSIS_MODULES_DIR="${ANALYSIS_MODULES_DIR:-$BASE_DIR/modules_gea/c_post_processing/analysis_modules}"
-GENE_GROUPS_DIR="${GENE_GROUPS_DIR:-$BASE_DIR/inputs/3_post_proc_inputs/gene_groups_csv}"
-SRR_CSV_DIR="${SRR_CSV_DIR:-$BASE_DIR/inputs/3_post_proc_inputs/SRR_csv}"
+GENE_GROUPS_DIR="${GENE_GROUPS_DIR:-$BASE_DIR/I_INPUTS/inputs/3_post_proc_inputs/gene_groups_csv}"
+SRR_CSV_DIR="${SRR_CSV_DIR:-$BASE_DIR/I_INPUTS/inputs/3_post_proc_inputs/SRR_csv}"
 UTILITIES_DIR="${UTILITIES_DIR:-$BASE_DIR/modules_gea/c_post_processing/utilities}"
 
 source "$BASE_DIR/modules_gea/logging/logging_utils.sh" || {
@@ -190,6 +190,20 @@ for _i in "${!PIPELINE_CONFIGS[@]}"; do
 done
 unset _i
 
+# Pre-extract primary gene group from the first config so log dirs are gene-group-scoped
+# before setup_logging() is called. load_toml() is available (toml_parser.sh sourced above).
+# Unset TOML vars afterward so the main config loop starts clean.
+if [[ -z "${CURRENT_GENE_GROUP:-}" && ${#PIPELINE_CONFIGS[@]} -gt 0 ]]; then
+    _pre_cfg="${PIPELINE_CONFIGS[0]}"
+    if [[ -f "$_pre_cfg" ]]; then
+        load_toml "$_pre_cfg"
+        CURRENT_GENE_GROUP="${GENE_GROUPS[0]:-}"
+        unset GENE_GROUPS METHODS ANALYSES SRR_DATASETS MASTER_REFERENCES
+    fi
+fi
+CURRENT_GENE_GROUP="${CURRENT_GENE_GROUP:-_active}"
+export CURRENT_GENE_GROUP
+
 # Skip conda activation when orchestrator manages the environment (Nextflow/Snakemake)
 # Skip conda hook (~0.3-0.5s) if already in the correct environment
 if [[ -z "${WF_MANAGED_ENV:-}" && "${CONDA_DEFAULT_ENV:-}" != "gea" ]]; then
@@ -198,13 +212,13 @@ if [[ -z "${WF_MANAGED_ENV:-}" && "${CONDA_DEFAULT_ENV:-}" != "gea" ]]; then
 fi
 
 # Log dirs use absolute paths so subprocesses that change directories still resolve correctly
-LOG_DIR="$BASE_DIR/3_POST_PROC/logs/log_files"
-TIME_DIR="$BASE_DIR/3_POST_PROC/logs/time_logs"
-SPACE_DIR="$BASE_DIR/3_POST_PROC/logs/space_logs"
-SPACE_TIME_DIR="$BASE_DIR/3_POST_PROC/logs/space_time_logs"
-ERROR_WARN_DIR="$BASE_DIR/3_POST_PROC/logs/error_warn_logs"
-SOFTWARE_CATALOG_DIR="$BASE_DIR/3_POST_PROC/logs/software_catalogs"
-GPU_LOG_DIR="$BASE_DIR/3_POST_PROC/logs/gpu_log"
+LOG_DIR="$BASE_DIR/II_RESULTS/3_POST_PROC/$CURRENT_GENE_GROUP/logs/log_files"
+TIME_DIR="$BASE_DIR/II_RESULTS/3_POST_PROC/$CURRENT_GENE_GROUP/logs/time_logs"
+SPACE_DIR="$BASE_DIR/II_RESULTS/3_POST_PROC/$CURRENT_GENE_GROUP/logs/space_logs"
+SPACE_TIME_DIR="$BASE_DIR/II_RESULTS/3_POST_PROC/$CURRENT_GENE_GROUP/logs/space_time_logs"
+ERROR_WARN_DIR="$BASE_DIR/II_RESULTS/3_POST_PROC/$CURRENT_GENE_GROUP/logs/error_warn_logs"
+SOFTWARE_CATALOG_DIR="$BASE_DIR/II_RESULTS/3_POST_PROC/$CURRENT_GENE_GROUP/logs/software_catalogs"
+GPU_LOG_DIR="$BASE_DIR/II_RESULTS/3_POST_PROC/$CURRENT_GENE_GROUP/logs/gpu_log"
 export LOG_DIR TIME_DIR SPACE_DIR SPACE_TIME_DIR ERROR_WARN_DIR SOFTWARE_CATALOG_DIR GPU_LOG_DIR
 
 # Ensure log directories exist before setup_logging (under Nextflow/Snakemake, output
@@ -404,6 +418,8 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
     # Load config (sets METHODS, ANALYSES, GENE_GROUPS, SRR_DATASETS, etc.)
     # TOML keys are parsed as uppercase bash variables by load_toml
     load_toml "$CONFIG_FILE"
+    CURRENT_GENE_GROUP="${GENE_GROUPS[0]:-$CURRENT_GENE_GROUP}"
+    export CURRENT_GENE_GROUP
     log_step "Config: ${CONFIG_FILE##*/}"
 
     # Snapshot error/warning line count so we can report per-config delta.
@@ -460,7 +476,7 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
         # Uses _FOLDER_NAME_MAP declared once before the config loop (avoids per-config re-declaration)
         _clear_targets=()
         for method in "${METHODS[@]}"; do
-            output_base="$BASE_DIR/3_POST_PROC/$method/Figure_Outputs"
+            output_base="$BASE_DIR/II_RESULTS/3_POST_PROC/$CURRENT_GENE_GROUP/$method/Figure_Outputs"
             [[ -d "$output_base" ]] || continue
             for analysis in "${ANALYSES[@]}"; do
                 if [[ -z "${_FOLDER_NAME_MAP[$analysis]+x}" ]]; then
@@ -674,7 +690,7 @@ done
 
 if [[ "${GENERATE_HTML_VIEWER:-TRUE}" == "TRUE" && -z "${__PP_SINGLE_CONFIG:-}" ]]; then
     _viewer_script="$BASE_DIR/modules_gea/c_post_processing/utilities/generate_html_viewer.py"
-    _post_proc_dir="$BASE_DIR/3_POST_PROC"
+    _post_proc_dir="$BASE_DIR/II_RESULTS/3_POST_PROC/$CURRENT_GENE_GROUP"
     if command -v python3 &>/dev/null && [[ -f "$_viewer_script" ]]; then
         log_step "Generating HTML Results Viewer"
         _viewer_out=$(python3 "$_viewer_script" "$_post_proc_dir" 2>"$LOG_DIR/html_viewer_gen.log") \

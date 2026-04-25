@@ -22,8 +22,8 @@
 #     - env var: CONCORDANCE_CONFIG_CROSSES="cross1,cross2,..."
 #
 # Prerequisites:
-#   - Alignment results for M1-M5 in 2_ALIGNMENT_RESULTs/
-#   - Post-processing matrices in 3_POST_PROC/ (for M4/M5 fallbacks)
+#   - Alignment results for M1-M5 in II_RESULTS/2_ALIGNMENT_RESULTs/
+#   - Post-processing matrices in II_RESULTS/3_POST_PROC/ (for M4/M5 fallbacks)
 #   - R packages: ComplexHeatmap, circlize, grid
 #   - conda env "gea" with all dependencies
 #===============================================================================
@@ -70,7 +70,7 @@ else
     SCRIPT_DIR="$BASE_DIR"
 fi
 _SELF_SCRIPT="$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"
-REPORT_BASE="${REPORT_BASE:-${BASE_DIR}/4_CONCORDANCE_ANALYSIS}"
+REPORT_BASE="${REPORT_BASE:-${BASE_DIR}/II_RESULTS/4_CONCORDANCE_ANALYSIS}"
 
 #===============================================================================
 # CONDA ENVIRONMENT
@@ -282,10 +282,10 @@ _join_with() {
 # PATHS (must be set before dispatch blocks so parent logging works)
 #===============================================================================
 
-REPORT_BASE="${REPORT_BASE:-${BASE_DIR}/4_CONCORDANCE_ANALYSIS}"
+REPORT_BASE="${REPORT_BASE:-${BASE_DIR}/II_RESULTS/4_CONCORDANCE_ANALYSIS}"
 OUTPUT_DIR="${OUTPUT_DIR:-${REPORT_BASE}}"
-ALIGNMENT_BASE="${ALIGNMENT_BASE:-${BASE_DIR}/2_ALIGNMENT_RESULTs}"
-POST_PROC_BASE="${POST_PROC_BASE:-${BASE_DIR}/3_POST_PROC}"
+ALIGNMENT_BASE="${ALIGNMENT_BASE:-${BASE_DIR}/II_RESULTS/2_ALIGNMENT_RESULTs}"
+POST_PROC_BASE="${POST_PROC_BASE:-${BASE_DIR}/II_RESULTS/3_POST_PROC/${CURRENT_GENE_GROUP:-_active}}"
 ANALYSIS_MODULES_DIR="${BASE_DIR}/modules_gea/c_post_processing/analysis_modules"
 UTILITIES_DIR="${BASE_DIR}/modules_gea/c_post_processing/utilities"
 CONCORDANCE_SCRIPT_DIR="${BASE_DIR}/modules_gea/c_post_processing/cross_method_concordance"
@@ -295,7 +295,7 @@ if [[ "${CLEAR_OUTPUT_FOLDER:-FALSE}" == "TRUE" && -d "${OUTPUT_DIR}" ]]; then
     log_info "Clearing previous output folder: ${OUTPUT_DIR}"
     rm -rf "${OUTPUT_DIR}"
 fi
-# Logs always live under the top-level REPORT_BASE (4_CONCORDANCE_ANALYSIS/logs/),
+# Logs always live under the top-level REPORT_BASE (II_RESULTS/4_CONCORDANCE_ANALYSIS/logs/),
 # even when child processes override REPORT_BASE to per-config subdirectories.
 # NOTE: When OUTPUT_DIR == REPORT_BASE (default), the rm -rf above already deleted logs.
 # This block only has effect when OUTPUT_DIR is a subdirectory of REPORT_BASE.
@@ -309,8 +309,8 @@ fi
 if [[ "${CLEAR_CACHE:-FALSE}" == "TRUE" ]]; then
     log_info "Clearing persistent pipeline caches..."
     _cache_count=0
-    _srr_dir="${BASE_DIR}/inputs/3_post_proc_inputs/SRR_csv"
-    _gg_dir="${BASE_DIR}/inputs/3_post_proc_inputs/gene_groups_csv"
+    _srr_dir="${BASE_DIR}/I_INPUTS/inputs/3_post_proc_inputs/SRR_csv"
+    _gg_dir="${BASE_DIR}/I_INPUTS/inputs/3_post_proc_inputs/gene_groups_csv"
     # Sample labels cache
     [[ -f "$_srr_dir/.sample_labels_cache.rds" ]] && rm -f "$_srr_dir/.sample_labels_cache.rds" && _cache_count=$((_cache_count + 1))
     # Gene name mapping caches (*.namemap.rds beside gene group CSVs)
@@ -685,7 +685,7 @@ fi
 # Handles non-standard naming like Eggplant_V4.1_transcripts.function.
 _base_pattern="${_genome_ref%_genome}"
 [[ "$_base_pattern" == "$_genome_ref" ]] && _base_pattern="$_genome_ref"
-_align_base="${ALIGNMENT_BASE:-${BASE_DIR}/2_ALIGNMENT_RESULTs}"
+_align_base="${ALIGNMENT_BASE:-${BASE_DIR}/II_RESULTS/2_ALIGNMENT_RESULTs}"
 _transcript_ref_dirs=(
     "$_align_base/M2_HISAT2_DeNovo/stringtie_WD"
     "$_align_base/M4_Salmon_Saf/Salmon_Quant"
@@ -735,17 +735,17 @@ analysis_enabled() { [[ -n "${_ANALYSES_SET[$1]:-}" ]]; }
 # Gene groups directory (reference-specific — strip _genome/_transcripts suffix to match dir name)
 _GG_REF_TAG="${MASTER_REFERENCE%%_genome*}"
 _GG_REF_TAG="${_GG_REF_TAG%%_transcripts*}"
-_GG_REF_DIR="${BASE_DIR}/inputs/3_post_proc_inputs/gene_groups_csv/experimental/${_GG_REF_TAG}"
+_GG_REF_DIR="${BASE_DIR}/I_INPUTS/inputs/3_post_proc_inputs/gene_groups_csv/experimental/${_GG_REF_TAG}"
 if [[ ! -d "$_GG_REF_DIR" ]]; then
     log_warn "Reference-specific gene groups dir not found: $_GG_REF_DIR"
-    _GG_REF_DIR="${BASE_DIR}/inputs/3_post_proc_inputs/gene_groups_csv"
+    _GG_REF_DIR="${BASE_DIR}/I_INPUTS/inputs/3_post_proc_inputs/gene_groups_csv"
     log_warn "Falling back to generic gene groups dir: $_GG_REF_DIR"
 fi
 GENE_GROUPS_DIR="${GENE_GROUPS_DIR:-$_GG_REF_DIR}"
 unset _GG_REF_TAG _GG_REF_DIR
 
 # SRR CSV directory for sample labels
-SRR_CSV_DIR="${SRR_CSV_DIR:-${BASE_DIR}/inputs/3_post_proc_inputs/SRR_csv}"
+SRR_CSV_DIR="${SRR_CSV_DIR:-${BASE_DIR}/I_INPUTS/inputs/3_post_proc_inputs/SRR_csv}"
 
 # System resources (auto-detect with sane fallbacks)
 THREADS="${THREADS:-${SLURM_CPUS_PER_TASK:-${PBS_NCPUS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 12)}}}"
