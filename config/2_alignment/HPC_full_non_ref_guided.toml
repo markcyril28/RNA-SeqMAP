@@ -26,19 +26,19 @@ pipeline_stages = [
 ]
 
 # Input
-decoy = "inputs/2_alignment_input/experimental/TEST.fasta"
+decoy = "I_INPUTS/inputs/2_alignment_input/experimental/TEST.fasta"
 
 # FASTA Files for Analysis (transcripts, required for M2, M4, M5)
 all_fasta_files = [
-    "inputs/2_alignment_input/reference_genome/GPE001970_transcripts.fa",
-    "inputs/2_alignment_input/reference_genome/Eggplant_V4.1_transcripts.function.fa",
+    "I_INPUTS/inputs/2_alignment_input/reference_genome/GPE001970_transcripts.fa",
+    "I_INPUTS/inputs/2_alignment_input/reference_genome/Eggplant_V4.1_transcripts.function.fa",
 ]
 
 # SRR dataset file — relative to config/shared/ or absolute path
 srr_datasets = "srr_datasets.toml"
 
 # Output
-post_processing_root = "3_POST_PROC"
+post_processing_root = "II_RESULTS/3_POST_PROC"
 
 # Cleanup
 activate_rm = false

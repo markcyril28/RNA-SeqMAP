@@ -41,7 +41,7 @@ samples = [
 
 [dataset.PRJNA328564_selected]
 # Subset of PRJNA328564: 12 tissue-representative samples used by post-processing configs.
-# Matches inputs/3_post_proc_inputs/SRR_csv/PRJNA328564_selected.csv
+# Matches I_INPUTS/inputs/3_post_proc_inputs/SRR_csv/PRJNA328564_selected.csv
 samples = [
     "SRR3884678",   # Fruits_peduncle (fruit attachment)
     "SRR3884631",   # Fruits_6cm (fruit enlargement)
