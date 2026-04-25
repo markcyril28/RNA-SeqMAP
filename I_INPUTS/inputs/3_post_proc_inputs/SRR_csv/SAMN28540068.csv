@@ -1,0 +1,10 @@
+SRR_ID,Organ,Notes
+SRR20722387,Mature_fruits,
+#SRR3884597,Flower,duplicate: already in PRJNA328564
+SRR20722297,Flower_buds,
+SRR20722385,Sepals,included in pipeline
+SRR20722296,Leaf_buds,
+SRR20722386,Mature_leaves,included in pipeline
+SRR20722383,Young_leaves,included in pipeline
+SRR20722384,Stems,
+SRR31755282,Roots,https://www.ncbi.nlm.nih.gov/Traces/study/?acc=SRP552204
