@@ -1,0 +1,18 @@
+# ==============================================================================
+# CROSS: WITHIN GENE GROUP VS WITHIN GENE GROUP
+# ==============================================================================
+# Cross-gene-group concordance: for a fixed method+genome, compare expression
+# profiles across different gene groups. Produces a gene-group-vs-gene-group
+# correlation heatmap showing how sample expression patterns co-vary.
+
+concordance_mode = "cross_gene_group"
+
+# Fixed method and reference for the comparison
+fixed_method = "M1_HISAT2_RefGuided"
+master_reference = "GPE001970_genome"
+
+# Gene groups to compare (each gets a gene-vs-gene correlation heatmap)
+gene_groups = [
+    "SmelDMPs_v5_with_18s_and_HAP2",
+    "Selected_SmelGRF-GIF_with_two_GIF",
+]
