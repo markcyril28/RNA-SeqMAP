@@ -30,7 +30,10 @@ set -euo pipefail
 
 ENV_NAME="gea"
 PYTHON_VERSION="3.11"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Parameter expansion avoids nested $(dirname) subshell fork
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
+SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)" || { echo "[ERROR] setup_conda_gea.sh: Failed to resolve script directory" >&2; exit 1; }
 CHANNELS="-c conda-forge -c bioconda"
 
 UPDATE_MODE=false
@@ -71,8 +74,8 @@ PREPROCESSING_TOOLS=(
     "fastqc=0.12.1"
     "multiqc=1.33"
     "parallel=20260122"
-    "wget=1.25.0"      # ENA FTP fallback downloader (download_srrs_wget)
-    "curl=8.18.0"      # ENA portal API queries (download_srrs_wget)
+    "wget=1.25.0"      # ENA FTP fallback downloader
+    "curl=8.18.0"      # ENA portal API queries
     "dos2unix"         # Line-ending normalization (version not pinned — not yet installed)
 )
 
@@ -203,7 +206,9 @@ if [[ -z "${CONDA_EXE:-}" ]]; then
     fi
 fi
 
-eval "$(conda shell.bash hook)"
+if [[ "${WF_MANAGED_ENV:-}" != "true" ]]; then
+    eval "$(conda shell.bash hook)"
+fi
 
 #===============================================================================
 # HELPER: CHECK INSTALLED PACKAGES
@@ -211,14 +216,17 @@ eval "$(conda shell.bash hook)"
 
 # Returns a space-separated list of package names missing from the environment
 check_packages_installed() {
-    local installed_pkgs
-    installed_pkgs=$(${PKG_MGR} list -n "${ENV_NAME}" --export 2>/dev/null \
-        | cut -d'=' -f1 | sort -u)
+    # Build associative array for O(1) lookup (avoids echo|grep fork per package)
+    local -A _installed_set=()
+    local _line
+    while IFS= read -r _line; do
+        [[ -n "$_line" ]] && _installed_set["${_line%%=*}"]=1
+    done < <(${PKG_MGR} list -n "${ENV_NAME}" --export 2>/dev/null)
 
     local missing=()
     for pkg in "${ALL_PACKAGES[@]}"; do
         local pkg_name="${pkg%%[><=]*}"   # strip version constraint for comparison
-        if ! echo "$installed_pkgs" | grep -qxF "$pkg_name"; then
+        if [[ -z "${_installed_set[$pkg_name]+x}" ]]; then
             missing+=("$pkg_name")
         fi
     done
@@ -239,9 +247,9 @@ if ${PKG_MGR} env list | grep -q "^${ENV_NAME} "; then
 
     if [[ "$ENV_RESTART_MODE" == true ]]; then
         log_info "Removing existing environment '${ENV_NAME}'..."
-        run_cmd ${PKG_MGR} env remove -n "${ENV_NAME}" -y
+        run_cmd "${PKG_MGR}" env remove -n "${ENV_NAME}" -y
         log_info "Recreating environment '${ENV_NAME}'..."
-        run_cmd ${PKG_MGR} create -n "${ENV_NAME}" python="${PYTHON_VERSION}" -y
+        run_cmd "${PKG_MGR}" create -n "${ENV_NAME}" python="${PYTHON_VERSION}" -y
 
     elif [[ "$UPDATE_MODE" == true ]]; then
         MISSING_PKGS=$(check_packages_installed)
@@ -257,7 +265,7 @@ if ${PKG_MGR} env list | grep -q "^${ENV_NAME} "; then
             if [[ "$DRY_RUN" == true ]]; then
                 echo "[DRY RUN] Would execute: ${PKG_MGR} update -n ${ENV_NAME} ${CHANNELS} --all -y"
             else
-                ${PKG_MGR} update -n "${ENV_NAME}" ${CHANNELS} --all -y
+                "${PKG_MGR}" update -n "${ENV_NAME}" ${CHANNELS} --all -y
             fi
             log_info "Update complete."
             exit 0
@@ -265,7 +273,7 @@ if ${PKG_MGR} env list | grep -q "^${ENV_NAME} "; then
     fi
 else
     log_info "Creating new environment '${ENV_NAME}'..."
-    run_cmd ${PKG_MGR} create -n "${ENV_NAME}" python="${PYTHON_VERSION}" -y
+    run_cmd "${PKG_MGR}" create -n "${ENV_NAME}" python="${PYTHON_VERSION}" -y
 fi
 
 #===============================================================================
@@ -276,7 +284,7 @@ log_info "Installing packages into '${ENV_NAME}'..."
 if [[ "$DRY_RUN" == true ]]; then
     echo "[DRY RUN] Would execute: ${PKG_MGR} install -n ${ENV_NAME} ${CHANNELS} ${ALL_PACKAGES[*]} -y"
 else
-    ${PKG_MGR} install -n "${ENV_NAME}" ${CHANNELS} -y "${ALL_PACKAGES[@]}" || {
+    "${PKG_MGR}" install -n "${ENV_NAME}" ${CHANNELS} -y "${ALL_PACKAGES[@]}" || {
         log_warn "${PKG_MGR} installation failed, falling back to conda..."
         conda install -n "${ENV_NAME}" ${CHANNELS} -y "${ALL_PACKAGES[@]}"
     }
@@ -287,17 +295,22 @@ fi
 #===============================================================================
 
 log_info "Configuring SRA tools..."
-run_cmd conda run -n "${ENV_NAME}" vdb-config --prefetch-to-cwd
+run_cmd conda run -n "${ENV_NAME}" vdb-config --prefetch-to-cwd || \
+	log_warn "vdb-config failed — SRA prefetch-to-cwd not set. Pipeline will still work but prefetch may use default cache location."
 
 #===============================================================================
 # ACTIVATE AND VERIFY
 #===============================================================================
 
 log_info "Activating environment..."
-conda activate "${ENV_NAME}"
+if [[ "$DRY_RUN" == true ]]; then
+    log_info "[DRY-RUN] Would activate environment '${ENV_NAME}'"
+else
+    conda activate "${ENV_NAME}"
+fi
 
 log_info "Verifying key executables..."
-VERIFY_CMDS=("R" "Rscript" "samtools" "salmon" "hisat2" "STAR" "fastqc" "trim_galore" "prefetch" "fasterq-dump" "trimmomatic" "stringtie" "bowtie2" "rsem-calculate-expression" "gffread" "infer_experiment.py" "gtfToGenePred" "genePredToBed" "dos2unix")
+VERIFY_CMDS=("R" "Rscript" "python3" "samtools" "salmon" "hisat2" "STAR" "fastqc" "trim_galore" "prefetch" "fasterq-dump" "trimmomatic" "stringtie" "bowtie2" "rsem-calculate-expression" "gffread" "infer_experiment.py" "gtfToGenePred" "genePredToBed" "dos2unix")
 for cmd in "${VERIFY_CMDS[@]}"; do
     if check_command "$cmd"; then
         log_info "  ✓ $cmd"
@@ -324,12 +337,15 @@ for (pkg in pkgs) {
 # INSTALL ADDITIONAL R PACKAGES (fallback via BiocManager)
 #===============================================================================
 
+if [[ "$DRY_RUN" == true ]]; then
+    log_info "[DRY-RUN] Would install missing R packages via BiocManager"
+else
 log_info "Installing any missing R packages via BiocManager..."
 
-if [[ -f "$SCRIPT_DIR/modules/c_post_processing/utilities/install_R_packages.R" ]]; then
+if [[ -f "$SCRIPT_DIR/modules_gea/c_post_processing/utilities/install_R_packages.R" ]]; then
     log_info "Running install_R_packages.R..."
     Rscript --no-save \
-        "$SCRIPT_DIR/modules/c_post_processing/utilities/install_R_packages.R" \
+        "$SCRIPT_DIR/modules_gea/c_post_processing/utilities/install_R_packages.R" \
         || log_warn "Some R packages may have failed"
 fi
 
@@ -360,14 +376,19 @@ for (pkg in pkgs_to_check) {
     }
 }
 '
+fi  # end DRY_RUN gate for R package installation
 
 #===============================================================================
 # COMPLETION
 #===============================================================================
 
-log_info "Exporting environment lockfile..."
-conda env export -n "$ENV_NAME" --no-builds > "$SCRIPT_DIR/environment.yml"
-log_info "Lockfile saved to: $SCRIPT_DIR/environment.yml"
+if [[ "$DRY_RUN" == true ]]; then
+    log_info "[DRY-RUN] Would export environment lockfile"
+else
+    log_info "Exporting environment lockfile..."
+    conda env export -n "$ENV_NAME" --no-builds > "$SCRIPT_DIR/environment.yml"
+    log_info "Lockfile saved to: $SCRIPT_DIR/environment.yml"
+fi
 
 log_info "========================================"
 log_info "Setup complete!"
@@ -378,5 +399,10 @@ log_info "Activate    : conda activate $ENV_NAME"
 log_info "Deactivate  : conda deactivate"
 log_info ""
 log_info "Run post-processing with:"
-log_info "  cd $SCRIPT_DIR && bash run_all_post_processing.sh"
+log_info "  cd $SCRIPT_DIR && bash run_post_processing.sh"
+log_info ""
+log_info "HTML results viewer is auto-generated by run_post_processing.sh."
+log_info "For standalone viewer setup, see: modules_gea/other_tools/setup_html_viewer_env.sh"
+log_info "  bash modules_gea/other_tools/setup_html_viewer_env.sh --generate   # generate viewer only"
+log_info "  bash modules_gea/other_tools/setup_html_viewer_env.sh --serve      # serve on localhost:8080"
 log_info ""
