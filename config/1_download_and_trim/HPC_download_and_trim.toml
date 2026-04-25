@@ -45,7 +45,7 @@ pipeline_stages = [
 # NOTE: FASTA is not used by the download/trim stages.
 # A single placeholder entry is required for the pipeline loop to execute.
 all_fasta_files = [
-    "inputs/fasta/reference_genome/GPE001970_transcripts.fa",
+    "I_INPUTS/inputs/fasta/reference_genome/GPE001970_transcripts.fa",
 ]
 
 # SRR dataset file — relative to config/shared/ or absolute path
@@ -53,7 +53,7 @@ all_fasta_files = [
 srr_datasets = "srr_datasets_download.toml"
 
 # Output
-post_processing_root = "3_POST_PROC"
+post_processing_root = "II_RESULTS/3_POST_PROC"
 
 # Cleanup
 activate_rm = false
