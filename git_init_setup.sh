@@ -4,7 +4,10 @@
 
 # Init Setup - Convert to Unix line endings & set executable permissions
 
-cd "$(dirname "${BASH_SOURCE[0]}")"
+# Resolve script directory without subprocess fork (parameter expansion only)
+_script_dir="${BASH_SOURCE[0]%/*}"
+[[ "$_script_dir" == "${BASH_SOURCE[0]}" ]] && _script_dir="."
+cd "$_script_dir" || { echo "ERROR: Cannot cd to $_script_dir"; exit 1; }
 
 # Convert all text files to Unix line endings
 find . -type f \( -name "*.sh" -o -name "*.py" -o -name "*.txt" -o -name "*.md" \

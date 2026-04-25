@@ -1,0 +1,484 @@
+#!/bin/bash
+# ==============================================================================
+# Tissues Specific GENE EXPRESSION ANALYSIS (GEA) PIPELINE
+# RNA-seq analysis pipeline using multiple alignment/quantification methods
+# Author: Mark Cyril R. Mercado | Version: v14 | Date: March 2026
+# ==============================================================================
+
+set -o pipefail   # -e/-u omitted intentionally (sourced functions use boolean returns)
+
+# Resolve project root: honour pre-set PROJECT_ROOT from orchestrators (Nextflow/Snakemake)
+if [[ -z "${PROJECT_ROOT:-}" ]]; then
+	PROJECT_ROOT="${BASH_SOURCE[0]%/*}"
+	[[ "$PROJECT_ROOT" == "${BASH_SOURCE[0]}" ]] && PROJECT_ROOT="."
+	PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"  # one cd to resolve symlinks + relative paths
+fi
+export PROJECT_ROOT  # export so parallel method subshells and child processes inherit it
+cd "$PROJECT_ROOT" || exit 1
+
+# ==============================================================================
+# USER CONFIGURATION
+# ==============================================================================
+
+# Execution mode:
+#   skip      - Resume interrupted run; skip steps with existing outputs (default)
+#   overwrite - Force clean rerun, overwriting all existing output files
+OVERWRITE_MODE="${OVERWRITE_MODE:-skip}"
+export OVERWRITE_MODE
+
+# Clear persistent R/.rds pipeline caches before running (sample labels, gene name maps, GPU detection)
+CLEAR_CACHE="${CLEAR_CACHE:-TRUE}"
+
+# Active configuration file — uncomment as needed:
+CONFIG_FILES=(
+	# --- Download & Trim ---
+	"config/1_download_and_trim/HPC_download_and_trim.toml"	# Download + trim all SRRs
+
+	# --- Test runs (all M1-M5, 3 SRRs) ---
+	#"config/2_alignment/HPC_test_genome_M1_M3.toml"			# M1 + M3 (genome FASTA)
+	#"config/2_alignment/HPC_test_transcript_M2_M4_M5.toml"	# M2 + M4 + M5 (transcript FASTA)
+
+	# --- Full runs ---
+	#"config/2_alignment/HPC_full_ref_guided.toml"				# Reference-guided (M1 + M3)
+	#"config/2_alignment/HPC_full_non_ref_guided.toml"			# Non-reference-guided (M2 + M4 + M5)
+
+	# --- Local ---
+	#"config/2_alignment/local_full_ref_guided.toml"			# Local ref-guided (M1 + M3)
+	#"config/2_alignment/local_full_non_ref_guided.toml"		# Local non-ref-guided (M2 + M4 + M5)
+)
+
+# ==============================================================================
+# PIPELINE FLAG HELPER
+# ==============================================================================
+
+# Build associative array from PIPELINE_STAGES for O(1) lookup — zero subshell spawns.
+set_pipeline_flags() {
+	# Build stage lookup set (single pass)
+	local -A _stage_set=()
+	local s
+	for s in "${PIPELINE_STAGES[@]}"; do _stage_set["$s"]=1; done
+
+	# Single loop replaces 13 × 2-line manual assignments — O(N) with zero subshell spawns.
+	local _flag _stage
+	for _stage in \
+		MAMBA_INSTALLATION DOWNLOAD_SRR TRIM_SRR DOWNLOAD_TRIM_and_DELETE_RAW_SRR \
+		GZIP_TRIMMED_FILES DELETE_RAW_SRR QUALITY_CONTROL \
+		METHOD_1_HISAT2_REF_GUIDED METHOD_2_HISAT2_DE_NOVO METHOD_3_STAR_ALIGNMENT \
+		METHOD_4_SALMON_SAF METHOD_5_BOWTIE2_RSEM DELETE_TRIMMED_FASTQ_FILES; do
+		_flag="RUN_${_stage}"
+		# printf -v sets variable by nameref — no eval, no subshell
+		printf -v "$_flag" '%s' "${_stage_set[$_stage]:+TRUE}"
+		printf -v "$_flag" '%s' "${!_flag:-FALSE}"
+	done
+}
+
+# ==============================================================================
+# MAIN PIPELINE FUNCTION
+# ==============================================================================
+
+run_all() {
+	local fasta="" rnaseq_list=()
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+			--FASTA)      fasta="$2"; shift 2 ;;
+			--RNASEQ_LIST)
+				shift
+				while [[ $# -gt 0 && ! "$1" =~ ^-- ]]; do
+					rnaseq_list+=("$1"); shift
+				done ;;
+			*) shift ;;
+		esac
+	done
+
+	local start_time end_time elapsed
+	# O(1) bash builtin — avoids $(date +%s) subprocess fork
+	printf -v start_time '%(%s)T' -1 2>/dev/null || start_time=$(date +%s)
+
+	local fasta_base fasta_tag
+	fasta_base="${fasta##*/}"
+	fasta_tag="${fasta_base%.*}"
+	set_fasta_output_dirs "$fasta_tag"
+
+	setup_logging
+	switch_log_stage "1_SRRs"
+	# Catalog software once per pipeline execution, not per FASTA
+	if [[ "${_SOFTWARE_CATALOGED:-}" != "true" ]]; then
+		catalog_all_software
+		_SOFTWARE_CATALOGED="true"
+	fi
+	log_configuration
+	# Use printf builtin for formatted date — avoids subshell
+	local _start_fmt; printf -v _start_fmt '%(%Y-%m-%d %H:%M:%S)T' "$start_time" 2>/dev/null || _start_fmt=$(date -r "$start_time" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -d "@$start_time" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S')
+	log_step "Script started at: $_start_fmt"
+
+	log_info "SRR samples to process:"
+	for srr in "${rnaseq_list[@]}"; do log_info "$srr"; done
+
+	# Track method failures for aggregate exit code
+	local method_failures=0
+
+	# --- Preprocessing ---
+	if [[ $RUN_DOWNLOAD_SRR == "TRUE" ]]; then
+		if [[ $RUN_DOWNLOAD_TRIM_and_DELETE_RAW_SRR == "TRUE" ]]; then
+			log_warn "DOWNLOAD_SRR skipped: DOWNLOAD_TRIM_and_DELETE_RAW_SRR is enabled"
+		else
+			log_step "STEP 01a: Download RNA-seq data"
+			download_srrs_parallel "${rnaseq_list[@]}"
+		fi
+	fi
+
+	if [[ $RUN_TRIM_SRR == "TRUE" ]]; then
+		if [[ $RUN_DOWNLOAD_TRIM_and_DELETE_RAW_SRR == "TRUE" ]]; then
+			log_warn "TRIM_SRR skipped: DOWNLOAD_TRIM_and_DELETE_RAW_SRR is enabled"
+		else
+			log_step "STEP 01b: Trim RNA-seq data"
+			trim_srrs_trimmomatic_parallel "${rnaseq_list[@]}"
+		fi
+	fi
+
+	if [[ $RUN_DOWNLOAD_TRIM_and_DELETE_RAW_SRR == "TRUE" ]]; then
+		log_step "STEP 01ab: Download, Trim, and Delete Raw SRR data"
+		export DELETE_RAW_SRR_AFTER_DOWNLOAD_and_TRIMMING="TRUE"
+		download_and_trim_srrs_parallel "${rnaseq_list[@]}"
+	fi
+
+	if [[ $RUN_DELETE_RAW_SRR == "TRUE" ]]; then
+		log_step "STEP 01d: Delete Raw SRR files"
+		delete_raw_srr_by_srr_list "${rnaseq_list[@]}"
+	fi
+
+	if [[ $RUN_QUALITY_CONTROL == "TRUE" ]]; then
+		log_step "STEP 01c: Quality Control analysis"
+		run_quality_control_all "${rnaseq_list[@]}"
+	fi
+
+	switch_log_stage "II_RESULTS/2_ALIGNMENT_RESULTs"
+
+	# --- Alignment Methods (parallel when independent) ---
+	# M1-M5 produce output in isolated directories and do not depend on each other.
+	# When PARALLEL_METHODS is enabled and multiple methods are requested, dispatch
+	# them concurrently as background jobs to reduce total wall-clock time.
+	local _enabled_methods=()
+	local _method_cmds=()
+
+	if [[ $RUN_METHOD_1_HISAT2_REF_GUIDED == "TRUE" ]]; then
+		if [[ -z "${gtf_file:-}" || ! -f "${gtf_file:-}" ]]; then
+			log_error "GTF file required for reference-guided alignment: ${gtf_file:-<unset>}"
+			log_error "Skipping Method 1 — configure gtf_file variable"
+			((method_failures++)) || true
+		else
+			_enabled_methods+=("M1")
+			_method_cmds+=("hisat2_ref_guided_pipeline --FASTA \"$fasta\" --GTF \"$gtf_file\" ${HISAT2_STRANDNESS:+--STRANDNESS \"$HISAT2_STRANDNESS\"} --RNASEQ_LIST ${rnaseq_list[*]}")
+		fi
+	fi
+	if [[ $RUN_METHOD_2_HISAT2_DE_NOVO == "TRUE" ]]; then
+		_enabled_methods+=("M2")
+		_method_cmds+=("hisat2_de_novo_pipeline --FASTA \"$fasta\" --RNASEQ_LIST ${rnaseq_list[*]}")
+	fi
+	if [[ $RUN_METHOD_3_STAR_ALIGNMENT == "TRUE" ]]; then
+		_enabled_methods+=("M3")
+		_method_cmds+=("star_alignment_pipeline --FASTA \"$fasta\" --RNASEQ_LIST ${rnaseq_list[*]}")
+	fi
+	if [[ $RUN_METHOD_4_SALMON_SAF == "TRUE" ]]; then
+		if [[ ! -f "${decoy:-}" ]]; then
+			log_error "Genome file '${decoy:-<unset>}' not found — skipping Salmon SAF pipeline."
+			((method_failures++)) || true
+		else
+			_enabled_methods+=("M4")
+			_method_cmds+=("salmon_saf_pipeline --FASTA \"$fasta\" --GENOME \"$decoy\" --RNASEQ_LIST ${rnaseq_list[*]}")
+		fi
+	fi
+	if [[ $RUN_METHOD_5_BOWTIE2_RSEM == "TRUE" ]]; then
+		_enabled_methods+=("M5")
+		_method_cmds+=("bowtie2_rsem_pipeline --FASTA \"$fasta\" --RNASEQ_LIST ${rnaseq_list[*]}")
+	fi
+
+	if [[ ${#_enabled_methods[@]} -eq 0 ]]; then
+		log_info "No alignment methods enabled"
+	elif [[ ${#_enabled_methods[@]} -eq 1 ]]; then
+		# Single method — run directly (no overhead from background dispatch)
+		log_step "Running ${_enabled_methods[0]} (single method)"
+		if eval "${_method_cmds[0]}"; then
+			log_info "${_enabled_methods[0]} completed successfully"
+		else
+			log_error "${_enabled_methods[0]} failed (exit code: $?) — continuing"
+			((method_failures++)) || true
+		fi
+	elif [[ "${PARALLEL_METHODS:-TRUE}" == "TRUE" ]] && (( ${#_enabled_methods[@]} > 1 )); then
+		# Multiple methods — run concurrently as background jobs.
+		# Each method already manages its own GNU Parallel pool for per-sample work,
+		# so cross-method parallelism adds no contention beyond shared I/O bandwidth.
+		log_step "Running ${#_enabled_methods[@]} methods in parallel: ${_enabled_methods[*]}"
+		local -a _method_pids=()
+		local -a _method_logs=()
+		for _i in "${!_enabled_methods[@]}"; do
+			local _m="${_enabled_methods[$_i]}"
+			local _mlog="${LOG_DIR}/method_${_m}_${fasta_tag}.log"
+			_method_logs+=("$_mlog")
+			log_info "Dispatching ${_m} → $_mlog"
+			eval "${_method_cmds[$_i]}" > "$_mlog" 2>&1 &
+			_method_pids+=($!)
+		done
+
+		# Wait for all methods and collect exit codes
+		for _i in "${!_enabled_methods[@]}"; do
+			local _m="${_enabled_methods[$_i]}"
+			local _pid="${_method_pids[$_i]}"
+			if wait "$_pid"; then
+				log_info "${_m} completed successfully (pid=$_pid)"
+			else
+				log_error "${_m} failed (exit code: $?, pid=$_pid) — see ${_method_logs[$_i]}"
+				((method_failures++)) || true
+			fi
+		done
+		# Batch-append all method logs in a single I/O operation (avoids repeated open/seek/close)
+		local _existing_logs=()
+		for _mlog in "${_method_logs[@]}"; do
+			[[ -f "$_mlog" ]] && _existing_logs+=("$_mlog")
+		done
+		if [[ ${#_existing_logs[@]} -gt 0 ]]; then
+			cat "${_existing_logs[@]}" >> "$LOG_FILE"
+			# Clean up per-method temp logs to prevent accumulation across runs
+			rm -f "${_existing_logs[@]}"
+		fi
+	else
+		# PARALLEL_METHODS=FALSE: sequential fallback
+		log_step "Running ${#_enabled_methods[@]} methods sequentially"
+		for _i in "${!_enabled_methods[@]}"; do
+			local _m="${_enabled_methods[$_i]}"
+			log_step "Running ${_m}"
+			if eval "${_method_cmds[$_i]}"; then
+				log_info "${_m} completed successfully"
+			else
+				log_error "${_m} failed (exit code: $?) — continuing"
+				((method_failures++)) || true
+			fi
+		done
+	fi
+
+	compare_methods_summary "$fasta_tag"
+
+	# O(1) bash builtin — avoids $(date +%s) subprocess fork
+	printf -v end_time '%(%s)T' -1 2>/dev/null || end_time=$(date +%s)
+	elapsed=$((end_time - start_time))
+	log_step "Final timing"
+	local _end_fmt; printf -v _end_fmt '%(%Y-%m-%d %H:%M:%S)T' "$end_time" 2>/dev/null || _end_fmt=$(date -r "$end_time" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -d "@$end_time" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S')
+	log_info "Script ended at: $_end_fmt"
+	# Pure bash arithmetic (avoids date subshell spawn)
+	# O(1) bash builtin — avoids $(printf) subprocess fork
+	local _elapsed_fmt; printf -v _elapsed_fmt '%02d:%02d:%02d' $((elapsed/3600)) $(((elapsed%3600)/60)) $((elapsed%60))
+	log_info "Elapsed time: $_elapsed_fmt"
+
+	if [[ $method_failures -gt 0 ]]; then
+		log_error "$method_failures method(s) failed for $fasta_tag"
+	fi
+	return $method_failures
+}
+
+# ==============================================================================
+# EXECUTE
+# ==============================================================================
+
+[[ ${#CONFIG_FILES[@]} -eq 0 ]] && { echo "[ERROR] No configuration files listed in CONFIG_FILES." >&2; exit 1; }
+# NOTE: log_error is not yet available here — logging module is sourced below.
+
+# Source logging early so log_step/log_error/log_info are available before configs.
+# The modules_loader double-source guard ensures this is safe when configs re-source it.
+source "${PROJECT_ROOT}/modules_gea/logging/logging_utils.sh" 2>/dev/null || {
+	# Minimal fallback if logging module cannot be loaded
+	log_info()  { echo "[INFO]  $*"; }
+	log_warn()  { echo "[WARN]  $*"; }
+	log_error() { echo "[ERROR] $*" >&2; }
+	log_step()  { echo ""; echo "==> $*"; }
+}
+
+# Source TOML parser and shared runtime defaults
+source "${PROJECT_ROOT}/config/shared/toml_parser.sh" || {
+	log_error "Failed to source TOML parser: ${PROJECT_ROOT}/config/shared/toml_parser.sh"
+	exit 1
+}
+source "${PROJECT_ROOT}/config/shared/runtime_defaults.sh" || {
+	log_error "Failed to source runtime defaults: ${PROJECT_ROOT}/config/shared/runtime_defaults.sh"
+	exit 1
+}
+
+# Clear persistent R caches if requested
+if [[ "$CLEAR_CACHE" == "TRUE" ]]; then
+	log_info "Clearing persistent pipeline caches..."
+	_cache_count=0
+	_srr_dir="${PROJECT_ROOT}/I_INPUTS/inputs/3_post_proc_inputs/SRR_csv"
+	_gg_dir="${PROJECT_ROOT}/I_INPUTS/inputs/3_post_proc_inputs/gene_groups_csv"
+	# Sample labels cache
+	[[ -f "$_srr_dir/.sample_labels_cache.rds" ]] && rm -f "$_srr_dir/.sample_labels_cache.rds" && _cache_count=$((_cache_count + 1))
+	# Gene name mapping caches (*.namemap.rds beside gene group CSVs)
+	while IFS= read -r -d '' _f; do
+		rm -f "$_f" && _cache_count=$((_cache_count + 1))
+	done < <(find "$_gg_dir" -name '*.namemap.rds' -print0 2>/dev/null)
+	# GPU detection cache (R tempdir varies per session; search common temp roots)
+	for _tmp_root in "${TMPDIR:-/tmp}" "${TEMP:-}" "${TMP:-}"; do
+		[[ -z "$_tmp_root" || ! -d "$_tmp_root" ]] && continue
+		while IFS= read -r -d '' _f; do
+			rm -f "$_f" && _cache_count=$((_cache_count + 1))
+		done < <(find "$_tmp_root" -maxdepth 2 -name '.gpu_detect_cache.rds' -print0 2>/dev/null)
+	done
+	log_info "  Cleared $_cache_count cache file(s)"
+	unset _cache_count _f _srr_dir _gg_dir _tmp_root
+fi
+
+# Track whether STAR was used across ANY config (not just the last one).
+# The cleanup trap needs this because RUN_METHOD_3_STAR_ALIGNMENT only reflects
+# the most recently loaded config — if STAR was used in config 1 but not config 2,
+# orphan _STARtmp dirs from config 1 would not be cleaned.
+_STAR_WAS_USED=false
+
+# Cleanup trap: log summary on exit; clean up STAR temp dirs on signal kill
+_pipeline_cleanup() {
+	local rc=$?
+	local _ar="${ALIGNMENT_RESULTS_ROOT:-${PROJECT_ROOT}/II_RESULTS/2_ALIGNMENT_RESULTs}"
+	# Only search for orphan STAR temp dirs when STAR was actually used in any config
+	# (avoids traversing entire PROJECT_ROOT on every exit — saves ~0.5-2s on large trees)
+	if [[ "$_STAR_WAS_USED" == "true" ]]; then
+		find "$_ar" -maxdepth 4 -type d -name '_STARtmp*' -exec rm -rf {} + 2>/dev/null || true
+	fi
+	# Clean up Salmon gentrome temp dirs (PID-namespaced: tmp_*_gentrome_*)
+	find "$_ar" -maxdepth 5 -type d -name 'tmp_*_gentrome_*' -exec rm -rf {} + 2>/dev/null || true
+	if [[ $rc -ne 0 ]]; then
+		log_error "Pipeline terminated with exit code $rc"
+	fi
+	log_info "Pipeline finished. See logs under: 1_SRRs/logs/ and ${_ar}/logs/"
+	# Clean up background tee/sed processes from logging redirections (prevents zombie
+	# processes in Nextflow/Snakemake containers that would stall work-dir cleanup)
+	type -t _logging_cleanup_bg &>/dev/null && _logging_cleanup_bg
+	exit $rc  # propagate original exit code so orchestrators (Nextflow/Snakemake) see failures
+}
+trap _pipeline_cleanup EXIT
+# Ensure background logging processes are cleaned up on SIGTERM/SIGINT (Nextflow/Snakemake send
+# SIGTERM on timeout/cancel; EXIT trap may not fire after signal-induced termination in some shells)
+trap 'type -t _logging_cleanup_bg &>/dev/null && _logging_cleanup_bg; exit 143' TERM
+trap 'type -t _logging_cleanup_bg &>/dev/null && _logging_cleanup_bg; exit 130' INT
+
+# Big O: O(C × R × M × S) where C=configs, R=ref_pairs, M=enabled_methods, S=samples.
+# Methods run in parallel when PARALLEL_METHODS=TRUE, reducing M dimension to O(1) wall-clock.
+# Per-method inner loops are parallelized via GNU Parallel (S/JOBS threads).
+total_failures=0
+# SRR dataset TOML parse cache — avoids re-parsing across multiple config files
+_SRR_DATASETS_CACHED=()
+_SRR_DATASETS_CACHED_FILE=""
+
+for config_file in "${CONFIG_FILES[@]}"; do
+	log_step "LOADING CONFIGURATION: $config_file"
+
+	# Resolve relative config paths against PROJECT_ROOT for orchestrator compatibility
+	[[ "$config_file" != /* ]] && config_file="${PROJECT_ROOT}/${config_file}"
+	[[ -f "$config_file" ]] || { log_error "Configuration file not found: $config_file"; exit 1; }
+	GENOME_REF_PAIRS=()
+	ALL_FASTA_FILES=()
+	PIPELINE_STAGES=()
+	SRR_COMBINED_LIST=()
+	unset gtf_file STAR_TRANSCRIPTOME_FASTA decoy DECOY KEEP_BAM_GLOBAL keep_bam_global STAR_READ_LENGTH HISAT2_STRANDNESS SRR_DATASETS
+	load_toml "$config_file" || { log_error "Failed to load config: $config_file"; exit 1; }
+	# Export STAR_READ_LENGTH if set by config
+	[[ -n "${STAR_READ_LENGTH:-}" ]] && export STAR_READ_LENGTH
+
+	# Load SRR datasets: test configs define SRR_COMBINED_LIST inline;
+	# full configs load from shared srr_datasets TOML.
+	# SRR_DATASETS (set by config TOML) overrides the default filename.
+	# Cache result — avoids re-parsing the same TOML across multiple configs.
+	# O(L) TOML parse on first call; O(1) array copy on subsequent calls.
+	if [[ ${#SRR_COMBINED_LIST[@]} -eq 0 ]]; then
+		_srr_basename="${SRR_DATASETS:-srr_datasets.toml}"
+		# Resolve: absolute path used as-is, relative resolved under config/shared/
+		if [[ "$_srr_basename" == /* ]]; then
+			_srr_toml="$_srr_basename"
+		else
+			_srr_toml="${PROJECT_ROOT}/config/shared/${_srr_basename}"
+		fi
+		if [[ "${_SRR_DATASETS_CACHED_FILE:-}" == "$_srr_toml" && ${#_SRR_DATASETS_CACHED[@]} -gt 0 ]]; then
+			SRR_COMBINED_LIST=("${_SRR_DATASETS_CACHED[@]}")
+		else
+			load_toml_srr_datasets "$_srr_toml"
+			_SRR_DATASETS_CACHED=("${SRR_COMBINED_LIST[@]}")
+			_SRR_DATASETS_CACHED_FILE="$_srr_toml"
+		fi
+	fi
+
+	# Map TOML uppercase keys to lowercase aliases used by method modules
+	[[ -n "${DECOY:-}" ]] && decoy="$DECOY"
+	[[ -n "${decoy:-}" ]] && decoy="$(_make_absolute_path "$decoy")"
+	[[ -n "${KEEP_BAM_GLOBAL:-}" ]] && keep_bam_global="$KEEP_BAM_GLOBAL"
+	[[ -n "${HISAT2_STRANDNESS:-}" ]] || HISAT2_STRANDNESS=""
+	[[ -n "${POST_PROCESSING_ROOT:-}" ]] && export POST_PROCESSING_ROOT
+
+	# Re-derive THREADS_PER_JOB from potentially updated THREADS/JOBS
+	if [[ "${USE_GNU_PARALLEL:-FALSE}" == "TRUE" ]]; then
+		# Guard: ensure JOBS >= 1 before division (prevents bash arithmetic error if config sets jobs=0)
+		(( ${JOBS:-1} < 1 )) && JOBS=1
+		THREADS_PER_JOB=$((${THREADS:-4} / ${JOBS:-1}))
+		[[ $THREADS_PER_JOB -lt 1 ]] && THREADS_PER_JOB=1
+	else
+		THREADS_PER_JOB="${THREADS:-4}"
+	fi
+	export THREADS JOBS USE_GNU_PARALLEL THREADS_PER_JOB keep_bam_global
+
+	set_pipeline_flags
+	# Track STAR usage across all configs for cleanup trap (see _pipeline_cleanup)
+	[[ "${RUN_METHOD_3_STAR_ALIGNMENT:-}" == "TRUE" ]] && _STAR_WAS_USED=true
+
+	mkdir -p "$RAW_DIR_ROOT" "$TRIM_DIR_ROOT" "$FASTQC_ROOT"
+	# setup_logging is called inside run_all(); avoid redundant re-initialization per config.
+	# Only switch log stage if logging is already initialized (first config handled by run_all).
+	[[ "${LOGGING_INITIALIZED:-}" == "true" ]] && switch_log_stage "1_SRRs"
+
+	if [[ "${RUN_MAMBA_INSTALLATION:-}" == "TRUE" ]]; then
+		log_warn "MAMBA_INSTALLATION stage is not available — use 'bash setup_conda_gea.sh' instead. Continuing with remaining stages."
+	fi
+	if [[ $RUN_GZIP_TRIMMED_FILES == "TRUE" ]]; then
+		log_step "Gzipping trimmed FASTQ files"
+		gzip_trimmed_fastq_files
+	fi
+
+	if [[ ${#GENOME_REF_PAIRS[@]} -gt 0 ]]; then
+		for _pair in "${GENOME_REF_PAIRS[@]}"; do
+			gtf_file="${_pair%%|*}"
+			_remainder="${_pair#*|}"
+			_fasta="${_remainder%%|*}"
+			STAR_TRANSCRIPTOME_FASTA="${_remainder#*|}"
+			# If no third field existed, strip fell back to the full string — reset to empty
+			[[ "$STAR_TRANSCRIPTOME_FASTA" == "$_fasta" ]] && STAR_TRANSCRIPTOME_FASTA=""
+			# Absolutize TOML-extracted paths so they resolve correctly even if a
+			# downstream function or workflow manager changes the working directory.
+			gtf_file="$(_make_absolute_path "$gtf_file")"
+			_fasta="$(_make_absolute_path "$_fasta")"
+			[[ -n "$STAR_TRANSCRIPTOME_FASTA" ]] && STAR_TRANSCRIPTOME_FASTA="$(_make_absolute_path "$STAR_TRANSCRIPTOME_FASTA")"
+			export gtf_file STAR_TRANSCRIPTOME_FASTA
+			_rc=0
+			run_all --FASTA "$_fasta" --RNASEQ_LIST "${SRR_COMBINED_LIST[@]}" || _rc=$?
+			total_failures=$((total_failures + _rc))
+		done
+		unset _pair _remainder _fasta gtf_file STAR_TRANSCRIPTOME_FASTA
+	elif [[ ${#ALL_FASTA_FILES[@]} -gt 0 ]]; then
+		for fasta_input in "${ALL_FASTA_FILES[@]}"; do
+			fasta_input="$(_make_absolute_path "$fasta_input")"
+			_rc=0
+			run_all --FASTA "$fasta_input" --RNASEQ_LIST "${SRR_COMBINED_LIST[@]}" || _rc=$?
+			total_failures=$((total_failures + _rc))
+		done
+	else
+		log_warn "No GENOME_REF_PAIRS or ALL_FASTA_FILES defined in $config_file — skipping alignment"
+	fi
+
+	# --- Cleanup ---
+	switch_log_stage "1_SRRs"
+	if [[ $RUN_DELETE_TRIMMED_FASTQ_FILES == "TRUE" ]]; then
+		log_step "Deleting trimmed FASTQ files"
+		delete_trimmed_fastq_by_srr_list "${SRR_COMBINED_LIST[@]}"
+	fi
+
+	log_step "FINISHED CONFIG: $config_file"
+done
+
+if [[ $total_failures -gt 0 ]]; then
+	log_error "PIPELINE COMPLETED WITH $total_failures METHOD FAILURE(S)"
+	exit 1
+fi
+log_info "Pipeline execution completed"

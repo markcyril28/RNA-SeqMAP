@@ -1,0 +1,20 @@
+SRR_ID,Organ,Notes
+SRR3884685,Radicles,earliest - germination
+SRR3884677,Cotyledons,seed leaves
+SRR3884675,Roots,root development
+SRR3884690,Stems,vegetative growth
+SRR3884689,Leaves,vegetative growth
+SRR3884684,Senescent_leaves,leaf aging
+SRR3884686,Buds_0.7cm,flower bud initiation [MAIN INTEREST]
+SRR3884687,Opened_Buds,flower development [MAIN INTEREST]
+SRR3884597,Flowers,anthesis [MAIN INTEREST]
+SRR3884679,Pistils,female reproductive parts
+SRR3884608,Fruits_1cm,early fruit development
+SRR3884620,Fruits_Stage_1,early fruit stage
+SRR3884631,Fruits_6cm,fruit enlargement
+SRR3884642,Fruits_Skin_Stage_2,mid fruit development
+SRR3884653,Fruits_Flesh_Stage_2,mid fruit development
+SRR3884664,Fruits_Calyx_Stage_2,mid fruit development
+SRR3884680,Fruits_Skin_Stage_3,late fruit development
+SRR3884681,Fruits_Flesh_Stage_3,late fruit development
+SRR3884678,Fruits_peduncle,fruit attachment

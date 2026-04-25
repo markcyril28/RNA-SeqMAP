@@ -1,0 +1,51 @@
+# ==============================================================================
+# HPC FULL CONFIG: M3 — STAR Splice-Aware Alignment (GPE001970_genome)
+# ==============================================================================
+# Purpose: Production post-processing for M3 (STAR genome alignment).
+#          Uses the full eggplant tissue atlas.
+#
+# Method:
+#   M3 — STAR Splice-Aware Alignment  →  uses GPE001970_genome
+#
+# Preprocessing:  Tximport_STAR → Matrix_Creation (Tximport is a no-op when
+#                 Matrix_Creation is active; keep both for flexibility).
+# DE support:     YES — tximport counts feed into DESeq2.
+# NOT applicable: Stringtie_Matrix, Tximport_Salmon, Tximport_RSEM
+# ==============================================================================
+
+# Master Reference
+master_references = ["GPE001970_genome"]
+
+# Gene Groups
+gene_groups = [
+    #"SmelDMPs_v5",
+    "SmelDMPs_v5_with_18s_and_HAP2",
+    #"SmelGRF-GIF_with_Control",
+    "Selected_SmelGRF-GIF_with_two_GIF",
+]
+
+# SRR Datasets
+srr_datasets = [
+    #"PRJNA328564",                    # Main Dataset — Eggplant tissue atlas (full)
+    "PRJNA328564_selected",
+    #"PRJNA865018",                    # SET_1: Good Dataset for SmelDMP GEA
+    #"PRJNA941250",                    # SET_2: Good Dataset for SmelDMP GEA
+    #"PRJNA865018_and_PRJNA941250",
+    #"SAMN28540077",                   # Chinese Dataset 1 — replicability
+    #"SAMN28540068",                   # Chinese Dataset 2 — replicability
+    #"OTHER_SRR_LIST",
+]
+
+# Methods
+methods = ["M3_STAR_Align"]
+
+# Analyses
+# Tximport_STAR is a no-op when Matrix_Creation is also active (keep for
+# standalone use).  Stringtie_Matrix is NOT applicable to M3.
+# Differential_Expression IS supported (tximport counts → DESeq2).
+analyses = [
+    "Tximport_STAR",
+    "Matrix_Creation",
+    "Basic_Heatmap",
+    "Heatmap_with_CV",
+]

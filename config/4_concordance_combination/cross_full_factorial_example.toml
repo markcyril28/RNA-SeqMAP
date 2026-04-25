@@ -1,0 +1,26 @@
+# ==============================================================================
+# CROSS: FULL FACTORIAL EXAMPLE
+# ==============================================================================
+# Demonstrates nested combination runs:
+#   references x method_combinations x gene_group_combinations
+#
+# Keep list sizes small at first; total runs = R x M x G.
+
+master_references = [
+    "GPE001970_genome",
+    "Eggplant_V4.1",
+]
+
+method_combinations = [
+    "M1_HISAT2_RefGuided,M3_STAR_Align",
+    "M4_Salmon_Saf,M5_RSEM_Bowtie2",
+]
+
+gene_group_combinations = [
+    "SmelDMPs_v5_with_18s_and_HAP2",
+    "Selected_SmelGRF-GIF_with_two_GIF",
+]
+
+run_all_master_references = true
+run_all_method_combinations = true
+run_all_gene_group_combinations = true
