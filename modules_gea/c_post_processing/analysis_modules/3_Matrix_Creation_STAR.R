@@ -1,0 +1,293 @@
+#!/usr/bin/env Rscript
+
+# ===============================================
+# MATRIX CREATION - M3 STAR + SALMON
+# ===============================================
+# Creates count matrices from STAR-aligned Salmon quantification outputs.
+# Expects environment variables set by pipeline_utils.sh:
+#   CURRENT_METHOD, MASTER_REFERENCE, BASE_DIR,
+#   SRR_COMBINED_LIST_STR, GENE_GROUPS_STR, GENE_GROUPS_DIR,
+#   STAR_GENERATE_GENE_LEVEL, STAR_GENERATE_ISOFORM_LEVEL
+
+suppressPackageStartupMessages(library(tximport))
+
+SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", {
+  if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+    stop("[MATRIX_CREATION_STAR] ANALYSIS_MODULES_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+  "."
+})
+source(file.path(SCRIPT_DIR, "0_shared_config.R"))
+source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
+source(file.path(SCRIPT_DIR, "3_Matrix_Creation_utils.R"))
+
+# ===============================================
+# MAIN
+# ===============================================
+
+run_star_matrix_creation <- function() {
+GENERATE_GENE_LEVEL    <- isTRUE(as.logical(Sys.getenv("STAR_GENERATE_GENE_LEVEL",    "TRUE")))
+GENERATE_ISOFORM_LEVEL <- isTRUE(as.logical(Sys.getenv("STAR_GENERATE_ISOFORM_LEVEL", "TRUE")))
+
+cat("\n", strrep("=", 60), "\n")
+cat("MATRIX CREATION - M3 STAR + Salmon\n")
+cat(strrep("=", 60), "\n\n")
+cat("Master Reference:", MASTER_REFERENCE, "\n")
+cat("Samples:         ", length(SAMPLE_IDS), "\n\n")
+
+if (length(SAMPLE_IDS) == 0) stop("No samples loaded. Check SRR_COMBINED_LIST_STR and SRR_csv files.")
+
+# Salmon quant outputs live under the MASTER_REFERENCE subdirectory created by STAR alignment
+base_dir  <- Sys.getenv("BASE_DIR", "")
+quant_dir <- if (nzchar(base_dir)) {
+  file.path(base_dir, "II_RESULTS/2_ALIGNMENT_RESULTs", "M3_STAR_Align",
+            MASTER_REFERENCE, "6_salmon", "quant")
+} else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+  stop("[STAR MATRIX] BASE_DIR is required when running under a workflow manager (WF_MANAGED_ENV is set). ",
+       "Export BASE_DIR pointing to the project root.")
+} else {
+  message("[STAR MATRIX] WARN: BASE_DIR not set; using relative path '../..'. ",
+          "Set BASE_DIR for orchestrated execution (Nextflow/Snakemake).")
+  file.path("..", "..", "2_ALIGNMENT_RESULTs", "M3_STAR_Align",
+            MASTER_REFERENCE, "6_salmon", "quant")
+}
+output_dir  <- if (nzchar(base_dir)) {
+  file.path(base_dir, "II_RESULTS", "3_POST_PROC", CURRENT_GENE_GROUP, CURRENT_METHOD, "count_matrices_from_STAR")
+} else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+  stop("[STAR MATRIX] BASE_DIR is required when running under a workflow manager (WF_MANAGED_ENV is set). ",
+       "Export BASE_DIR pointing to the project root.")
+} else {
+  "count_matrices_from_STAR"
+}
+count_label <- "NumReads"
+
+cat("Quantification directory:", quant_dir, "\n")
+cat("Output directory:        ", output_dir, "\n\n")
+
+if (!dir.exists(quant_dir)) {
+  stop("STAR+Salmon quantification directory not found: ", quant_dir,
+       "\n  Run the M3 STAR+Salmon alignment stage first, or check BASE_DIR / MASTER_REFERENCE.")
+}
+
+results <- list()
+
+# Pre-resolve quant file paths once — avoids duplicating the O(S × T) tissue
+# directory scan between gene-level and isoform-level import blocks.
+.resolved_quant_files <- setNames(file.path(quant_dir, SAMPLE_IDS, "quant.sf"), SAMPLE_IDS)
+if (sum(file.exists(.resolved_quant_files)) == 0 && dir.exists(quant_dir)) {
+  cat("  No quant.sf in flat layout; scanning tissue subdirectories (once for both levels)...\n")
+  .tissue_dirs <- list.dirs(quant_dir, recursive = FALSE, full.names = TRUE)
+  # Vectorized O(S*T) file.exists() — build all candidate paths at once, batch-check.
+  # Avoids S*T individual stat() syscalls via R's vectorized file.exists().
+  .all_candidates <- outer(
+    .tissue_dirs, SAMPLE_IDS,
+    function(td, sid) file.path(td, sid, "quant.sf")
+  )  # T × S matrix of paths
+  .exists_mat <- matrix(file.exists(.all_candidates), nrow = length(.tissue_dirs))
+  # Vectorized: max.col() finds first TRUE per column in one C-level pass
+  .any_found <- colSums(.exists_mat) > 0
+  if (any(.any_found)) {
+    .hits <- max.col(t(.exists_mat), ties.method = "first")
+    .idx <- which(.any_found)
+    .resolved_quant_files[SAMPLE_IDS[.idx]] <- .all_candidates[cbind(.hits[.idx], .idx)]
+  }
+}
+# Materialize resolved existence once — avoids 3× redundant O(S) file.exists() below.
+.resolved_exists <- file.exists(.resolved_quant_files)
+
+# ----- Gene-level (requires tx2gene mapping) --------------------------------
+if (GENERATE_GENE_LEVEL) {
+  tx2gene_dir <- file.path(output_dir, MASTER_REFERENCE)
+  tx2gene_files <- if (dir.exists(tx2gene_dir)) {
+    list.files(tx2gene_dir, pattern = "^tx2gene.*\\.tsv$", full.names = TRUE)
+  } else character(0)
+
+  # Generate tx2gene from GTF if missing (alignment step may not have been run)
+  if (length(tx2gene_files) == 0) {
+    gtf_ref_dir <- if (nzchar(base_dir)) {
+      file.path(base_dir, "inputs", "gtf", "reference")
+    } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+      stop("[STAR MATRIX] BASE_DIR is required for GTF lookup under workflow manager.")
+    } else {
+      file.path("..", "..", "inputs", "gtf", "reference")
+    }
+    gtf_candidates <- c(
+      Sys.getenv("STAR_GTF_FILE", unset = ""),
+      # Prefer the _stringtie.gtf variant: its transcript_id attributes are
+      # formatted consistently with the Salmon index built during STAR alignment
+      file.path(gtf_ref_dir, paste0(MASTER_REFERENCE, "_function_IPR_final_stringtie.gtf")),
+      file.path(gtf_ref_dir, paste0(MASTER_REFERENCE, "_function_IPR_final.gtf")),
+      file.path(gtf_ref_dir, paste0(MASTER_REFERENCE, ".gtf"))
+    )
+    gtf_file <- Filter(file.exists, gtf_candidates)[1]
+    if (!is.na(gtf_file) && nzchar(gtf_file)) {
+      cat("  Generating tx2gene from GTF:", gtf_file, "\n")
+      dir.create(tx2gene_dir, recursive = TRUE, showWarnings = FALSE)
+      tx2gene_out <- file.path(tx2gene_dir, paste0("tx2gene_", MASTER_REFERENCE, ".tsv"))
+      awk_cmd <- sprintf(
+        "awk '$3==\"transcript\" { tid=\"\"; gid=\"\"; for(i=9;i<=NF;i++) { if($i==\"transcript_id\") { gsub(/[\";]/,\"\",$(i+1)); tid=$(i+1) } if($i==\"gene_id\") { gsub(/[\";]/,\"\",$(i+1)); gid=$(i+1) } } if(tid!=\"\" && gid!=\"\") print tid \"\\t\" gid }' '%s' | sort -u > '%s'",
+        gtf_file, tx2gene_out)
+      awk_exit <- system(awk_cmd)
+      if (awk_exit != 0) {
+        cat("  Warning: awk tx2gene extraction exited with code", awk_exit, "\n")
+      }
+      if (file.exists(tx2gene_out) && file.size(tx2gene_out) > 0) {
+        tx2gene_files <- tx2gene_out
+        cat("  Created tx2gene mapping:", tx2gene_out, "\n")
+      } else {
+        cat("  Error: Failed to generate tx2gene from GTF\n")
+      }
+    }
+  }
+
+  if (length(tx2gene_files) > 0) {
+    # .rds sidecar cache: 5-10x faster reload vs TSV re-parsing across Rscript invocations.
+    # Matches the caching pattern in read_count_matrix() from 1_utility_functions.R.
+    .tx2gene_rds <- paste0(tx2gene_files[1], ".tx2gene.rds")
+    # Batch file.info(): 1 syscall for both files instead of 3 (mtime + exists + mtime)
+    .both_info <- file.info(c(.tx2gene_rds, tx2gene_files[1]))
+    if (!is.na(.both_info$mtime[1]) && .both_info$mtime[1] >= .both_info$mtime[2]) {
+      raw_tx2gene <- readRDS(.tx2gene_rds)
+      cat("  Loaded tx2gene from .rds cache:", .tx2gene_rds, "\n")
+    } else {
+      # Read without col.names to detect actual column count (col.names would force 2 columns,
+      # masking single-column files). Matches tximport_star_to_matrices.R approach.
+      # O(N) where N = tx2gene rows (50K-200K); fread is 10-50x faster
+      raw_tx2gene <- if (.HAS_DATATABLE) {
+        data.table::fread(tx2gene_files[1], header = FALSE, colClasses = "character",
+                          data.table = FALSE)
+      } else {
+        read.delim(tx2gene_files[1], header = FALSE,
+                   stringsAsFactors = FALSE, colClasses = "character")
+      }
+      tryCatch(saveRDS(raw_tx2gene, .tx2gene_rds), error = function(e) NULL)
+    }
+    if (nrow(raw_tx2gene) == 0 || ncol(raw_tx2gene) < 2) {
+      cat("  Error: tx2gene file is empty or malformed (", ncol(raw_tx2gene),
+          "column(s)):", tx2gene_files[1], "\n")
+      cat("  Skipping gene-level import.\n")
+    } else {
+      # Detect column order: tximport needs c(TXNAME, GENEID)
+      # star_alignment_pipeline writes: transcript_id TAB gene_id (col1=TX, col2=GENE)
+      # gene_trans_map fallback writes: gene_id TAB transcript_id (col1=GENE, col2=TX)
+      if (grepl("gene_trans_map$", tx2gene_files[1])) {
+        tx2gene <- raw_tx2gene[, c(2, 1), drop = FALSE]
+      } else {
+        tx2gene <- raw_tx2gene[, 1:2, drop = FALSE]
+      }
+      colnames(tx2gene) <- c("TXNAME", "GENEID")
+      tx2gene$TXNAME <- trimws(tx2gene$TXNAME)
+      tx2gene$GENEID <- trimws(tx2gene$GENEID)
+      # Use pre-resolved quant files + cached existence check (avoids redundant stat)
+      quant_files <- .resolved_quant_files
+      missing_qf <- quant_files[!.resolved_exists]
+      if (length(missing_qf) > 0) {
+        cat("  Warning: Missing quant.sf for", length(missing_qf), "samples:",
+            paste(names(missing_qf), collapse = ", "), "\n")
+        quant_files <- quant_files[.resolved_exists]
+      }
+      if (length(quant_files) < 2) {
+        cat("  Error: Need >= 2 quant.sf files for gene-level import\n")
+      } else {
+        # Validate tx2gene transcript IDs match quant.sf transcript IDs
+        sample_qf <- read.delim(quant_files[1], header = TRUE, nrows = 100,
+                                 stringsAsFactors = FALSE)
+        qf_ids <- sample_qf$Name
+        tx_ids <- tx2gene$TXNAME
+        overlap <- length(intersect(qf_ids, tx_ids))
+        match_rate <- if (length(qf_ids) > 0) overlap / length(qf_ids) else 0
+        if (match_rate < 0.5) {
+          cat("  ERROR: tx2gene transcript IDs poorly match quant.sf IDs!\n")
+          cat("    Match rate:", round(match_rate * 100), "% (", overlap, "/", length(qf_ids), "sampled)\n")
+          cat("    tx2gene IDs (first 3):", paste(head(tx2gene$TXNAME, 3), collapse = ", "), "\n")
+          cat("    quant.sf IDs (first 3):", paste(head(sample_qf$Name, 3), collapse = ", "), "\n")
+          cat("    This usually means tx2gene was generated from the wrong GTF.\n")
+          cat("    Re-run STAR+Salmon alignment to regenerate tx2gene.\n")
+          cat("    Skipping gene-level import.\n\n")
+        } else {
+          txi_gene <- tryCatch(
+            tximport(quant_files, type = "salmon", tx2gene = tx2gene,
+                     ignoreTxVersion = FALSE, ignoreAfterBar = FALSE),
+            error = function(e) { cat("  Gene-level import error:", e$message, "\n"); NULL })
+
+          if (!is.null(txi_gene)) {
+            # Filter entries with zero effective length (prevents NaN/Inf in DESeq2 normalization)
+            if (!is.null(txi_gene$length)) {
+              zero_mask <- rowSums(txi_gene$length == 0) > 0
+              if (any(zero_mask)) {
+                cat("  Filtering", sum(zero_mask), "gene-level entries with zero effective length\n")
+                txi_gene$counts    <- txi_gene$counts[!zero_mask, , drop = FALSE]
+                txi_gene$abundance <- txi_gene$abundance[!zero_mask, , drop = FALSE]
+                txi_gene$length    <- txi_gene$length[!zero_mask, , drop = FALSE]
+              }
+            }
+            if (nrow(txi_gene$counts) == 0 || ncol(txi_gene$counts) == 0) {
+              cat("WARNING: Gene-level import produced empty matrix — skipping\n")
+            } else {
+              results$gene_level     <- txi_gene$counts
+              results$gene_level_tpm <- txi_gene$abundance
+              # Save full tximport object for DESeq2 (preserves transcript-length offsets)
+              txi_rds_dir <- file.path(output_dir, MASTER_REFERENCE, "gene_level")
+              ensure_output_dir(txi_rds_dir)
+              tryCatch({
+                saveRDS(txi_gene, file.path(txi_rds_dir, "tximport_gene_level.rds"))
+                cat("Saved tximport RDS for DESeq2: tximport_gene_level.rds\n")
+              }, error = function(e) cat("  Warning: Failed to save tximport RDS:", e$message, "\n"))
+            }
+          }
+        }
+      }
+    }
+  } else {
+    cat("  Warning: tx2gene file not found in", file.path(output_dir, MASTER_REFERENCE),
+        "— skipping gene-level import\n")
+  }
+}
+
+# ----- Isoform-level (transcript-level, no tx2gene needed) -------------------
+if (GENERATE_ISOFORM_LEVEL) {
+  # Use pre-resolved quant files + cached existence check (avoids redundant stat)
+  quant_files <- .resolved_quant_files[.resolved_exists]
+  if (length(quant_files) < 2) {
+    cat("  Error: Need >= 2 quant.sf files for isoform-level import\n")
+  } else {
+    txi_iso <- tryCatch(
+      tximport(quant_files, type = "salmon", txIn = TRUE, txOut = TRUE,
+               ignoreTxVersion = FALSE, ignoreAfterBar = FALSE),
+      error = function(e) { cat("  Isoform-level import error:", e$message, "\n"); NULL })
+
+    if (!is.null(txi_iso)) {
+      # Filter entries with zero effective length (prevents NaN/Inf in DESeq2 normalization)
+      if (!is.null(txi_iso$length)) {
+        zero_mask <- rowSums(txi_iso$length == 0) > 0
+        if (any(zero_mask)) {
+          cat("  Filtering", sum(zero_mask), "isoform-level entries with zero effective length\n")
+          txi_iso$counts    <- txi_iso$counts[!zero_mask, , drop = FALSE]
+          txi_iso$abundance <- txi_iso$abundance[!zero_mask, , drop = FALSE]
+          txi_iso$length    <- txi_iso$length[!zero_mask, , drop = FALSE]
+        }
+      }
+      if (nrow(txi_iso$counts) == 0 || ncol(txi_iso$counts) == 0) {
+        cat("WARNING: Isoform-level import produced empty matrix — skipping\n")
+      } else {
+        results$isoform_level     <- txi_iso$counts
+        results$isoform_level_tpm <- txi_iso$abundance
+        # Save full tximport object for DESeq2 isoform-level analysis
+        txi_iso_rds_dir <- file.path(output_dir, MASTER_REFERENCE, "isoform_level")
+        ensure_output_dir(txi_iso_rds_dir)
+        tryCatch({
+          saveRDS(txi_iso, file.path(txi_iso_rds_dir, "tximport_isoform_level.rds"))
+          cat("Saved tximport RDS for isoform-level DESeq2: tximport_isoform_level.rds\n")
+        }, error = function(e) cat("  Warning: Failed to save isoform tximport RDS:", e$message, "\n"))
+      }
+    }
+  }
+}
+
+run_matrix_saving(results, output_dir, MASTER_REFERENCE, count_label, GENE_GROUPS_DIR)
+}  # end run_star_matrix_creation
+
+# Run if executed directly (not sourced by batch_dispatcher.R)
+if (!interactive() && identical(environment(), globalenv()) &&
+    !isTRUE(get0(".BATCH_DISPATCHER_ACTIVE"))) {
+  run_star_matrix_creation()
+}

@@ -1,0 +1,335 @@
+#!/usr/bin/env Rscript
+
+# ===============================================
+# BASIC HEATMAP GENERATION MODULE
+# ===============================================
+# Generates standard heatmaps from expression matrices
+
+suppressPackageStartupMessages({
+  library(ComplexHeatmap)
+  library(circlize)
+  library(RColorBrewer)
+  library(grid)
+})
+
+# Pre-initialize fontconfig to suppress "using without calling FcInit()" warning
+# that fires on the first graphics device creation in a new session.
+invisible(suppressWarnings({
+  tmp <- tempfile(fileext = ".png")
+  png(tmp, width = 1, height = 1); dev.off()
+  file.remove(tmp)
+}))
+
+SCRIPT_DIR <- Sys.getenv("ANALYSIS_MODULES_DIR", {
+  if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+    stop("[BASIC_HEATMAP] ANALYSIS_MODULES_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+  "."
+})
+source(file.path(SCRIPT_DIR, "0_shared_config.R"))
+source(file.path(SCRIPT_DIR, "1_utility_functions.R"))
+source(file.path(SCRIPT_DIR, "2_processing_engine.R"))
+
+# ===============================================
+# CONFIGURATION
+# ===============================================
+
+LEGEND_POSITION <- "bottom"
+HEATMAP_OUT_DIR <- file.path(CONSOLIDATED_BASE_DIR, OUTPUT_SUBDIRS$BASIC_HEATMAP)
+
+# Export raw values alongside heatmap images
+# When TRUE, saves the data matrix as a TSV file with the same name as the PNG
+EXPORT_RAW_VALUES <- TRUE
+
+# ===============================================
+# HEATMAP GENERATION FUNCTION
+# ===============================================
+
+generate_heatmap_violet <- function(data_matrix, output_path, title,
+                                     count_type, label_type, normalization_type,
+                                     norm_scheme = NULL,
+                                     transpose = FALSE, sort_by_expression = FALSE) {
+  tryCatch({
+    # Prepare data
+    if (transpose) {
+      data_matrix <- t(data_matrix)
+    }
+    
+    # Sort by mean expression when sort_by_expression is TRUE
+    if (sort_by_expression) {
+      # Hoist colMeans outside branch — O(genes × samples) computed once, not twice.
+      col_means <- colMeans(data_matrix, na.rm = TRUE)
+      # Organs_as_Rows (transpose): high expression LEFT; Genes_as_Rows: high expression RIGHT
+      data_matrix <- data_matrix[, order(col_means, decreasing = transpose), drop = FALSE]
+    }
+    
+    # Color scale with quantile-based range for better visibility
+    # Use 2nd to 98th percentile to avoid extreme values dominating the scale
+    # This makes low-expression genes more visible while keeping patterns accurate
+    # Extract finite values in single pass — avoids intermediate full-vector allocation. O(n).
+    data_values <- data_matrix[is.finite(data_matrix)]
+    
+    if (length(data_values) < 2) {
+      cat("      Warning: Insufficient data for heatmap\n")
+      return(FALSE)
+    }
+    
+    # Use quantiles for color scale bounds (more robust than min/max)
+    # Single quantile() call for both bounds — ~2x faster than two separate calls
+    # O(n) partial-sort algorithm; calling once avoids redundant sort pass
+    .quants <- quantile(data_values, c(0.02, 0.98), na.rm = TRUE)
+    color_min <- .quants[1L]
+    color_max <- .quants[2L]
+    
+    # Handle case where quantiles are identical (no variation)
+    if (color_min == color_max) {
+      # Fall back to full range
+      color_min <- min(data_values)
+      color_max <- max(data_values)
+      if (color_min == color_max) {
+        cat("      Warning: No data variation, skipping heatmap\n")
+        return(FALSE)
+      }
+    }
+    
+    # Configure legend breaks based on normalization type
+    # All schemes use quantile-based color bounds so visual intensity is consistent.
+    # zscore_scaled_to_ten is a linear rescaling of zscore to [0,10]; using the same
+    # quantile approach ensures identical color patterns between the two.
+    # For zscore_scaled_to_ten: show a complete 0-10 legend (increment of 2) so the
+    # reader sees the full intuitive scale, even though colors are quantile-mapped.
+    # Use norm_scheme (internal name) instead of normalization_type (display name)
+    # for reliable detection — display names can change without breaking this logic.
+    is_zscore_scaled <- !is.null(norm_scheme) && norm_scheme == "zscore_scaled_to_ten"
+    if (is_zscore_scaled) {
+      legend_breaks <- seq(0, 10, by = 2)
+      legend_labels <- as.character(legend_breaks)
+    } else {
+      legend_breaks <- seq(color_min, color_max, length.out = 5)
+      legend_labels <- sprintf("%.1f", legend_breaks)
+    }
+    
+    color_fun <- colorRamp2(
+      seq(color_min, color_max, length.out = 100),
+      get_violet_color_scale(100)
+    )
+    
+    # Legend
+    legend_layout <- get_legend_layout(LEGEND_POSITION)
+    # Use internal norm_scheme for get_legend_title() (which switches on internal names);
+    # normalization_type is the display name used for file naming and the is_zscore_scaled check.
+    legend_title <- get_legend_title(if (!is.null(norm_scheme)) norm_scheme else normalization_type, count_type)
+    
+    # Calculate dimensions for square cells with auto-sizing
+    n_rows <- nrow(data_matrix)
+    n_cols <- ncol(data_matrix)
+    cell_size <- unit(12, "mm")  # Square cell size
+    
+    # Auto-calculate image dimensions based on heatmap size (DPI-aware)
+    # All layout math in mm, converted to pixels at the end via DPI
+    mm_to_px <- FIGURE_DPI / 25.4
+
+    # Estimate label space from actual text lengths (at 11pt, ~0.24mm per char)
+    max_row_label_len <- max(nchar(rownames(data_matrix)), 0)
+    max_col_label_len <- max(nchar(colnames(data_matrix)), 0)
+    char_width_mm <- 11 * 0.24  # approximate mm per character at 11pt
+    # Row labels: horizontal text
+    row_label_mm <- max(20, max_row_label_len * char_width_mm + 5)
+    # Column labels at 45°: project into height
+    col_label_height_mm <- max(20, max_col_label_len * char_width_mm * sin(pi/4) + 5)
+
+    # Wrap title to fit within the heatmap body width
+    body_width_mm <- n_cols * 12
+    title_wrap <- wrap_title(title, max(body_width_mm, 80))
+    title <- title_wrap$text
+    title_height_mm <- title_wrap$n_lines * 14 * 0.35 + 5  # ~0.35mm line height per pt
+
+    # Padding in mm: draw() padding (15mm each side) + legend (~25mm)
+    pad_left_mm   <- row_label_mm + 15   # row labels + draw padding
+    pad_right_mm  <- 40                  # legend + draw padding
+    pad_bottom_mm <- col_label_height_mm + 15  # col labels + draw padding
+    pad_top_mm    <- title_height_mm + 15      # wrapped title + draw padding
+
+    img_width  <- ceiling((body_width_mm + pad_left_mm + pad_right_mm) * mm_to_px)
+    img_height <- ceiling((n_rows * 12 + pad_bottom_mm + pad_top_mm) * mm_to_px)
+    # Enforce minimum canvas (3 inches each dimension)
+    img_width  <- max(ceiling(3 * FIGURE_DPI), img_width)
+    img_height <- max(ceiling(3 * FIGURE_DPI), img_height)
+    
+    # Clean organ label suffixes (.1, .2) added by R's make.unique on duplicate names
+    # Only strip from the axis that carries organ/tissue labels
+    if (label_type == "Organ") {
+      if (transpose) {
+        clean_row_labels <- sub("\\.[0-9]+$", "", rownames(data_matrix))
+        clean_col_labels <- colnames(data_matrix)
+      } else {
+        clean_row_labels <- rownames(data_matrix)
+        clean_col_labels <- sub("\\.[0-9]+$", "", colnames(data_matrix))
+      }
+    } else {
+      clean_row_labels <- rownames(data_matrix)
+      clean_col_labels <- colnames(data_matrix)
+    }
+
+    # Create heatmap without dendrograms, with square cells and visible borders
+    ht <- Heatmap(
+      data_matrix,
+      name = legend_title,
+      col = color_fun,
+      cluster_rows = FALSE,
+      cluster_columns = FALSE,
+      show_row_dend = FALSE,
+      show_column_dend = FALSE,
+      show_row_names = n_rows <= 50,
+      show_column_names = TRUE,
+      row_labels = clean_row_labels,
+      column_labels = clean_col_labels,
+      column_names_side = if (transpose) "top" else "bottom",
+      row_names_side = "left",
+      row_names_gp = gpar(fontsize = 11),
+      column_names_gp = gpar(fontsize = 11),
+      column_names_rot = 45,
+      column_title = title,
+      column_title_gp = gpar(fontsize = 14, fontface = "bold"),
+      width = n_cols * cell_size,
+      height = n_rows * cell_size,
+      rect_gp = gpar(col = "white", lwd = 0.25),
+      heatmap_legend_param = list(
+        direction = legend_layout$direction,
+        legend_height = legend_layout$height,
+        legend_width = legend_layout$width,
+        title_gp = gpar(fontsize = 11),
+        labels_gp = gpar(fontsize = 10),
+        at = legend_breaks,
+        labels = legend_labels
+      )
+    )
+    
+    # Save with auto-adjusted dimensions
+    .dev_open <- FALSE
+    on.exit(if (.dev_open) try(dev.off(), silent = TRUE), add = TRUE)
+    png(output_path, width = img_width, height = img_height, res = FIGURE_DPI)
+    .dev_open <- TRUE
+    suppressWarnings(draw(ht, heatmap_legend_side = LEGEND_POSITION,
+      padding = unit(c(15, 15, 15, 15), "mm")))
+    dev.off()
+    .dev_open <- FALSE
+
+    # Export raw values as CSV alongside the PNG
+    if (exists("EXPORT_RAW_VALUES") && EXPORT_RAW_VALUES) {
+      csv_path <- sub("\\.png$", "_values.csv", output_path)
+      # Convert to data frame with row names as first column
+      row_id_label <- if (transpose) {
+        if (label_type == "Organ") "OrganID" else "SampleID"
+      } else {
+        "GeneID"
+      }
+      export_df <- data.frame(V1 = rownames(data_matrix), data_matrix, check.names = FALSE)
+      names(export_df)[1] <- row_id_label
+      if (.HAS_DATATABLE) {
+        data.table::fwrite(export_df, csv_path, sep = ",", quote = FALSE)
+      } else {
+        write.table(export_df, csv_path, sep = ",", row.names = FALSE, quote = FALSE)
+      }
+      cat("      Exported values:", basename(csv_path), "\n")
+    }
+    
+    cat("      Generated:", basename(output_path), "\n")
+    return(TRUE)
+  }, error = function(e) {
+    cat("      Error:", e$message, "\n")
+    return(FALSE)
+  })
+}
+
+# ===============================================
+# PROCESSING CALLBACK
+# ===============================================
+
+process_basic_heatmap <- function(gene_group, gene_group_output_dir, processing_level,
+                                  count_type, gene_type, label_type, norm_scheme,
+                                  raw_data_matrix, normalized_data, overwrite, extra_options) {
+  
+  local_total <- 0
+  local_successful <- 0
+  local_skipped <- 0
+  
+  norm_display <- get_norm_display_name(norm_scheme)
+  # Hoist title_base outside O×S loop — it depends only on outer-loop variables,
+  # not on orientation or sorting. Saves 3 redundant calls per norm_scheme.
+  title_base <- build_title_base(gene_group, count_type, gene_type,
+                                 label_type, processing_level, norm_scheme)
+
+  # O(O × S) where O = orientation options (2), S = sorting options (2); 4 variants per call
+  for (orient in get_orientation_options(gene_group)) {
+    for (sorting in get_sorting_options()) {
+
+      version_dir <- file.path(
+        gene_group_output_dir, processing_level, count_type, gene_type,
+        norm_scheme, orient$orient_name, sorting$sort_name
+      )
+      ensure_output_dir(version_dir)
+
+      output_path <- file.path(version_dir, paste0(title_base, ".png"))
+      
+      local_total <- local_total + 1
+      
+      if (should_skip_existing(output_path, overwrite)) {
+        cat("      Skipping (exists):", basename(output_path), "\n")
+        local_skipped <- local_skipped + 1
+        next
+      }
+      
+      success <- generate_heatmap_violet(
+        data_matrix = normalized_data,
+        output_path = output_path,
+        title = title_base,
+        count_type = count_type,
+        label_type = label_type,
+        normalization_type = norm_display,
+        norm_scheme = norm_scheme,
+        transpose = orient$transpose,
+        sort_by_expression = sorting$sort
+      )
+      
+      if (success) local_successful <- local_successful + 1
+    }
+  }
+  
+  list(total = local_total, successful = local_successful, skipped = local_skipped)
+}
+
+# ===============================================
+# MAIN
+# ===============================================
+
+run_basic_heatmap <- function(config = NULL, matrices_dir = NULL) {
+  # Get method base directory from environment for config file loading
+  method_base_dir <- Sys.getenv("METHOD_BASE_DIR", {
+    if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+      stop("[BASIC_HEATMAP] METHOD_BASE_DIR is required under workflow manager (WF_MANAGED_ENV is set).")
+    "."
+  })
+  if (is.null(config)) config <- load_runtime_config(method_base_dir)
+  if (is.null(matrices_dir)) {
+    matrices_dir <- file.path(method_base_dir, get_matrices_dir(CURRENT_METHOD))
+  }
+  ensure_output_dir(HEATMAP_OUT_DIR)
+  
+  print_config_summary("BASIC HEATMAP GENERATION", config)
+  
+  results <- process_all_combinations(
+    config = config,
+    output_base_dir = HEATMAP_OUT_DIR,
+    processing_callback = process_basic_heatmap,
+    matrices_dir = matrices_dir
+  )
+  
+  print_summary(results$successful, results$total, results$skipped)
+  cat("Output directory:", HEATMAP_OUT_DIR, "\n")
+}
+
+# Run if executed directly (not sourced by batch_dispatcher.R)
+if (!interactive() && identical(environment(), globalenv()) &&
+    !isTRUE(get0(".BATCH_DISPATCHER_ACTIVE"))) {
+  run_basic_heatmap()
+}

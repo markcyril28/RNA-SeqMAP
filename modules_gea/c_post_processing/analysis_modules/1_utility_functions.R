@@ -1,0 +1,951 @@
+#!/usr/bin/env Rscript
+
+# ===============================================
+# UTILITY FUNCTIONS FOR POST-PROCESSING ANALYSES
+# ===============================================
+# Comprehensive utility functions for all analysis modules
+
+# Guard: only source 0_shared_config.R if it hasn't been loaded yet (CURRENT_METHOD is its sentinel).
+# Use ANALYSIS_MODULES_DIR env var (set by the bash wrapper) with a safe fallback to
+# sys.frame(1)$ofile for interactive/direct-source calls.
+if (!exists("CURRENT_METHOD")) {
+  # Prefer explicit env var (set by bash wrapper / orchestrator); fall back to sys.frame for
+  # interactive/direct-source calls. The env var path is reliable in Nextflow/Snakemake scratch dirs.
+  .utils_dir <- Sys.getenv("ANALYSIS_MODULES_DIR", "")
+  if (!nzchar(.utils_dir)) {
+    # Under orchestrators, fail fast — sys.frame(1)$ofile may resolve to a misleading scratch path
+    if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
+      stop("[UTILITY_FUNCTIONS] ANALYSIS_MODULES_DIR env var is required under workflow manager (WF_MANAGED_ENV is set).")
+    .utils_dir <- tryCatch(
+      dirname(sys.frame(1)$ofile),
+      error = function(e) "."
+    )
+  }
+  source(file.path(.utils_dir, "0_shared_config.R"))
+}
+
+# Cache package availability at module load — avoids repeated requireNamespace()
+# calls inside hot-path functions (each requireNamespace() does a PATH scan). O(1) lookup.
+.HAS_MATRIXSTATS <- requireNamespace("matrixStats", quietly = TRUE)
+
+# ===============================================
+# GPU-ACCELERATED COMPUTATION FUNCTIONS
+# ===============================================
+# These functions use GPU when available, with automatic CPU fallback
+# GPU VRAM limit: GPU_VRAM_GB (default 8GB) - matrices larger than this fall back to CPU
+
+# Estimate matrix memory usage in GB (for float32)
+estimate_matrix_memory_gb <- function(nrow, ncol, dtype_bytes = 4) {
+  (nrow * ncol * dtype_bytes) / (1024^3)
+}
+
+# Check if matrix fits in GPU VRAM (with safety margin for intermediate results)
+fits_in_gpu_vram <- function(nrow, ncol, safety_factor = 0.7) {
+  # For operations like correlation, we need space for input + output + intermediates
+  # Correlation of NxM matrix produces NxN output, plus intermediate centered matrix
+  estimated_usage <- estimate_matrix_memory_gb(nrow, ncol) * 3  # 3x for safety
+  max_allowed <- GPU_VRAM_GB * safety_factor
+  return(estimated_usage <= max_allowed)
+}
+
+# GPU-accelerated correlation matrix computation
+# Supports Pearson and Spearman. Spearman = Pearson on column-wise ranks,
+# so the rank transform runs on CPU (cheap O(n×p×log n)) and the expensive
+# O(p²×n) matrix multiply runs on GPU.
+gpu_cor <- function(x, method = "pearson") {
+  # Cache dimensions once — avoids 3× nrow() + 2× ncol() O(1) function calls
+  .nr <- nrow(x); .nc <- ncol(x)
+  gpu_eligible <- GPU_AVAILABLE && .nr >= 100 &&
+                  fits_in_gpu_vram(.nr, .nc) &&
+                  method %in% c("pearson", "spearman")
+  if (!gpu_eligible) {
+    if (GPU_AVAILABLE && !method %in% c("pearson", "spearman")) {
+      message("[GPU] ", method, " correlation not supported on GPU, using CPU")
+    } else if (GPU_AVAILABLE && !fits_in_gpu_vram(.nr, .nc)) {
+      message("[GPU] Matrix too large for ", GPU_VRAM_GB, "GB VRAM, using CPU")
+    }
+    return(cor(x, method = method, use = "pairwise.complete.obs"))
+  }
+
+  tryCatch({
+    x_mat <- as.matrix(x)
+    col_names <- colnames(x)
+
+    # Spearman = Pearson on ranks: rank-transform columns on CPU (O(n×p×log n),
+    # lightweight vs the O(p²×n) GPU matmul that follows).
+    # matrixStats::colRanks is C-level — avoids p R-level apply() calls.
+    if (method == "spearman") {
+      if (.HAS_MATRIXSTATS) {
+        na_mask <- is.na(x_mat)  # save before colRanks overwrites
+        x_mat <- matrixStats::colRanks(x_mat, ties.method = "average",
+                                       preserveShape = TRUE)
+        # colRanks ignores NAs differently from rank(na.last="keep") — restore NAs
+        if (any(na_mask)) x_mat[na_mask] <- NA
+      } else {
+        x_mat <- apply(x_mat, 2, rank, na.last = "keep")
+      }
+    }
+
+    # Replace NAs with column means so GPU path (no NA support) is numerically
+    # equivalent to use="pairwise.complete.obs" for sparse NA patterns
+    if (anyNA(x_mat)) {
+      col_mu <- colMeans(x_mat, na.rm = TRUE)
+      na_idx <- which(is.na(x_mat), arr.ind = TRUE)
+      x_mat[na_idx] <- col_mu[na_idx[, 2]]
+    }
+
+    if (GPU_BACKEND == "torch") {
+      # GPU Pearson: center → cov via matmul → normalize
+      x_tensor <- torch::torch_tensor(x_mat, device = "cuda")
+      n <- x_tensor$size(0)
+      if (n < 2) stop("Need at least 2 rows for correlation")
+      x_centered <- x_tensor - x_tensor$mean(dim = 0, keepdim = TRUE)
+      cov_matrix <- torch::torch_mm(x_centered$t(), x_centered) / (n - 1)
+      std_dev <- torch::torch_sqrt(torch::torch_diag(cov_matrix))
+      std_dev <- torch::torch_clamp(std_dev, min = 1e-12)
+      cor_matrix <- cov_matrix / torch::torch_outer(std_dev, std_dev)
+      result <- as.matrix(cor_matrix$cpu())
+      rownames(result) <- col_names
+      colnames(result) <- col_names
+      return(result)
+    } else if (GPU_BACKEND == "gpuR") {
+      x_gpu <- gpuR::vclMatrix(x_mat, type = "float")
+      result <- as.matrix(gpuR::cov(x_gpu))
+      std_dev <- sqrt(diag(result))
+      std_dev[std_dev == 0] <- 1e-12
+      result <- result / outer(std_dev, std_dev)
+      rownames(result) <- col_names
+      colnames(result) <- col_names
+      return(result)
+    }
+  }, error = function(e) {
+    message("[GPU] Correlation failed, falling back to CPU: ", e$message)
+  })
+
+  # Fallback to CPU
+  return(cor(x, method = method, use = "pairwise.complete.obs"))
+}
+
+# GPU-accelerated matrix multiplication (for large TOM calculations in WGCNA)
+gpu_matmult <- function(A, B) {
+  # Cache dimension once — avoids 2× nrow() calls
+  .nrA <- nrow(A)
+  if (!GPU_AVAILABLE || .nrA < 100 || !fits_in_gpu_vram(.nrA, ncol(B))) {
+    return(A %*% B)
+  }
+  
+  tryCatch({
+    if (GPU_BACKEND == "torch") {
+      A_tensor <- torch::torch_tensor(as.matrix(A), device = "cuda", dtype = torch::torch_float32())
+      B_tensor <- torch::torch_tensor(as.matrix(B), device = "cuda", dtype = torch::torch_float32())
+      result <- as.matrix(torch::torch_mm(A_tensor, B_tensor)$cpu())
+      rownames(result) <- rownames(A)
+      colnames(result) <- colnames(B)
+      return(result)
+    } else if (GPU_BACKEND == "gpuR") {
+      A_gpu <- gpuR::vclMatrix(as.matrix(A), type = "float")
+      B_gpu <- gpuR::vclMatrix(as.matrix(B), type = "float")
+      result <- as.matrix(A_gpu %*% B_gpu)
+      rownames(result) <- rownames(A)
+      colnames(result) <- colnames(B)
+      return(result)
+    }
+  }, error = function(e) {
+    message("[GPU] Matrix multiplication failed, falling back to CPU: ", e$message)
+  })
+  
+  return(A %*% B)
+}
+
+# GPU-accelerated Euclidean distance matrix (for clustering)
+gpu_dist <- function(x, method = "euclidean") {
+  # Cache dimensions once — avoids 2× nrow() + 2× ncol() calls
+  .nr <- nrow(x); .nc <- ncol(x)
+  if (!GPU_AVAILABLE || method != "euclidean" || .nr < 50 || !fits_in_gpu_vram(.nr, .nc)) {
+    return(dist(x, method = method))
+  }
+  
+  tryCatch({
+    if (GPU_BACKEND == "torch") {
+      x_tensor <- torch::torch_tensor(as.matrix(x), device = "cuda", dtype = torch::torch_float32())
+      # Compute pairwise squared distances: ||a-b||^2 = ||a||^2 + ||b||^2 - 2*a.b
+      sq_norms <- torch::torch_sum(x_tensor^2, dim = 2, keepdim = TRUE)
+      distances_sq <- sq_norms + sq_norms$t() - 2 * torch::torch_mm(x_tensor, x_tensor$t())
+      # Clamp to avoid negative values from numerical precision issues
+      distances_sq <- torch::torch_clamp(distances_sq, min = 0)
+      distances <- torch::torch_sqrt(distances_sq)
+      result <- as.matrix(distances$cpu())
+      rownames(result) <- rownames(x)
+      colnames(result) <- rownames(x)
+      return(as.dist(result))
+    }
+  }, error = function(e) {
+    message("[GPU] Distance calculation failed, falling back to CPU: ", e$message)
+  })
+  
+  return(dist(x, method = method))
+}
+
+# ===============================================
+# FILE I/O FUNCTIONS
+# ===============================================
+
+# In-memory matrix cache: avoids redundant readRDS() deserialization when the
+# processing engine reads the same matrix file across multiple (gene_type ×
+# label_type × norm_scheme) iterations within a single Rscript session.
+# Big O: O(1) hash lookup per cache hit; O(genes × samples) on cache miss.
+.matrix_memory_cache <- new.env(hash = TRUE, parent = emptyenv())
+
+# Big O: O(genes × samples) for parsing; O(1) for in-memory cache hit;
+# O(deserialize) for .rds cache hit (10-50x faster than CSV parsing).
+# data.table::fread is O(n) with memory-mapped I/O vs O(n) with higher constant for read.table.
+read_count_matrix <- function(file_path) {
+  # In-memory cache: skip all I/O if this file was already read in this R session.
+  # Trade-off: uses ~(genes × samples × 8 bytes) RAM per cached matrix.
+  # For typical gene groups (100-5000 genes × 10-50 samples), this is 4KB-2MB each.
+  .cache_key <- file_path
+  if (exists(.cache_key, envir = .matrix_memory_cache, inherits = FALSE)) {
+    return(get(.cache_key, envir = .matrix_memory_cache, inherits = FALSE))
+  }
+
+  tryCatch({
+    # .rds cache: readRDS is ~10-50x faster than TSV parsing for repeated reads.
+    # Each analysis module (heatmap, PCA, DEA, etc.) re-reads the same matrix files;
+    # the .rds cache eliminates redundant parsing after the first read.
+    rds_path <- paste0(file_path, ".rds")
+    # Single file.info() batch call replaces file.exists() + 2× file.mtime() = 3 stat syscalls → 1
+    .fi_mtime <- file.info(c(rds_path, file_path))$mtime
+    if (!is.na(.fi_mtime[1]) && .fi_mtime[1] >= .fi_mtime[2]) {
+      .cached_mat <- readRDS(rds_path)
+      assign(file_path, .cached_mat, envir = .matrix_memory_cache)
+      return(.cached_mat)
+    }
+
+    # data.table::fread() is 10-50x faster than read.table() for large matrices
+    data <- if (.HAS_DATATABLE) {
+      data.table::fread(file_path, header = TRUE, sep = ",",
+                        na.strings = c("", "NA", "null"),
+                        data.table = FALSE)
+    } else {
+      read.csv(file_path, header = TRUE, stringsAsFactors = FALSE,
+               check.names = FALSE, na.strings = c("", "NA", "null"))
+    }
+    # Normalize duplicate column/row names: make.unique() is a no-op when names
+    # are already unique, so the redundant any(duplicated()) guard is unnecessary.
+    colnames(data) <- make.unique(colnames(data))
+    data[, 1] <- make.unique(as.character(data[, 1]), sep = "_")
+    rownames(data) <- data[, 1]
+    data <- data[, -1, drop = FALSE]
+    # Vectorized type coercion: identify non-numeric columns in one pass, convert in bulk
+    # Use logical mask directly — skip unnecessary which() allocation. O(ncol).
+    non_num_mask <- !vapply(data, is.numeric, logical(1))
+    if (any(non_num_mask)) {
+      data[non_num_mask] <- suppressWarnings(lapply(data[non_num_mask], as.numeric))
+    }
+    data_matrix <- as.matrix(data)
+    data_matrix[is.na(data_matrix)] <- 0
+
+    # Save .rds cache for subsequent reads by other analysis modules
+    tryCatch(saveRDS(data_matrix, rds_path), error = function(e) NULL)
+
+    # Store in session-level memory cache
+    assign(file_path, data_matrix, envir = .matrix_memory_cache)
+
+    return(data_matrix)
+  }, error = function(e) {
+    cat("Error reading file:", file_path, "-", e$message, "\n")
+    return(NULL)
+  })
+}
+
+save_matrix_data <- function(data_matrix, output_path, metadata = NULL) {
+  tryCatch({
+    base_path <- tools::file_path_sans_ext(output_path)
+    matrix_df <- data.frame(
+      Gene_ID = rownames(data_matrix),
+      data_matrix,
+      stringsAsFactors = FALSE,
+      check.names = FALSE
+    )
+    if (.HAS_DATATABLE) {
+      data.table::fwrite(matrix_df, file = paste0(base_path, ".csv"),
+                         sep = ",", quote = FALSE)
+    } else {
+      write.table(matrix_df, file = paste0(base_path, ".csv"),
+                  sep = ",", quote = FALSE, row.names = FALSE)
+    }
+    return(TRUE)
+  }, error = function(e) {
+    cat("Error saving matrix:", e$message, "\n")
+    return(FALSE)
+  })
+}
+
+# Read gene list from file (supports CSV and plain text formats)
+# CSV format expected: Gene_ID,Shortened_Name,... (uses Gene_ID column)
+# Plain text format: one gene ID per line
+read_gene_list_from_file <- function(gene_list_file) {
+  if (!file.exists(gene_list_file)) return(NULL)
+  
+  file_ext <- tolower(tools::file_ext(gene_list_file))
+  
+  tryCatch({
+    if (file_ext == "csv") {
+      # Use data.table::fread when available (5-10x faster for larger CSVs)
+      gene_df <- if (.HAS_DATATABLE) {
+        data.table::fread(gene_list_file, header = TRUE, data.table = FALSE)
+      } else {
+        read.csv(gene_list_file, stringsAsFactors = FALSE, header = TRUE)
+      }
+      if ("Gene_ID" %in% colnames(gene_df)) {
+        gene_list <- gene_df$Gene_ID
+      } else {
+        gene_list <- gene_df[[1]]  # Fallback to first column
+      }
+    } else {
+      gene_list <- suppressWarnings(readLines(gene_list_file))
+      gene_list <- gene_list[!grepl("^#|^Gene_ID", gene_list, ignore.case = TRUE) & nzchar(gene_list)]
+    }
+    return(trimws(gene_list))
+  }, error = function(e) {
+    cat("Error reading gene list:", e$message, "\n")
+    return(NULL)
+  })
+}
+
+# ===============================================
+# GENE ID MATCHING
+# ===============================================
+# Shared logic for matching a gene list to matrix row names, handling
+# version suffixes common in eggplant IDs (e.g., SMEL4.1_06g023900.1.01).
+# Used by: filter_by_gene_group(), tximport_salmon_to_matrices.R,
+#           tximport_star_to_matrices.R
+
+# Big O: O(n + m) where n=length(data_rownames), m=length(gene_list).
+# Hash-based lookup via environment avoids O(n×m) brute-force matching.
+match_gene_ids <- function(gene_list, data_rownames) {
+  if (is.null(gene_list) || length(gene_list) == 0) return(character(0))
+  if (is.null(data_rownames) || length(data_rownames) == 0) return(character(0))
+
+  # Precompute base IDs by stripping version suffixes — single-pass regex
+  # handles both .X and .X.XX suffixes. O(n) vs prior 2 × O(n).
+  base_ids <- sub("(\\.[0-9]+){1,2}$", "", data_rownames)
+
+  # Build lookup: base_id -> data_rownames indices (vectorized, O(n) via split)
+  # Use environment as hash map for O(1) lookups
+  base_to_rows <- new.env(hash = TRUE, parent = emptyenv(), size = length(data_rownames))
+  # split() + seq_along avoids O(n²) c() concatenation that occurs with incremental appends
+  # list2env is a single C-level call vs O(n) R-level loop
+  idx_groups <- split(seq_along(data_rownames), base_ids)
+  list2env(idx_groups, envir = base_to_rows)
+  # Resolve indices to row names (deferred to avoid repeated string concatenation)
+  .resolve_rows <- function(key) {
+    idx <- base_to_rows[[key]]
+    if (is.null(idx)) return(NULL)
+    data_rownames[idx]
+  }
+
+  # Vectorized: exact matches first
+  exact_mask <- gene_list %in% data_rownames
+  matched_list <- list(gene_list[exact_mask])
+
+  # Non-exact: try forward match (gene_list ID is base -> find suffixed data rows)
+  # O(m) where m = unmatched genes; each lookup is O(1) via hash env + O(1) suffix strip fallback
+  # Pre-allocate list to avoid O(n²) c() concatenation
+  non_exact <- gene_list[!exact_mask]
+  if (length(non_exact) > 0) {
+    ne_results <- vector("list", length(non_exact))
+    # Pre-compute all base forms outside loop — vectorized sub() is O(m) total
+    # vs O(m) individual sub() calls inside loop (same complexity but avoids
+    # per-iteration regex compilation overhead).
+    # Use same double-suffix regex as base_ids (line 333) to handle both .X and .X.XX suffixes
+    ne_bases <- sub("(\\.[0-9]+){1,2}$", "", non_exact)
+    ne_has_suffix <- ne_bases != non_exact
+    # Pre-compute set membership for base-level IDs in data_rownames (O(m) hash lookup)
+    ne_base_in_data <- ne_bases %in% data_rownames
+    for (i in seq_along(non_exact)) {
+      hits <- .resolve_rows(non_exact[i])
+      if (!is.null(hits)) {
+        ne_results[[i]] <- hits
+      } else if (ne_has_suffix[i]) {
+        # Reverse: use pre-computed base form to match base-level row IDs
+        hits2 <- .resolve_rows(ne_bases[i])
+        if (!is.null(hits2)) {
+          ne_results[[i]] <- hits2
+        } else if (ne_base_in_data[i]) {
+          ne_results[[i]] <- ne_bases[i]
+        }
+      }
+    }
+    matched_list <- c(matched_list, ne_results)
+  }
+  unique(unlist(matched_list, use.names = FALSE))
+}
+
+# ===============================================
+# NORMALIZATION FUNCTIONS
+# ===============================================
+
+preprocess_for_raw <- function(data_matrix) {
+  if (is.null(data_matrix) || nrow(data_matrix) == 0) return(NULL)
+  # !is.finite() catches NA, NaN, and Inf in a single C-level pass (vs two passes + logical OR)
+  data_matrix[!is.finite(data_matrix)] <- 0
+  return(data_matrix)
+}
+
+# Big O: O(genes × samples) — vectorized sweep + log2.
+preprocess_for_cpm <- function(data_matrix, count_type = "expected_count") {
+  # Counts Per Million (CPM): library-size normalization
+  # Formula: CPM = (count / total_library_count) * 1e6
+  # Note: CPM accounts for sequencing depth differences between samples
+  # Log2(CPM + 1) applied for variance stabilization (pseudocount of 1)
+  # Suitable for visualization; for DEA, use DESeq2's internal normalization
+  if (is.null(data_matrix) || nrow(data_matrix) == 0) return(NULL)
+  # CPM requires raw read/fragment counts — not valid for coverage (per-base depth)
+  if (tolower(count_type) == "coverage") {
+    warning("CPM normalization is invalid for coverage data (per-base abundance, not raw counts). ",
+            "Falling back to log2(x+1).", call. = FALSE)
+    return(preprocess_for_count_type_normalized(data_matrix, count_type))
+  }
+  lib_sizes <- colSums(data_matrix, na.rm = TRUE)
+  zero_libs <- lib_sizes == 0
+  if (any(zero_libs)) {
+    warning("CPM: ", sum(zero_libs), " sample(s) have zero total counts: ",
+            paste(head(names(lib_sizes)[zero_libs], 5), collapse = ", "),
+            " -- setting to 1 to avoid division by zero.", call. = FALSE)
+    lib_sizes[zero_libs] <- 1
+  }
+  data_cpm <- sweep(data_matrix, 2, lib_sizes/1e6, FUN = "/")
+  data_cpm[!is.finite(data_cpm)] <- 0
+  return(log2(data_cpm + 1))  # +1 pseudocount before log
+}
+
+preprocess_for_count_type_normalized <- function(data_matrix, count_type) {
+  if (is.null(data_matrix) || nrow(data_matrix) == 0) return(NULL)
+  data_processed <- log2(data_matrix + 1)
+  data_processed[!is.finite(data_processed)] <- 0
+  return(data_processed)
+}
+
+preprocess_for_zscore <- function(data_matrix, count_type, .log2_cache = NULL) {
+  # Z-score normalization: GLOBAL standardization (across entire matrix)
+  # All values scaled using global mean and sd
+  # This preserves relative gene stability - housekeeping genes will show consistent values
+  # while variable genes will show high/low extremes
+  if (is.null(data_matrix) || nrow(data_matrix) == 0) return(NULL)
+  data_norm <- if (!is.null(.log2_cache)) .log2_cache else preprocess_for_count_type_normalized(data_matrix, count_type)
+  if (nrow(data_norm) > 1 && ncol(data_norm) > 1) {
+    # Global z-score (preserves relative stability across genes)
+    # data_norm is already a matrix from preprocess_for_count_type_normalized or .log2_cache;
+    # skip redundant as.matrix() coercion to avoid a full matrix copy. O(genes × samples).
+    global_mean <- mean(data_norm, na.rm = TRUE)
+    global_sd <- sd(data_norm, na.rm = TRUE)
+    if (global_sd == 0 || !is.finite(global_sd)) global_sd <- 1
+    data_zscore <- (data_norm - global_mean) / global_sd
+    data_zscore[!is.finite(data_zscore)] <- 0
+    return(data_zscore)
+  }
+  return(data_norm)
+}
+
+# Big O: O(genes × samples) — vectorized rowMeans + rowSums.
+preprocess_for_zscore_row <- function(data_matrix, count_type, .log2_cache = NULL) {
+  # Z-score normalization: ROW-WISE (per-gene) standardization
+  # Each gene is scaled to its own mean and sd across samples
+  # This makes all genes equally visible - good for pattern comparison
+  # but hides absolute expression level differences between genes
+  if (is.null(data_matrix) || nrow(data_matrix) == 0) return(NULL)
+  data_norm <- if (!is.null(.log2_cache)) .log2_cache else preprocess_for_count_type_normalized(data_matrix, count_type)
+  if (nrow(data_norm) > 1 && ncol(data_norm) > 1) {
+    # Row-wise z-score (each gene normalized independently)
+    row_means <- rowMeans(data_norm, na.rm = TRUE)
+    # matrixStats::rowSds is single-pass C-level (no G×S intermediate centered matrix)
+    row_sds <- if (.HAS_MATRIXSTATS) {
+      matrixStats::rowSds(data_norm, na.rm = TRUE)
+    } else {
+      n_c <- ncol(data_norm)
+      .centered <- data_norm - row_means
+      sqrt(rowSums(.centered * .centered, na.rm = TRUE) / (n_c - 1))
+    }
+    row_sds[row_sds == 0 | !is.finite(row_sds)] <- 1  # Avoid division by zero
+    data_zscore <- (data_norm - row_means) / row_sds
+    data_zscore[!is.finite(data_zscore)] <- 0
+    return(data_zscore)
+  }
+  return(data_norm)
+}
+
+preprocess_for_zscore_scaled_to_ten <- function(data_matrix, count_type, .log2_cache = NULL) {
+  # Z-score normalization scaled to 0-10 range
+  # First applies global z-score (like preprocess_for_zscore), then rescales to 0-10
+  # This preserves z-score patterns but with an intuitive 0-10 scale
+  if (is.null(data_matrix) || nrow(data_matrix) == 0) return(NULL)
+
+  # First apply global z-score normalization (pass cache to avoid redundant log2)
+  data_zscore <- preprocess_for_zscore(data_matrix, count_type, .log2_cache)
+  if (is.null(data_zscore)) return(NULL)
+  
+  # Then scale z-scores to 0-10 range
+  min_val <- min(data_zscore, na.rm = TRUE)
+  max_val <- max(data_zscore, na.rm = TRUE)
+  val_range <- max_val - min_val
+  
+  if (val_range > 0 && is.finite(val_range)) {
+    data_scaled <- ((data_zscore - min_val) / val_range) * 10
+  } else {
+    data_scaled <- matrix(5, nrow = nrow(data_zscore), ncol = ncol(data_zscore))
+    rownames(data_scaled) <- rownames(data_zscore)
+    colnames(data_scaled) <- colnames(data_zscore)
+  }
+  data_scaled[!is.finite(data_scaled)] <- 0
+  return(data_scaled)
+}
+
+# Big O: O(genes × samples) — geometric mean + median-of-ratios + sweep.
+# colMedians (matrixStats) is O(genes × samples) with partial sort per column.
+preprocess_for_deseq2_normalized <- function(data_matrix, count_type = "expected_count") {
+  # DESeq2-style median-of-ratios normalization
+  # Computes size factors based on geometric mean of each gene across samples
+  if (is.null(data_matrix) || nrow(data_matrix) == 0) return(NULL)
+  # Median-of-ratios assumes raw fragment counts — not valid for coverage (per-base depth)
+  if (tolower(count_type) == "coverage") {
+    warning("DESeq2 median-of-ratios normalization is invalid for coverage data (per-base abundance). ",
+            "Falling back to log2(x+1).", call. = FALSE)
+    return(preprocess_for_count_type_normalized(data_matrix, count_type))
+  }
+  
+  # Exclude genes with any zeros from size factor estimation (matches DESeq2 behavior).
+  # DESeq2 computes geometric means only for genes with nonzero counts in ALL samples;
+  # including zero-containing genes would inflate geometric means via pseudocounts.
+  # Identify rows with any NA or zero — avoids O(G×S) full matrix copy
+  has_zero <- rowSums(is.na(data_matrix) | data_matrix == 0) > 0
+  nonzero_genes <- data_matrix[!has_zero, , drop = FALSE]
+
+  if (nrow(nonzero_genes) == 0) {
+    # Fallback to simple log2 if no all-nonzero genes exist
+    return(preprocess_for_count_type_normalized(data_matrix, count_type))
+  }
+
+  # Calculate geometric mean per gene (row) using only all-nonzero genes
+  log_data <- log(nonzero_genes)
+  geo_means <- exp(rowMeans(log_data, na.rm = TRUE))
+
+  # Remove genes with invalid geometric mean
+  valid_genes <- geo_means > 0 & is.finite(geo_means)
+  if (sum(valid_genes) == 0) {
+    # Fallback to simple log2 if no valid genes
+    return(preprocess_for_count_type_normalized(data_matrix, count_type))
+  }
+
+  # Calculate size factors (median of ratios for each sample)
+  # Direct division: R recycles row vector — avoids sweep() MARGIN=1 dispatch overhead
+  ratios <- nonzero_genes[valid_genes, , drop = FALSE] / geo_means[valid_genes]
+  size_factors <- if (.HAS_MATRIXSTATS) {
+    matrixStats::colMedians(ratios, na.rm = TRUE)
+  } else {
+    apply(ratios, 2, median, na.rm = TRUE)
+  }
+  size_factors[size_factors == 0 | !is.finite(size_factors)] <- 1
+  
+  # Normalize counts by size factors
+  data_normalized <- sweep(data_matrix, 2, size_factors, FUN = "/")
+  
+  # Apply log2 transformation
+  data_normalized <- log2(data_normalized + 1)
+  data_normalized[!is.finite(data_normalized)] <- 0
+  
+  return(data_normalized)
+}
+
+apply_normalization <- function(data_matrix, normalization_scheme, count_type, .log2_cache = NULL) {
+  # .log2_cache: optional pre-computed log2(data_matrix + 1) to avoid redundant computation
+  # when calling multiple normalization schemes on the same raw data.
+  switch(normalization_scheme,
+    "raw" = preprocess_for_raw(data_matrix),
+    "count_type_normalized" = {
+      if (!is.null(.log2_cache)) .log2_cache
+      else preprocess_for_count_type_normalized(data_matrix, count_type)
+    },
+    "deseq2_normalized" = preprocess_for_deseq2_normalized(data_matrix, count_type),
+    "zscore" = preprocess_for_zscore(data_matrix, count_type, .log2_cache),
+    "zscore_row" = preprocess_for_zscore_row(data_matrix, count_type, .log2_cache),
+    "zscore_scaled_to_ten" = preprocess_for_zscore_scaled_to_ten(data_matrix, count_type, .log2_cache),
+    "cpm" = preprocess_for_cpm(data_matrix, count_type),
+    stop("Unknown normalization scheme: ", normalization_scheme)
+  )
+}
+
+# ===============================================
+# HEATMAP LEGEND HELPERS
+# ===============================================
+
+get_legend_layout <- function(position = "bottom") {
+  if (position == "bottom") {
+    list(direction = "horizontal", height = grid::unit(2, "cm"), width = grid::unit(10, "cm"),
+         grid_height = grid::unit(0.8, "cm"), grid_width = grid::unit(2.5, "cm"))
+  } else {
+    list(direction = "vertical", height = grid::unit(10, "cm"), width = grid::unit(2, "cm"),
+         grid_height = grid::unit(2.5, "cm"), grid_width = grid::unit(0.8, "cm"))
+  }
+}
+
+get_legend_title <- function(normalization_type, count_type = NULL) {
+  switch(normalization_type,
+    "raw" = if (!is.null(count_type)) paste0("Raw ", toupper(count_type)) else "Raw Counts",
+    "count_type_normalized" = "Log2 Expression",
+    "deseq2_normalized" = "DESeq2 Norm. Expression",
+    "zscore" = "Z-score (Global)",
+    "zscore_row" = "Z-score (Per-Gene)",
+    "zscore_scaled_to_ten" = "Z-Score [0-10]",
+    "cpm" = "Log2(CPM+1)",
+    "Expression"
+  )
+}
+
+get_norm_display_name <- function(norm_scheme) {
+  switch(norm_scheme,
+    "raw" = "Raw",
+    "count_type_normalized" = "Count-Type_Normalized",
+    "deseq2_normalized" = "DESeq2_Normalized",
+    "zscore" = "Z-score_Global",
+    "zscore_row" = "Z-score_Per-Gene",
+    "zscore_scaled_to_ten" = "Z-score_Scaled_to_Ten",
+    "cpm" = "CPM_Normalized",
+    norm_scheme
+  )
+}
+
+# ===============================================
+# SAMPLE LABEL CONVERSION
+# ===============================================
+
+convert_to_organ_labels <- function(counts_matrix) {
+  current_cols <- colnames(counts_matrix)
+  # Short-circuit: if columns are already organ labels (not SRR IDs), skip conversion
+  if (all(current_cols %in% SAMPLE_LABELS) || !any(current_cols %in% SAMPLE_IDS)) {
+    return(counts_matrix)
+  }
+  colnames_organ <- SAMPLE_LABELS[current_cols]
+  colnames_organ[is.na(colnames_organ)] <- current_cols[is.na(colnames_organ)]
+  result <- counts_matrix
+  colnames(result) <- colnames_organ
+  result
+}
+
+# ===============================================
+# GENE NAME CONVERSION
+# ===============================================
+
+# Cache for gene_groups_csv directory listing (avoids repeated list.files() calls)
+.gene_groups_csv_cache <- new.env(hash = TRUE, parent = emptyenv())
+# Cache for loaded gene name mappings (avoids re-reading CSV on every convert_to_shortened_names call)
+.gene_name_mapping_cache <- new.env(hash = TRUE, parent = emptyenv())
+
+.find_gene_group_csv <- function(gene_group, gene_groups_dir) {
+  # Check top-level first (fast path)
+  csv_file <- file.path(gene_groups_dir, paste0(gene_group, ".csv"))
+  if (file.exists(csv_file)) return(csv_file)
+
+  # Build/reuse cached directory listing (one list.files call per gene_groups_dir)
+  cache_key <- gene_groups_dir
+  if (is.null(.gene_groups_csv_cache[[cache_key]])) {
+    all_files <- if (dir.exists(gene_groups_dir)) {
+      list.files(gene_groups_dir, pattern = "\\.csv$",
+                 recursive = TRUE, full.names = TRUE)
+    } else character(0)
+    .fnames <- tools::file_path_sans_ext(basename(all_files))
+    .first <- !duplicated(.fnames)
+    file_map <- setNames(all_files[.first], .fnames[.first])
+    .gene_groups_csv_cache[[cache_key]] <- file_map
+  }
+  file_map <- .gene_groups_csv_cache[[cache_key]]
+  if (gene_group %in% names(file_map)) return(file_map[[gene_group]])
+  return(csv_file)  # return original (non-existent) path for downstream file.exists check
+}
+
+# Load gene name mapping from gene_groups CSV files or reference gene_info.csv
+# Supported CSV formats:
+#   - Gene_ID,Shortened_Name,...
+#   - Gene,Shortened_Name,...
+#   - Gene_ID,Name,... (for reference gene_info.csv files)
+#
+# Performance: two-level cache — in-memory (within session) + .rds on disk
+# (across sessions). Each analysis module invokes a fresh Rscript, so the
+# in-memory cache only avoids repeated reads within one script. The .rds
+# cache avoids re-parsing the same CSV across ~2500 analysis-module invocations.
+load_gene_name_mapping <- function(gene_group, gene_groups_dir = GENE_GROUPS_DIR) {
+  # Return in-memory cached mapping if available (avoids re-reading CSV per call)
+  cache_key <- paste0(gene_group, "|", gene_groups_dir)
+  cached <- .gene_name_mapping_cache[[cache_key]]
+  if (!is.null(cached)) return(cached)
+
+  # Use cached directory listing for fast CSV lookup
+  csv_file <- .find_gene_group_csv(gene_group, gene_groups_dir)
+
+  # If not found, check if it's a reference with a gene_info.csv
+  if (!file.exists(csv_file)) {
+    # Check for gene_info.csv companion file in INPUT_FASTAs
+    input_fastas_dir <- Sys.getenv("INPUT_FASTAS_DIR", "")
+    if (input_fastas_dir == "") {
+      # Try to find it relative to workspace; orchestrators should set INPUT_FASTAS_DIR
+      .base_env <- Sys.getenv("BASE_DIR", "")
+      if (!nzchar(.base_env) && nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
+        stop("[LOAD_GENE_NAME_MAPPING] INPUT_FASTAS_DIR or BASE_DIR is required ",
+             "when running under a workflow manager (WF_MANAGED_ENV is set).")
+      }
+      potential_paths <- c(
+        if (nzchar(.base_env)) file.path(.base_env, "inputs"),
+        file.path(dirname(dirname(dirname(gene_groups_dir))), "inputs"),
+        file.path(dirname(dirname(gene_groups_dir)), "inputs")
+      )
+      # O(P) where P = candidate paths (≤3); breaks on first valid directory
+      for (path in potential_paths) {
+        if (dir.exists(path)) {
+          input_fastas_dir <- normalizePath(path, mustWork = FALSE)
+          break
+        }
+      }
+    }
+
+    if (input_fastas_dir != "") {
+      # Look for gene_info.csv matching the gene_group name
+      gene_info_file <- file.path(input_fastas_dir, "mapping", paste0(gene_group, ".gene_info.csv"))
+      if (file.exists(gene_info_file)) {
+        csv_file <- gene_info_file
+      }
+    }
+  }
+
+  if (!file.exists(csv_file)) return(NULL)
+
+  # Check cross-session RDS cache (keyed on CSV mtime to auto-invalidate on changes)
+  .rds_cache_path <- paste0(csv_file, ".namemap.rds")
+  # Single file.info() batch call replaces file.exists() + 2× file.mtime() = 3 stat syscalls → 1
+  .nm_mtime <- file.info(c(.rds_cache_path, csv_file))$mtime
+  if (!is.na(.nm_mtime[1])) {
+    tryCatch({
+      if (.nm_mtime[1] >= .nm_mtime[2]) {
+        result <- readRDS(.rds_cache_path)
+        .gene_name_mapping_cache[[cache_key]] <- result
+        return(result)
+      }
+    }, error = function(e) NULL)
+  }
+
+  tryCatch({
+    # data.table::fread is 5-10x faster than read.csv for larger gene group files
+    df <- if (.HAS_DATATABLE) {
+      data.table::fread(csv_file, header = TRUE, data.table = FALSE)
+    } else {
+      read.csv(csv_file, stringsAsFactors = FALSE, header = TRUE)
+    }
+    # Support both "Gene_ID" and "Gene" as the ID column
+    gene_col <- if ("Gene_ID" %in% colnames(df)) "Gene_ID" else if ("Gene" %in% colnames(df)) "Gene" else NULL
+    # Support both "Shortened_Name" and "Name" as the display name column
+    name_col <- if ("Shortened_Name" %in% colnames(df)) "Shortened_Name" else if ("Name" %in% colnames(df)) "Name" else NULL
+
+    if (!is.null(gene_col) && !is.null(name_col)) {
+      result <- setNames(trimws(df[[name_col]]), trimws(df[[gene_col]]))
+      .gene_name_mapping_cache[[cache_key]] <- result
+      # Persist RDS cache for subsequent R sessions
+      tryCatch(saveRDS(result, .rds_cache_path), error = function(e) NULL)
+      return(result)
+    }
+    return(NULL)
+  }, error = function(e) NULL)
+}
+
+# Convert Gene_ID to Shortened_Name in row names
+# Handles both gene-level IDs (SMEL4.1_06g023900) and 
+# transcript-level IDs (SMEL4.1_06g023900.1.01)
+# Big O: O(n) where n=nrow(counts_matrix). Cascading named-vector lookups are O(1) each.
+# Reverse lookup adds O(k) where k=length(mapping) but only triggers on unmatched genes.
+convert_to_shortened_names <- function(counts_matrix, gene_group) {
+  mapping <- load_gene_name_mapping(gene_group)
+  if (is.null(mapping)) return(counts_matrix)
+  
+  current_rownames <- rownames(counts_matrix)
+
+  # Cascade: first match wins. Use which() to track unmatched positions —
+  # avoids O(n) is.na() scan on the full vector at each step; only checks
+  # the shrinking set of unmatched positions. O(n) total instead of O(4n).
+  # Suffix-stripping regex is computed lazily — only on unmatched subsets,
+  # skipping O(G) allocations when 100% match exactly on first lookup.
+  new_rownames <- mapping[current_rownames]
+  unmatched <- which(is.na(new_rownames))
+  if (length(unmatched) > 0L) {
+    # Strip last .XX suffix (e.g., .1.01 → .1) — critical for M5 RSEM
+    hits <- mapping[sub("\\.[0-9]+$", "", current_rownames[unmatched])]
+    matched <- !is.na(hits)
+    if (any(matched)) {
+      new_rownames[unmatched[matched]] <- hits[matched]
+      unmatched <- unmatched[!matched]
+    }
+  }
+  if (length(unmatched) > 0L) {
+    # Strip double suffix .X.XX in one pass
+    hits <- mapping[sub("\\.[0-9]+\\.[0-9]+$", "", current_rownames[unmatched])]
+    matched <- !is.na(hits)
+    if (any(matched)) {
+      new_rownames[unmatched[matched]] <- hits[matched]
+      unmatched <- unmatched[!matched]
+    }
+  }
+  if (length(unmatched) > 0L) {
+    # Strip double suffix then single: .X.XX → base, then base.X → base
+    base_double <- sub("\\.[0-9]+\\.[0-9]+$", "", current_rownames[unmatched])
+    hits <- mapping[sub("\\.[0-9]+$", "", base_double)]
+    matched <- !is.na(hits)
+    if (any(matched)) {
+      new_rownames[unmatched[matched]] <- hits[matched]
+      unmatched <- unmatched[!matched]
+    }
+  }
+
+  # Reverse lookup: row ID is shorter than mapping key (e.g., gene-level "SMEL5_06g022750"
+  # when mapping has transcript-level "SMEL5_06g022750.1" as key).
+  # Also handles row IDs longer than mapping keys via stripped-row matching.
+  if (length(unmatched) > 0L) {
+    mapping_keys <- names(mapping)
+    stripped_keys <- sub("\\.[0-9]+$", "", mapping_keys)
+    # Only use entries where stripping actually changed the key (avoids false matches)
+    changed <- stripped_keys != mapping_keys
+    if (any(changed)) {
+      reverse_mapping <- setNames(mapping[changed], stripped_keys[changed])
+      # Remove duplicates (keep first occurrence)
+      reverse_mapping <- reverse_mapping[!duplicated(names(reverse_mapping))]
+      # Try raw row names first, then stripped variants
+      reverse_hits <- reverse_mapping[current_rownames[unmatched]]
+      na_rev <- is.na(reverse_hits)
+      if (any(na_rev)) {
+        na_idx <- which(na_rev)  # Cache indices: avoids redundant which() per fallback tier
+        hits2 <- reverse_mapping[sub("\\.[0-9]+$", "", current_rownames[unmatched[na_idx]])]
+        matched2 <- !is.na(hits2)
+        if (any(matched2)) {
+          reverse_hits[na_idx[matched2]] <- hits2[matched2]
+          na_rev <- is.na(reverse_hits)
+        }
+      }
+      if (any(na_rev)) {
+        na_idx <- which(na_rev)  # Recompute after updates above
+        hits3 <- reverse_mapping[sub("\\.[0-9]+\\.[0-9]+$", "", current_rownames[unmatched[na_idx]])]
+        matched3 <- !is.na(hits3)
+        if (any(matched3)) {
+          reverse_hits[na_idx[matched3]] <- hits3[matched3]
+        }
+      }
+      new_rownames[unmatched] <- reverse_hits
+    }
+  }
+
+  # Keep original name if still no mapping found
+  still_na <- is.na(new_rownames)
+  new_rownames[still_na] <- current_rownames[still_na]
+  
+  result <- counts_matrix
+  rownames(result) <- new_rownames
+  result
+}
+
+# Apply label transformations based on gene_type and label_type
+# Also reorders columns to match SAMPLE_IDS order (from CSV file)
+# NOTE: Does NOT filter out columns - only reorders columns that match SAMPLE_IDS
+#       Columns not in SAMPLE_IDS are appended at the end in their original order
+# Big O: O(samples + genes). Column reordering uses split+grouped-index for O(samples).
+# Gene name conversion delegates to convert_to_shortened_names which is O(genes).
+apply_labels <- function(counts_matrix, gene_group, gene_type, label_type) {
+  result <- counts_matrix
+  
+  # Reorder columns to match SAMPLE_IDS order (preserves CSV file order)
+  # Important: Keep ALL columns - just reorder those that match
+  if (length(SAMPLE_IDS) > 0 && ncol(result) > 0) {
+    current_cols <- colnames(result)
+    
+    # Check if columns are organ labels (matching SAMPLE_LABELS values)
+    # Handle R's make.unique suffixes (.1, .2, etc.) from read.table on duplicate organ names
+    base_cols <- sub("\\.[0-9]+$", "", current_cols)
+    if (any(base_cols %in% SAMPLE_LABELS)) {
+      # Columns are organ labels - reorder using SAMPLE_LABELS values order
+      ordered_organs <- SAMPLE_LABELS[SAMPLE_IDS]
+      ordered_organs <- ordered_organs[!is.na(ordered_organs)]
+      # Match against base organ names (stripped of .1/.2 suffixes) so that
+      # duplicates like "Flower_Buds.1" correctly match "Flower_Buds".
+      # Vectorized approach: for each ordered_organ, find its first unused column match.
+      # When organs repeat, we need sequential consumption (first match, then second, etc.)
+      # Group column indices by base organ name for O(1) lookup per organ.
+      col_groups <- split(seq_along(base_cols), base_cols)
+      # Track consumption position within each group
+      group_pos <- setNames(integer(length(col_groups)), names(col_groups))
+      matched_indices <- integer(length(ordered_organs))
+      n_matched <- 0L
+      # O(O) where O = ordered organs; uses pre-split group indices for O(1) position tracking
+      for (organ in ordered_organs) {
+        if (!is.null(col_groups[[organ]])) {
+          pos <- group_pos[organ] + 1L
+          indices <- col_groups[[organ]]
+          if (pos <= length(indices)) {
+            n_matched <- n_matched + 1L
+            matched_indices[n_matched] <- indices[pos]
+            group_pos[organ] <- pos
+          }
+        }
+      }
+      matched_indices <- matched_indices[seq_len(n_matched)]
+      used <- logical(ncol(result))
+      used[matched_indices] <- TRUE
+      # Columns not matched by the expected order (keep at end)
+      unmatched_indices <- which(!used)
+      ordered_indices <- c(matched_indices, unmatched_indices)
+      if (length(ordered_indices) == ncol(result) &&
+          !identical(ordered_indices, seq_len(ncol(result)))) {
+        result <- result[, ordered_indices, drop = FALSE]
+      }
+    } else if (any(current_cols %in% SAMPLE_IDS)) {
+      # Columns are SRR IDs - reorder using SAMPLE_IDS order directly
+      matched_cols <- SAMPLE_IDS[SAMPLE_IDS %in% current_cols]
+      unmatched_cols <- current_cols[!current_cols %in% matched_cols]
+      ordered_cols <- c(matched_cols, unmatched_cols)
+      if (length(ordered_cols) > 0 && !identical(ordered_cols, current_cols)) {
+        result <- result[, ordered_cols, drop = FALSE]
+      }
+    }
+    # If columns don't match either pattern, keep original order (no filtering)
+  }
+  
+  # Apply row label transformation (gene names)
+  if (gene_type == "Shortened_Name") {
+    result <- convert_to_shortened_names(result, gene_group)
+  }
+  # gene_type == "Gene_ID" means keep original row names
+  
+  # Apply column label transformation (sample names)
+  if (label_type == "Organ") {
+    result <- convert_to_organ_labels(result)
+  }
+  # label_type == "SRR_ID" means keep original column names
+  
+  return(result)
+}
+
+# ===============================================
+# TISSUE GROUP MAPPING (DRY - used by PCA, Correlation, DEA)
+# ===============================================
+# Maps organ names from CSV to biological tissue groups
+# Update this function when CSV organ names change
+
+# ===============================================
+# COLOR FUNCTIONS
+# ===============================================
+
+get_violet_color_scale <- function(n_breaks = 100) {
+  # Light lavender to deep purple gradient (matching image palette)
+  #colorRampPalette(c("#E8D5F0", "#D4B5E3", "#C095D6", "#AC75C9", "#9855BC", "#8435AF", "#6F1FA2", "#5A0F8F", "#45007C"))(n_breaks)
+  colorRampPalette(c("#dab3ddff", "#d9afe0ff", "#c57fd1ff", "#ac44beff", "#8E24AA", "#6A1B9A", "#4A148C", "#2F1B69"))(n_breaks)
+}
+
+get_cv_color_scale <- function(n_breaks = 100) {
+  # Deep violet to light lavender for CV: low CV = deep (stable), high CV = pale (variable)
+  # colorRamp2(seq(min,max,...), colors) maps min→first color, max→last color
+  colorRampPalette(c("#4A148C", "#7B1FA2", "#9C27B0", "#AB47BC",
+                     "#BA68C8", "#CE93D8", "#E1BEE7", "#F3E5F5"))(n_breaks)
+}
