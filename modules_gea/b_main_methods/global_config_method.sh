@@ -90,20 +90,20 @@ _make_absolute_path() {
 # ==============================================================================
 # POST PROCESSING ROOT
 # ==============================================================================
-POST_PROCESSING_ROOT="$(_make_absolute_path "${POST_PROCESSING_ROOT:-3_POST_PROC}")"
+POST_PROCESSING_ROOT="$(_make_absolute_path "${POST_PROCESSING_ROOT:-II_RESULTS/3_POST_PROC/${CURRENT_GENE_GROUP:-_active}}")"
 export POST_PROCESSING_ROOT
 
 # ==============================================================================
 # ALIGNMENT RESULTS ROOT
 # ==============================================================================
-ALIGNMENT_RESULTS_ROOT="$(_make_absolute_path "${ALIGNMENT_RESULTS_ROOT:-2_ALIGNMENT_RESULTs}")"
+ALIGNMENT_RESULTS_ROOT="$(_make_absolute_path "${ALIGNMENT_RESULTS_ROOT:-II_RESULTS/2_ALIGNMENT_RESULTs}")"
 export ALIGNMENT_RESULTS_ROOT
 
 # ==============================================================================
 # SAMPLE METADATA CONFIGURATION
 # ==============================================================================
 # Path to the sample conditions file (tab-separated: SRR_ID condition batch)
-SAMPLE_CONDITIONS_FILE="$(_make_absolute_path "${SAMPLE_CONDITIONS_FILE:-inputs/sample_conditions.txt}")"
+SAMPLE_CONDITIONS_FILE="$(_make_absolute_path "${SAMPLE_CONDITIONS_FILE:-I_INPUTS/inputs/sample_conditions.txt}")"
 
 # ==============================================================================
 # METHOD 1: HISAT2 REFERENCE GUIDED DIRECTORIES

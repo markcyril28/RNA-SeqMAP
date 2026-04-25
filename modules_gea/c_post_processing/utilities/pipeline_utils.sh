@@ -149,7 +149,7 @@ is_figure_analysis() {
 # Usage: setup_method_env "method_name" "master_reference"
 setup_method_env() {
     local method=$1 master_ref=$2
-    local method_dir="$BASE_DIR/3_POST_PROC/$method"
+    local method_dir="$BASE_DIR/II_RESULTS/3_POST_PROC/${CURRENT_GENE_GROUP:-_active}/$method"
 
     # Create the method output directory if it doesn't exist yet (first post-processing run).
     mkdir -p "$method_dir" || { log_error "Failed to create directory: $method_dir"; return 1; }
@@ -161,12 +161,12 @@ setup_method_env() {
 
     # Export method-specific quant directory so R preprocessing scripts use the exact path
     if [[ "$method" == "M4_Salmon_Saf" ]]; then
-        export SALMON_QUANT_ROOT="$BASE_DIR/2_ALIGNMENT_RESULTs/M4_Salmon_Saf/Salmon_Quant/$master_ref"
+        export SALMON_QUANT_ROOT="$BASE_DIR/II_RESULTS/2_ALIGNMENT_RESULTs/M4_Salmon_Saf/Salmon_Quant/$master_ref"
     elif [[ "$method" == "M5_RSEM_Bowtie2" ]]; then
-        export RSEM_QUANT_ROOT="$BASE_DIR/2_ALIGNMENT_RESULTs/M5_RSEM_Bowtie2/RSEM_Quant_WD/$master_ref"
+        export RSEM_QUANT_ROOT="$BASE_DIR/II_RESULTS/2_ALIGNMENT_RESULTs/M5_RSEM_Bowtie2/RSEM_Quant_WD/$master_ref"
     fi
 
-    export GENE_GROUPS_DIR="$BASE_DIR/inputs/3_post_proc_inputs/gene_groups_csv"
+    export GENE_GROUPS_DIR="$BASE_DIR/I_INPUTS/inputs/3_post_proc_inputs/gene_groups_csv"
 
     # Rebuild arrays from exported strings (bash arrays are not exported to subshells)
     _rebuild_exported_arrays
@@ -190,7 +190,7 @@ setup_method_env() {
 # Usage: run_method_preprocessing "method_name" "master_reference"
 run_method_preprocessing() {
     local method=$1 master_ref=$2
-    local method_dir="$BASE_DIR/3_POST_PROC/$method"
+    local method_dir="$BASE_DIR/II_RESULTS/3_POST_PROC/${CURRENT_GENE_GROUP:-_active}/$method"
 
     pushd "$method_dir" > /dev/null || { log_error "Cannot cd to $method_dir"; return 1; }
 
@@ -238,7 +238,7 @@ run_method_preprocessing() {
 # Usage: run_single_analysis "method_name" "master_reference" "analysis_name"
 run_single_analysis() {
     local method=$1 master_ref=$2 analysis=$3
-    local method_dir="$BASE_DIR/3_POST_PROC/$method"
+    local method_dir="$BASE_DIR/II_RESULTS/3_POST_PROC/${CURRENT_GENE_GROUP:-_active}/$method"
 
     pushd "$method_dir" > /dev/null || { log_error "Cannot cd to $method_dir"; return 1; }
 
@@ -308,7 +308,7 @@ run_batched_analyses() {
     local method=$1 master_ref=$2
     shift 2
     local -a analyses=("$@")
-    local method_dir="$BASE_DIR/3_POST_PROC/$method"
+    local method_dir="$BASE_DIR/II_RESULTS/3_POST_PROC/${CURRENT_GENE_GROUP:-_active}/$method"
     local dispatcher="${_PIPELINE_MODS_DIR}/batch_dispatcher.R"
 
     # Fallback: if dispatcher missing or single task, use individual calls

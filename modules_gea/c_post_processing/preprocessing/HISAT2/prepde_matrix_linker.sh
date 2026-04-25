@@ -6,11 +6,11 @@
 # Description:
 # During M1 alignment, prepDE.py already produced integer count matrices:
 #   gene_count_matrix.csv, transcript_count_matrix.csv, sample_metadata.csv
-# under: 2_ALIGNMENT_RESULTs/M1_HISAT2_RefGuided/stringtie_WD/<fasta_tag>/deseq2_input/
+# under: II_RESULTS/2_ALIGNMENT_RESULTs/M1_HISAT2_RefGuided/stringtie_WD/<fasta_tag>/deseq2_input/
 #
 # This script validates those matrices exist and copies them into the canonical
 # post-processing location so downstream DESeq2 analysis modules can consume them:
-#   3_POST_PROC/M1_HISAT2_RefGuided/count_matrices_from_stringtie/<fasta_tag>/deseq2_input/
+#   II_RESULTS/3_POST_PROC/M1_HISAT2_RefGuided/count_matrices_from_stringtie/<fasta_tag>/deseq2_input/
 # ===============================================
 
 set -euo pipefail
@@ -40,10 +40,10 @@ source "${BASE_DIR}/modules_gea/logging/logging_utils.sh" 2>/dev/null || {
 }
 
 # Source location (produced by prepDE.py during alignment)
-SOURCE_DESEQ2_DIR="${BASE_DIR}/2_ALIGNMENT_RESULTs/M1_HISAT2_RefGuided/stringtie_WD/${MASTER_REFERENCE}/deseq2_input"
+SOURCE_DESEQ2_DIR="${BASE_DIR}/II_RESULTS/2_ALIGNMENT_RESULTs/M1_HISAT2_RefGuided/stringtie_WD/${MASTER_REFERENCE}/deseq2_input"
 
 # Target location (post-processing canonical path)
-TARGET_DESEQ2_DIR="${BASE_DIR}/3_POST_PROC/M1_HISAT2_RefGuided/count_matrices_from_stringtie/${MASTER_REFERENCE}/deseq2_input"
+TARGET_DESEQ2_DIR="${BASE_DIR}/II_RESULTS/3_POST_PROC/${CURRENT_GENE_GROUP:-_active}/M1_HISAT2_RefGuided/count_matrices_from_stringtie/${MASTER_REFERENCE}/deseq2_input"
 
 log_info "prepDE Matrix Linker - M1 HISAT2 Ref-Guided"
 log_info "MASTER_REFERENCE: $MASTER_REFERENCE"
@@ -146,6 +146,7 @@ log_info "Building M1 TPM/FPKM/Coverage matrices for visualization..."
 BASE_DIR="$BASE_DIR" \
 MASTER_REFERENCE="$MASTER_REFERENCE" \
 STRINGTIE_METHOD="M1" \
+CURRENT_GENE_GROUP="${CURRENT_GENE_GROUP:-_active}" \
 GENE_GROUPS_STR="${GENE_GROUPS_STR:-}" \
 GENE_GROUPS_DIR="${GENE_GROUPS_DIR:-}" \
 SRR_COMBINED_LIST_STR="${SRR_COMBINED_LIST_STR:-}" \
@@ -153,4 +154,4 @@ SRR_CSV_DIR="${SRR_CSV_DIR:-}" \
 CURRENT_DATASET="${CURRENT_DATASET:-}" \
 bash "$M1_MATRIX_BUILDER"
 
-log_info "M1 visualization matrices ready at: ${BASE_DIR}/3_POST_PROC/M1_HISAT2_RefGuided/count_matrices_from_stringtie"
+log_info "M1 visualization matrices ready at: ${BASE_DIR}/II_RESULTS/3_POST_PROC/${CURRENT_GENE_GROUP:-_active}/M1_HISAT2_RefGuided/count_matrices_from_stringtie"

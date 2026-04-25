@@ -11,7 +11,7 @@
 # 1. For each gene group, locate abundance files for all samples
 # 2. Extract gene names from reference CSV files (centralized in gene_groups_csv/)
 # 3. Call matrix_builder.py ONCE per count_type; reuse body for both SRR + Organ headers
-# 4. Output matrices to: 3_POST_PROC/{method}/count_matrices_from_stringtie/
+# 4. Output matrices to: II_RESULTS/3_POST_PROC/{method}/count_matrices_from_stringtie/
 #
 # Usage:
 #   STRINGTIE_METHOD=M1  bash stringtie_matrix_builder.sh   # ref-guided
@@ -85,8 +85,8 @@ MASTER_SUFFIX="_from_${MASTER_REFERENCE}"
 
 # Directories
 BASE_DIR="${BASE_DIR:-${PROJECT_ROOT:-$PWD}}"
-INPUTS_DIR="${INPUTS_DIR:-${BASE_DIR}/2_ALIGNMENT_RESULTs/${_DEFAULT_INPUTS_SUBDIR}}"
-OUT_DIR="${OUT_DIR:-${BASE_DIR}/3_POST_PROC/${_DEFAULT_OUT_SUBDIR}}"
+INPUTS_DIR="${INPUTS_DIR:-${BASE_DIR}/II_RESULTS/2_ALIGNMENT_RESULTs/${_DEFAULT_INPUTS_SUBDIR}}"
+OUT_DIR="${OUT_DIR:-${BASE_DIR}/II_RESULTS/3_POST_PROC/${CURRENT_GENE_GROUP:-_active}/${_DEFAULT_OUT_SUBDIR}}"
 # Abundance filename suffix
 ABUNDANCE_SUFFIX="${ABUNDANCE_SUFFIX:-$_DEFAULT_ABUNDANCE_SUFFIX}"
 
@@ -117,9 +117,9 @@ TPM_COL=9
 # LOAD SAMPLE IDS FROM CSV
 # ===============================================
 # SRR_CSV_DIR is exported by run_post_processing.sh
-# Fallback to inputs/3_post_proc_inputs/SRR_csv relative to the project root
+# Fallback to I_INPUTS/inputs/3_post_proc_inputs/SRR_csv relative to the project root
 
-SRR_CSV_DIR="${SRR_CSV_DIR:-${BASE_DIR}/inputs/3_post_proc_inputs/SRR_csv}"
+SRR_CSV_DIR="${SRR_CSV_DIR:-${BASE_DIR}/I_INPUTS/inputs/3_post_proc_inputs/SRR_csv}"
 
 load_samples_from_csv() {
     local csv_dir="$1"
@@ -474,7 +474,7 @@ build_full_transcriptome_matrix() {
 # ===============================================
 
 # Centralized gene groups CSV directory
-GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-${BASE_DIR}/inputs/3_post_proc_inputs/gene_groups_csv}}"
+GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-${BASE_DIR}/I_INPUTS/inputs/3_post_proc_inputs/gene_groups_csv}}"
 
 log_info "Gene groups CSV directory: $GENE_GROUPS_CSV_DIR"
 log_step "Starting count matrix generation for ${#GENE_GROUPS[@]} gene groups"

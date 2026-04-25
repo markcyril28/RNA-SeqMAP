@@ -6,8 +6,8 @@
 # Processes Salmon quantification output from STAR alignment (M3) using tximport.
 # Produces standardized count matrices consumed by all downstream analysis modules.
 #
-# Runs from: 3_POST_PROC/{CURRENT_METHOD}/   (via pushd in run_method_analysis)
-# Quant files: ../../2_ALIGNMENT_RESULTs/{CURRENT_METHOD}/{MASTER_REFERENCE}/6_salmon/quant/{SRR_ID}/quant.sf
+# Runs from: II_RESULTS/3_POST_PROC/{CURRENT_METHOD}/   (via pushd in run_method_analysis)
+# Quant files: ../../II_RESULTS/2_ALIGNMENT_RESULTs/{CURRENT_METHOD}/{MASTER_REFERENCE}/6_salmon/quant/{SRR_ID}/quant.sf
 # tx2gene:     count_matrices_from_STAR/{MASTER_REFERENCE}/tx2gene_{MASTER_REFERENCE}.tsv
 # Output:      count_matrices_from_STAR/{MASTER_REFERENCE}/{level}/{gene_group}/
 #
@@ -52,10 +52,10 @@ if (!exists("match_gene_ids", mode = "function")) {
 # Salmon quant output is in the alignment results directory, NOT post-proc.
 # Path includes MASTER_REFERENCE (= fasta_tag) to isolate per-reference outputs.
 # Use BASE_DIR (absolute path set by run_post_processing.sh) when available;
-# fall back to relative path for standalone usage (script runs from 3_POST_PROC/{CURRENT_METHOD}/).
+# fall back to relative path for standalone usage (script runs from II_RESULTS/3_POST_PROC/{CURRENT_METHOD}/).
 .base_dir     <- Sys.getenv("BASE_DIR", unset = "")
 QUANT_DIR     <- if (nzchar(.base_dir)) {
-  file.path(.base_dir, "2_ALIGNMENT_RESULTs", CURRENT_METHOD,
+  file.path(.base_dir, "II_RESULTS/2_ALIGNMENT_RESULTs", CURRENT_METHOD,
             MASTER_REFERENCE, "6_salmon", "quant")
 } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
   stop("[STAR TXIMPORT] BASE_DIR is required when running under a workflow manager (WF_MANAGED_ENV is set).")
@@ -66,7 +66,7 @@ QUANT_DIR     <- if (nzchar(.base_dir)) {
             MASTER_REFERENCE, "6_salmon", "quant")
 }
 MATRICES_DIR  <- if (nzchar(.base_dir)) {
-  file.path(.base_dir, "3_POST_PROC", CURRENT_METHOD, "count_matrices_from_STAR")
+  file.path(.base_dir, "II_RESULTS", "3_POST_PROC", Sys.getenv("CURRENT_GENE_GROUP", "_active"), CURRENT_METHOD, "count_matrices_from_STAR")
 } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
   stop("[STAR TXIMPORT] BASE_DIR is required for output directory under workflow manager (WF_MANAGED_ENV is set).")
 } else {

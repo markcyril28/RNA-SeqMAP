@@ -3,7 +3,7 @@
 # CONCORDANCE VIEWER — ORCHESTRATOR
 #===============================================================================
 # Generates (and optionally serves) an interactive HTML viewer for all
-# concordance analysis results stored under 4_CONCORDANCE_ANALYSIS/.
+# concordance analysis results stored under II_RESULTS/4_CONCORDANCE_ANALYSIS/.
 #
 # The viewer provides:
 #   - Figure gallery:  card-based layout grouped by concordance mode
@@ -23,8 +23,8 @@
 #   bash modules_gea/other_tools/run_concordance_viewer.sh --dry-run          # Preview without changes
 #
 # Output:
-#   4_CONCORDANCE_ANALYSIS/concordance_viewer.html
-#   4_CONCORDANCE_ANALYSIS/concordance_manifest.json
+#   II_RESULTS/4_CONCORDANCE_ANALYSIS/concordance_viewer.html
+#   II_RESULTS/4_CONCORDANCE_ANALYSIS/concordance_manifest.json
 #===============================================================================
 
 set -o pipefail
@@ -47,7 +47,7 @@ fi
 # CONFIGURATION
 #===============================================================================
 
-CONCORDANCE_DIR="$BASE_DIR/4_CONCORDANCE_ANALYSIS"
+CONCORDANCE_DIR="$BASE_DIR/II_RESULTS/4_CONCORDANCE_ANALYSIS"
 VIEWER_SCRIPT="$BASE_DIR/modules_gea/c_post_processing/utilities/generate_concordance_viewer.py"
 OUTPUT_HTML=""          # Empty = default
 SERVE_PORT="${SERVE_PORT:-8081}"
@@ -124,7 +124,7 @@ fi
 log_step "Concordance Viewer — Orchestrator"
 
 if [[ ! -d "$CONCORDANCE_DIR" ]]; then
-    log_error "4_CONCORDANCE_ANALYSIS directory not found: $CONCORDANCE_DIR"
+    log_error "II_RESULTS/4_CONCORDANCE_ANALYSIS directory not found: $CONCORDANCE_DIR"
     log_error "Run the concordance pipeline first: bash run_concordance_analysis.sh"
     exit 1
 fi

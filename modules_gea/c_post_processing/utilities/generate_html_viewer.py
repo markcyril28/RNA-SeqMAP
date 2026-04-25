@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 generate_html_viewer.py — Auto-generate an interactive HTML viewer for RNA-seq
-alignment result heatmaps stored under 3_POST_PROC/.
+alignment result heatmaps stored under II_RESULTS/3_POST_PROC/.
 
 Usage:
     python generate_html_viewer.py <post_proc_dir> [--output <html_path>]
@@ -887,7 +887,7 @@ def generate_html(manifest: dict) -> str:
 
 def main():
     parser = argparse.ArgumentParser(description="Generate interactive HTML viewer for RNA-seq heatmaps.")
-    parser.add_argument("post_proc_dir", help="Path to 3_POST_PROC directory")
+    parser.add_argument("post_proc_dir", help="Path to II_RESULTS/3_POST_PROC directory")
     parser.add_argument("--output", default=None, help="Output HTML path (default: <post_proc_dir>/alignment_results_viewer.html)")
     parser.add_argument("--manifest-only", action="store_true", help="Only write viewer_manifest.json, skip HTML")
     args = parser.parse_args()

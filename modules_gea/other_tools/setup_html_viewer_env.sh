@@ -38,7 +38,7 @@ SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)" || { echo "[ERROR] setup_html_viewer_env
 # Resolve project root (this script lives in modules_gea/other_tools/)
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)" || { echo "[ERROR] setup_html_viewer_env.sh: Failed to resolve PROJECT_ROOT" >&2; exit 1; }
 
-POST_PROC_DIR="$PROJECT_ROOT/3_POST_PROC"
+POST_PROC_DIR="$PROJECT_ROOT/II_RESULTS/3_POST_PROC/${CURRENT_GENE_GROUP:-_active}"
 VIEWER_SCRIPT="$PROJECT_ROOT/modules_gea/c_post_processing/utilities/generate_html_viewer.py"
 VIEWER_HTML="$POST_PROC_DIR/alignment_results_viewer.html"
 
@@ -154,7 +154,7 @@ _viewer_exec() {
 if [[ "$DO_GENERATE" == true ]]; then
     log_info "Generating HTML viewer..."
     if [[ ! -d "$POST_PROC_DIR" ]]; then
-        log_warn "3_POST_PROC/ not found at $POST_PROC_DIR — skipping generation"
+        log_warn "II_RESULTS/3_POST_PROC/ not found at $POST_PROC_DIR — skipping generation"
     elif [[ ! -f "$VIEWER_SCRIPT" ]]; then
         log_error "Viewer script not found: $VIEWER_SCRIPT"
         exit 1

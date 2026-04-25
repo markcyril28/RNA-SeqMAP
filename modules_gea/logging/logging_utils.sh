@@ -237,8 +237,8 @@ switch_log_stage() {
 	# Switch all log output to a stage-specific directory.
 	# Usage: switch_log_stage <base_dir>
 	# Example: switch_log_stage "1_SRRs"
-	#          switch_log_stage "2_ALIGNMENT_RESULTs"
-	#          switch_log_stage "3_POST_PROC"
+	#          switch_log_stage "II_RESULTS/2_ALIGNMENT_RESULTs"
+	#          switch_log_stage "II_RESULTS/3_POST_PROC"
 	local stage_base="${WF_LOG_BASE:-$1}"
 
 	# Convert to absolute path if relative

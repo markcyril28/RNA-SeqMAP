@@ -3,7 +3,7 @@
 # HTML RESULTS VIEWER — ORCHESTRATOR
 #===============================================================================
 # Generates (and optionally serves) an interactive HTML viewer for all heatmap
-# results stored under 3_POST_PROC/.
+# results stored under II_RESULTS/3_POST_PROC/.
 #
 # The viewer provides:
 #   - Grid layout: rows = alignment methods (M1–M5), columns = references
@@ -22,8 +22,8 @@
 #   bash modules_gea/other_tools/run_post_processing_html_viewer.sh --dry-run          # Show what would be done
 #
 # Output:
-#   3_POST_PROC/alignment_results_viewer.html
-#   3_POST_PROC/viewer_manifest.json
+#   II_RESULTS/3_POST_PROC/alignment_results_viewer.html
+#   II_RESULTS/3_POST_PROC/viewer_manifest.json
 #===============================================================================
 
 set -o pipefail
@@ -46,9 +46,9 @@ fi
 # CONFIGURATION
 #===============================================================================
 
-POST_PROC_DIR="$BASE_DIR/3_POST_PROC"
+POST_PROC_DIR="$BASE_DIR/II_RESULTS/3_POST_PROC/${CURRENT_GENE_GROUP:-_active}"
 VIEWER_SCRIPT="$BASE_DIR/modules_gea/c_post_processing/utilities/generate_html_viewer.py"
-OUTPUT_HTML=""          # Empty = default (3_POST_PROC/alignment_results_viewer.html)
+OUTPUT_HTML=""          # Empty = default (II_RESULTS/3_POST_PROC/alignment_results_viewer.html)
 SERVE_PORT="${SERVE_PORT:-8080}"
 SERVE_HOST="${SERVE_HOST:-0.0.0.0}"
 
@@ -123,7 +123,7 @@ fi
 log_step "HTML Results Viewer — Orchestrator"
 
 if [[ ! -d "$POST_PROC_DIR" ]]; then
-    log_error "3_POST_PROC directory not found: $POST_PROC_DIR"
+    log_error "II_RESULTS/3_POST_PROC directory not found: $POST_PROC_DIR"
     log_error "Run the post-processing pipeline first: bash run_post_processing.sh"
     exit 1
 fi

@@ -39,7 +39,7 @@ if (length(SAMPLE_IDS) == 0) stop("No samples loaded. Check SRR_COMBINED_LIST_ST
 # Salmon quant outputs live under the MASTER_REFERENCE subdirectory created by STAR alignment
 base_dir  <- Sys.getenv("BASE_DIR", "")
 quant_dir <- if (nzchar(base_dir)) {
-  file.path(base_dir, "2_ALIGNMENT_RESULTs", "M3_STAR_Align",
+  file.path(base_dir, "II_RESULTS/2_ALIGNMENT_RESULTs", "M3_STAR_Align",
             MASTER_REFERENCE, "6_salmon", "quant")
 } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
   stop("[STAR MATRIX] BASE_DIR is required when running under a workflow manager (WF_MANAGED_ENV is set). ",
@@ -51,7 +51,7 @@ quant_dir <- if (nzchar(base_dir)) {
             MASTER_REFERENCE, "6_salmon", "quant")
 }
 output_dir  <- if (nzchar(base_dir)) {
-  file.path(base_dir, "3_POST_PROC", CURRENT_METHOD, "count_matrices_from_STAR")
+  file.path(base_dir, "II_RESULTS", "3_POST_PROC", CURRENT_GENE_GROUP, CURRENT_METHOD, "count_matrices_from_STAR")
 } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
   stop("[STAR MATRIX] BASE_DIR is required when running under a workflow manager (WF_MANAGED_ENV is set). ",
        "Export BASE_DIR pointing to the project root.")

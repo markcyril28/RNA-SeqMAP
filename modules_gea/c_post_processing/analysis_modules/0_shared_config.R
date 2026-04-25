@@ -28,6 +28,9 @@ CURRENT_METHOD <- Sys.getenv("CURRENT_METHOD", unset = "M5_RSEM_Bowtie2")
 # Current dataset being processed (set by bash wrapper)
 CURRENT_DATASET <- Sys.getenv("CURRENT_DATASET", unset = "")
 
+# Primary gene group for this run — determines the top-level output folder (II_RESULTS/{gene_group}/)
+CURRENT_GENE_GROUP <- Sys.getenv("CURRENT_GENE_GROUP", unset = "_active")
+
 # Master reference genome/transcriptome
 MASTER_REFERENCE <- Sys.getenv("MASTER_REFERENCE", unset = "Eggplant_V4.1")
 
@@ -78,7 +81,7 @@ GPU_BACKEND <- "none"  # "none", "cuda", or "torch"
 CONSOLIDATED_BASE_DIR <- Sys.getenv("CONSOLIDATED_BASE_DIR", unset = {
   .bd <- Sys.getenv("BASE_DIR", unset = "")
   if (nzchar(.bd)) {
-    file.path(.bd, "3_POST_PROC", CURRENT_METHOD, "Figure_Outputs")
+    file.path(.bd, "II_RESULTS", "3_POST_PROC", CURRENT_GENE_GROUP, CURRENT_METHOD, "Figure_Outputs")
   } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
     stop("[SHARED CONFIG] CONSOLIDATED_BASE_DIR or BASE_DIR is required when running under a workflow manager ",
          "(WF_MANAGED_ENV is set). Export BASE_DIR pointing to the project root.")

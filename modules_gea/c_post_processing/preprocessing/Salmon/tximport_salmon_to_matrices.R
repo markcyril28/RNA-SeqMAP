@@ -70,7 +70,7 @@ QUANT_DIR_INCLUDES_REF <- nzchar(SALMON_QUANT_ROOT_ENV)
 QUANT_DIR <- if (QUANT_DIR_INCLUDES_REF) {
   SALMON_QUANT_ROOT_ENV
 } else if (nzchar(BASE_DIR)) {
-  file.path(BASE_DIR, "2_ALIGNMENT_RESULTs", CURRENT_METHOD, "Salmon_Quant")
+  file.path(BASE_DIR, "II_RESULTS/2_ALIGNMENT_RESULTs", CURRENT_METHOD, "Salmon_Quant")
 } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
   stop("[SALMON TXIMPORT] BASE_DIR or SALMON_QUANT_ROOT is required under workflow manager (WF_MANAGED_ENV is set).")
 } else {
@@ -83,7 +83,7 @@ QUANT_DIR <- if (QUANT_DIR_INCLUDES_REF) {
 # Use an absolute path when BASE_DIR is available (run_method_analysis does pushd, so the
 # working directory is correct, but an absolute path allows the script to be run standalone).
 MATRICES_OUTPUT_DIR <- if (nzchar(BASE_DIR)) {
-  file.path(BASE_DIR, "3_POST_PROC", CURRENT_METHOD, "count_matrices_from_Salmon_Quant")
+  file.path(BASE_DIR, "II_RESULTS", "3_POST_PROC", Sys.getenv("CURRENT_GENE_GROUP", "_active"), CURRENT_METHOD, "count_matrices_from_Salmon_Quant")
 } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
   stop("[SALMON TXIMPORT] BASE_DIR is required for output directory under workflow manager.")
 } else {

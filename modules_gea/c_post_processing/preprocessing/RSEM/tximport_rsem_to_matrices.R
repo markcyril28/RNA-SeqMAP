@@ -58,7 +58,7 @@ QUANT_DIR_INCLUDES_REF <- nzchar(RSEM_QUANT_ROOT_ENV)
 QUANT_DIR <- if (QUANT_DIR_INCLUDES_REF) {
   RSEM_QUANT_ROOT_ENV
 } else if (nzchar(base_dir)) {
-  file.path(base_dir, "2_ALIGNMENT_RESULTs", CURRENT_METHOD, "RSEM_Quant_WD")
+  file.path(base_dir, "II_RESULTS/2_ALIGNMENT_RESULTs", CURRENT_METHOD, "RSEM_Quant_WD")
 } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
   stop("[RSEM TXIMPORT] BASE_DIR or RSEM_QUANT_ROOT is required under workflow manager (WF_MANAGED_ENV is set).")
 } else {
@@ -67,7 +67,7 @@ QUANT_DIR <- if (QUANT_DIR_INCLUDES_REF) {
   "RSEM_Quant_WD"  # fallback for standalone execution
 }
 MATRICES_OUTPUT_DIR <- if (nzchar(base_dir)) {
-  file.path(base_dir, "3_POST_PROC", CURRENT_METHOD, "count_matrices_from_RSEM_Quant")
+  file.path(base_dir, "II_RESULTS", "3_POST_PROC", Sys.getenv("CURRENT_GENE_GROUP", "_active"), CURRENT_METHOD, "count_matrices_from_RSEM_Quant")
 } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
   stop("[RSEM TXIMPORT] BASE_DIR is required for output directory under workflow manager.")
 } else {
@@ -144,7 +144,7 @@ for (level_name in names(processing_levels)) {
   if (!dir.exists(rsem_quant_dir)) {
     cat("ERROR: RSEM quantification directory not found:", rsem_quant_dir, "\n")
     cat("  Check RSEM_QUANT_ROOT env var or alignment output at:\n")
-    cat("  ", file.path(base_dir, "2_ALIGNMENT_RESULTs", CURRENT_METHOD, "RSEM_Quant_WD"), "\n")
+    cat("  ", file.path(base_dir, "II_RESULTS/2_ALIGNMENT_RESULTs", CURRENT_METHOD, "RSEM_Quant_WD"), "\n")
     next
   }
 

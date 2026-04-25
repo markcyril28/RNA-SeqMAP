@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 generate_concordance_viewer.py — Auto-generate an interactive HTML viewer for
-concordance analysis results stored under 4_CONCORDANCE_ANALYSIS/.
+concordance analysis results stored under II_RESULTS/4_CONCORDANCE_ANALYSIS/.
 
 Usage:
     python generate_concordance_viewer.py <concordance_dir> [--output <html_path>]
@@ -883,7 +883,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Generate interactive HTML viewer for concordance analysis results.")
     parser.add_argument("concordance_dir",
-                        help="Path to 4_CONCORDANCE_ANALYSIS directory")
+                        help="Path to II_RESULTS/4_CONCORDANCE_ANALYSIS directory")
     parser.add_argument("--output", default=None,
                         help="Output HTML path (default: <dir>/concordance_viewer.html)")
     parser.add_argument("--manifest-only", action="store_true",

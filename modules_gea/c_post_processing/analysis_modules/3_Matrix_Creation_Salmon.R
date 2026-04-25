@@ -132,7 +132,7 @@ salmon_quant_root_env <- Sys.getenv("SALMON_QUANT_ROOT", "")
 quant_dir <- if (nzchar(salmon_quant_root_env)) {
   salmon_quant_root_env  # already includes fasta_tag
 } else if (nzchar(base_dir)) {
-  file.path(base_dir, "2_ALIGNMENT_RESULTs", "M4_Salmon_Saf", "Salmon_Quant", MASTER_REFERENCE)
+  file.path(base_dir, "II_RESULTS/2_ALIGNMENT_RESULTs", "M4_Salmon_Saf", "Salmon_Quant", MASTER_REFERENCE)
 } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
   stop("[SALMON MATRIX] BASE_DIR is required when running under a workflow manager (WF_MANAGED_ENV is set). ",
        "Export BASE_DIR pointing to the project root.")
@@ -143,7 +143,7 @@ quant_dir <- if (nzchar(salmon_quant_root_env)) {
   "Salmon_Quant"  # fallback for standalone execution
 }
 output_dir  <- if (nzchar(base_dir)) {
-  file.path(base_dir, "3_POST_PROC", CURRENT_METHOD, "count_matrices_from_Salmon_Quant")
+  file.path(base_dir, "II_RESULTS", "3_POST_PROC", CURRENT_GENE_GROUP, CURRENT_METHOD, "count_matrices_from_Salmon_Quant")
 } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
   stop("[SALMON MATRIX] BASE_DIR is required when running under a workflow manager (WF_MANAGED_ENV is set). ",
        "Export BASE_DIR pointing to the project root.")

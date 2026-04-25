@@ -91,7 +91,7 @@ compare_methods_summary() {
 # THIS MUST BE CUSTOMIZED for differential expression analysis!
 # 
 # Option 1: Edit the sample_conditions.txt file at:
-#   inputs/sample_conditions.txt
+#   I_INPUTS/inputs/sample_conditions.txt
 #   Format (tab-separated):
 #     SRR_ID	condition	batch
 #     SRR3884597	Flowers	1
@@ -103,4 +103,4 @@ compare_methods_summary() {
 # ==============================================================================
 
 log_info "[METHODS] All GEA analysis methods loaded successfully"
-log_info "[METHODS] Sample conditions file: ${SAMPLE_CONDITIONS_FILE:-inputs/sample_conditions.txt}"
+log_info "[METHODS] Sample conditions file: ${SAMPLE_CONDITIONS_FILE:-I_INPUTS/inputs/sample_conditions.txt}"

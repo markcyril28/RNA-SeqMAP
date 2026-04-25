@@ -451,11 +451,11 @@ run_matrix_creation_main <- function() {
   method_type <- get_method_type(CURRENT_METHOD)
   quant_dir <- if (nzchar(base_dir)) {
     switch(method_type,
-      "rsem"   = file.path(base_dir, "2_ALIGNMENT_RESULTs", CURRENT_METHOD,
+      "rsem"   = file.path(base_dir, "II_RESULTS/2_ALIGNMENT_RESULTs", CURRENT_METHOD,
                            "RSEM_Quant_WD", MASTER_REFERENCE),
-      "salmon" = file.path(base_dir, "2_ALIGNMENT_RESULTs", CURRENT_METHOD,
+      "salmon" = file.path(base_dir, "II_RESULTS/2_ALIGNMENT_RESULTs", CURRENT_METHOD,
                            "Salmon_Quant", MASTER_REFERENCE),
-      "star"   = file.path(base_dir, "2_ALIGNMENT_RESULTs", CURRENT_METHOD,
+      "star"   = file.path(base_dir, "II_RESULTS/2_ALIGNMENT_RESULTs", CURRENT_METHOD,
                            MASTER_REFERENCE, "6_salmon", "quant"),
       get_quant_dir(CURRENT_METHOD)  # fallback: relative path for other methods
     )
@@ -464,7 +464,7 @@ run_matrix_creation_main <- function() {
   }
 
   output_dir <- if (nzchar(base_dir)) {
-    file.path(base_dir, "3_POST_PROC", CURRENT_METHOD, get_matrices_dir(CURRENT_METHOD))
+    file.path(base_dir, "II_RESULTS", "3_POST_PROC", CURRENT_GENE_GROUP, CURRENT_METHOD, get_matrices_dir(CURRENT_METHOD))
   } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
     stop("[MATRIX CREATION] BASE_DIR is required when running under a workflow manager ",
          "(WF_MANAGED_ENV is set). Export BASE_DIR pointing to the project root.")

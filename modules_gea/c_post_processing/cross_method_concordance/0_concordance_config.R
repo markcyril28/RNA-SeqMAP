@@ -51,23 +51,24 @@ BASE_DIR <- Sys.getenv("BASE_DIR", {
 })
 # Derive stage dirs from BASE_DIR when set (avoids bare relative paths in orchestrated contexts)
 .base_set <- nzchar(BASE_DIR) && BASE_DIR != "."
+.gg <- Sys.getenv("CURRENT_GENE_GROUP", unset = "_active")
 OUTPUT_DIR <- Sys.getenv("OUTPUT_DIR", {
-  if (.base_set) file.path(BASE_DIR, "3_POST_PROC")
+  if (.base_set) file.path(BASE_DIR, "II_RESULTS", "3_POST_PROC", .gg)
   else if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
     stop("[CONCORDANCE CONFIG] BASE_DIR is required when running under a workflow manager (WF_MANAGED_ENV is set).")
-  else "3_POST_PROC"
+  else file.path("II_RESULTS", "3_POST_PROC", .gg)
 })
 ALIGNMENT_BASE <- Sys.getenv("ALIGNMENT_BASE", {
-  if (.base_set) file.path(BASE_DIR, "2_ALIGNMENT_RESULTs")
+  if (.base_set) file.path(BASE_DIR, "II_RESULTS/2_ALIGNMENT_RESULTs")
   else if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
     stop("[CONCORDANCE CONFIG] BASE_DIR is required when running under a workflow manager (WF_MANAGED_ENV is set).")
-  else "2_ALIGNMENT_RESULTs"
+  else "II_RESULTS/2_ALIGNMENT_RESULTs"
 })
 POST_PROC_BASE <- Sys.getenv("POST_PROC_BASE", {
-  if (.base_set) file.path(BASE_DIR, "3_POST_PROC")
+  if (.base_set) file.path(BASE_DIR, "II_RESULTS", "3_POST_PROC", .gg)
   else if (nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
     stop("[CONCORDANCE CONFIG] BASE_DIR is required when running under a workflow manager (WF_MANAGED_ENV is set).")
-  else "3_POST_PROC"
+  else file.path("II_RESULTS", "3_POST_PROC", .gg)
 })
 
 # Ensure MASTER_REFERENCE is set (may already be defined by 0_shared_config.R).
