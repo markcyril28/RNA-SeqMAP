@@ -1,0 +1,105 @@
+#!/bin/bash
+# ==============================================================================
+# SHARED SRR DATASET DEFINITIONS
+# ==============================================================================
+# Single source of truth for all SRR sample lists used across pipeline stages.
+# Sourced by: config/1_download_and_trim/, config/2_alignment/ configs.
+#
+# To add/remove samples: edit ONLY this file.
+# To change which datasets are active: edit SRR_COMBINED_LIST below.
+# ==============================================================================
+
+[[ "${_SRR_DATASETS_SOURCED:-}" == "true" ]] && return 0
+_SRR_DATASETS_SOURCED="true"
+
+# ==============================================================================
+# RNA-SEQ DATA SOURCES (SRR LISTS)
+# ==============================================================================
+
+# SRA Run Selector Tool link: https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA328564&o=acc_s%3Aa
+
+SRR_LIST_PRJNA328564=(
+	# Source: https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA328564&o=acc_s%3Aa
+	# Developmental stages arranged from early to late
+	SRR3884685	# Radicles (earliest - germination)
+	SRR3884677	# Cotyledons (seed leaves)
+	SRR3884675	# Roots (root development)
+	SRR3884690	# Stems (vegetative growth)
+	SRR3884689	# Leaves (vegetative growth)
+	SRR3884684	# Senescent_leaves (leaf aging)
+	SRR3884686	# Buds_0.7cm (flower bud initiation) [MAIN INTEREST]
+	SRR3884687	# Opened_Buds (flower development) 	 [MAIN INTEREST]
+	SRR3884597	# Flowers (anthesis)				 [MAIN INTEREST]
+	SRR3884679	# Pistils (female reproductive parts)
+	SRR3884608	# Fruits_1cm (early fruit development)
+	SRR3884620	# Fruits_Stage_1 (early fruit stage)
+	SRR3884631	# Fruits_6cm (fruit enlargement)
+	#SRR3884642	# Fruits_Skin_Stage_2 (mid fruit development)
+	#SRR3884653	# Fruits_Flesh_Stage_2 (mid fruit development)
+	#SRR3884664	# Fruits_Calyx_Stage_2 (mid fruit development)
+	#SRR3884680	# Fruits_Skin_Stage_3 (late fruit development)
+	SRR3884681	# Fruits_Flesh_Stage_3 (late fruit development)
+	SRR3884678	# Fruits_peduncle (fruit attachment)
+)
+
+SRR_LIST_SAMN28540077=(
+	# Source: https://www.ncbi.nlm.nih.gov/Traces/study/?acc=SAMN28540077&o=acc_s%3Aa
+	SRR20722232	# Mature_fruits (10 GB file); corrected.
+	SRR20722226 # Young_fruits
+	SRR20722234	# Flowers
+	SRR20722228	# sepals (large file)
+	SRR4243802  # Buds, Adopted Dataset from ID: PRJNA341784
+	SRR20722233	# leaf_buds
+	SRR20722230	# mature_leaves (14 GB file)
+	SRR20722227	# stems
+	SRR20722229	# roots
+)
+
+SRR_LIST_SAMN28540068=(
+	#Source: https://www.ncbi.nlm.nih.gov/Traces/study/?acc=SAMN28540068&o=acc_s%3Aa
+	SRR20722387 # mature_fruits
+	#SRR3884597 	# Flower — duplicate: already in SRR_LIST_PRJNA328564
+	SRR20722297 # flower_buds
+	SRR20722385 # sepals
+	SRR20722296 # leaf_buds
+	SRR20722386 # mature_leaves
+	SRR20722383 # young_leaves
+	SRR20722384 # stems
+	SRR31755282 # Roots (https://www.ncbi.nlm.nih.gov/Traces/study/?acc=SRP552204&o=acc_s%3Aa)
+)
+
+SRR_LIST_PRJNA865018=(
+# Set_1: A Good Dataset for SmelDMP GEA:
+# 	https://www.ncbi.nlm.nih.gov/Traces/study/?acc=%20%20PRJNA865018&o=acc_s%3Aa PRJNA865018
+	SRR21010466	# buds_1
+	SRR21010456	# buds_2
+	SRR21010454	# buds_3
+	SRR21010462	# flowers_1
+	SRR21010460	# flowers_2
+	SRR21010458	# flowers_3
+	SRR21010452	# fruits_1
+	SRR21010450	# fruits_2
+	SRR21010464	# fruits_3
+)
+
+SRR_LIST_PRJNA941250=(
+# Set_2: A Good Dataset for SmelDMP GEA:
+#	https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA941250&o=acc_s%3Aa PRJNA941250 # Buds, Opened Buds
+	SRR23909869 # 8DBF_1
+	SRR23909870 # 8DBF_2
+	SRR23909871 # 8DBF_3
+	SRR23909866 # 5DBF_1
+	SRR23909867 # 5DBF_2
+	SRR23909868 # 5DBF_3
+	SRR23909863 # Fully Develop (FD) 1
+	SRR23909864 # Fully Develop (FD) 2
+	SRR23909865 # Fully Develop (FD) 3
+)
+
+SRR_COMBINED_LIST=(
+	"${SRR_LIST_PRJNA328564[@]}"	# Main Dataset for GEA.
+	"${SRR_LIST_SAMN28540077[@]}"	# Chinese Dataset for replicability.
+	"${SRR_LIST_SAMN28540068[@]}"	# Chinese Dataset for replicability.
+	#"${SRR_LIST_PRJNA865018[@]}"	# SET_1: Good Dataset for SmelDMP GEA.
+	#"${SRR_LIST_PRJNA941250[@]}"	# SET_2: Good Dataset for SmelDMP GEA.
+)
