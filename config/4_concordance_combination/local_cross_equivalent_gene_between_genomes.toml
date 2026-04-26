@@ -1,0 +1,30 @@
+# ==============================================================================
+# LOCAL CROSS: EQUIVALENT GENE BETWEEN GENOMES — SmelDMP focus, M3 (STAR) fixed
+# ==============================================================================
+# Narrowed copy of cross_equivalent_gene_between_genomes.toml for use by
+# Eggplant_Pipeline/03_gea.sh. Produces the per-gene cross-genome correlation
+# table + side-by-side expression heatmap that the manuscript references:
+#   equivalent_gene_heatmap_SmelDMPs_v5_with_18s_and_HAP2.png
+#
+# Fixes the alignment method to M3_STAR_Align (manuscript reports STAR-Salmon
+# only) and restricts the gene group set to the SmelDMP family — same group
+# used by the genomes-vs-genomes cross and post-processing Heatmap_with_CV.
+# ==============================================================================
+
+concordance_mode = "cross_equivalent_gene"
+
+# Method to use for the cross-genome gene-level comparison
+fixed_method = "M3_STAR_Align"
+
+# Genomes to compare
+concordance_genomes = [
+    "GPE001970_genome",
+    "Eggplant_V4.1",
+]
+
+# Single gene group on v5 side — SmelDMP family
+gene_groups = "SmelDMPs_v5_with_18s_and_HAP2"
+
+# Positional orthology map: SmelDMPs_v5_with_18s_and_HAP2 (v5)
+#                       <-> SmelDMPs_with_1_18s_rRNA (v4.1)
+genome_gene_groups_map = "GPE001970_genome=SmelDMPs_v5_with_18s_and_HAP2;Eggplant_V4.1=SmelDMPs_with_1_18s_rRNA"

@@ -1,0 +1,39 @@
+# ==============================================================================
+# LOCAL CONFIG: M3 — STAR Splice-Aware Alignment (GPE001970_genome)
+#                Focused: Heatmap_with_CV only
+# ==============================================================================
+# Generated for Eggplant_Pipeline/03_gea.sh — narrows the upstream HPC_full_M3
+# config to the single analysis the manuscript reports: per-tissue expression
+# heatmap with CV ranking on the v5 (GPE001970) assembly.
+#
+# Method:
+#   M3 — STAR Splice-Aware Alignment  →  uses GPE001970_genome
+#
+# Tximport_STAR + Matrix_Creation are kept as prerequisites — they build the
+# TPM/count matrices that Heatmap_with_CV consumes. Basic_Heatmap and
+# Differential_Expression are intentionally omitted.
+# ==============================================================================
+
+# Master Reference
+master_references = ["GPE001970_genome"]
+
+# Gene Groups — SmelDMP family only (manuscript scope)
+gene_groups = [
+    "SmelDMPs_v5_with_18s_and_HAP2",
+]
+
+# SRR Datasets — selected eggplant tissue atlas subset
+srr_datasets = [
+    "PRJNA328564_selected",
+]
+
+# Methods — STAR only
+methods = ["M3_STAR_Align"]
+
+# Analyses — Heatmap_with_CV is the target; the two preceding entries are
+# prerequisites that produce the TPM/count matrices the heatmap reads.
+analyses = [
+    "Tximport_STAR",
+    "Matrix_Creation",
+    "Heatmap_with_CV",
+]

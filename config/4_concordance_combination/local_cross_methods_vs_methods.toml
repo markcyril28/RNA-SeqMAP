@@ -1,0 +1,16 @@
+# ==============================================================================
+# LOCAL CROSS: METHODS VS METHODS — SmelDMP focus
+# ==============================================================================
+# Narrowed copy of cross_methods_vs_methods.toml for Eggplant_Pipeline/03_gea.sh.
+# Fixes master reference to GPE001970 (v5) and restricts the gene group set
+# to SmelDMPs_v5_with_18s_and_HAP2 only — the manuscript scope.
+# ==============================================================================
+
+concordance_mode = "cross_method"
+
+master_reference = "GPE001970"
+
+methods = "M1_HISAT2_RefGuided M2_HISAT2_DeNovo M3_STAR_Align M4_Salmon_Saf M5_RSEM_Bowtie2"
+
+# Single gene group — SmelDMP family on v5 (manuscript scope)
+gene_groups = "SmelDMPs_v5_with_18s_and_HAP2"

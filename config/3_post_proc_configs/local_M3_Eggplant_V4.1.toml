@@ -1,0 +1,40 @@
+# ==============================================================================
+# LOCAL CONFIG: M3 — STAR Splice-Aware Alignment (Eggplant_V4.1)
+#                Focused: Heatmap_with_CV only
+# ==============================================================================
+# Generated for Eggplant_Pipeline/03_gea.sh — narrows the upstream HPC_full_M3
+# config to the single analysis the manuscript reports: per-tissue expression
+# heatmap with CV ranking on the v4.1 assembly.
+#
+# Method:
+#   M3 — STAR Splice-Aware Alignment  →  uses Eggplant_V4.1
+#
+# Gene group: SmelDMPs_with_1_18s_rRNA — v4.1 ortholog of the v5
+# SmelDMPs_v5_with_18s_and_HAP2 group; both share the same positional row
+# order (see [concordance_analysis.genomes_vs_genomes].genome_gene_groups_map
+# in 03_geaCONFIG.toml).
+# ==============================================================================
+
+# Master Reference
+master_references = ["Eggplant_V4.1"]
+
+# Gene Groups — SmelDMP family only (v4.1 equivalent of the v5 group)
+gene_groups = [
+    "SmelDMPs_with_1_18s_rRNA",
+]
+
+# SRR Datasets — selected eggplant tissue atlas subset
+srr_datasets = [
+    "PRJNA328564_selected",
+]
+
+# Methods — STAR only
+methods = ["M3_STAR_Align"]
+
+# Analyses — Heatmap_with_CV is the target; the two preceding entries are
+# prerequisites that produce the TPM/count matrices the heatmap reads.
+analyses = [
+    "Tximport_STAR",
+    "Matrix_Creation",
+    "Heatmap_with_CV",
+]
