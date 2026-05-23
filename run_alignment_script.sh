@@ -23,7 +23,7 @@ cd "$PROJECT_ROOT" || exit 1
 # Execution mode:
 #   skip      - Resume interrupted run; skip steps with existing outputs (default)
 #   overwrite - Force clean rerun, overwriting all existing output files
-OVERWRITE_MODE="${OVERWRITE_MODE:-skip}"
+OVERWRITE_MODE="${OVERWRITE_MODE:-overwrite}"
 export OVERWRITE_MODE
 
 # Clear persistent R/.rds pipeline caches before running (sample labels, gene name maps, GPU detection)
