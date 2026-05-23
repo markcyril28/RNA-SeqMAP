@@ -24,6 +24,7 @@ gene_groups = [
     "SmelEC1",
     "SmelEC1_AtEC1Similar",
     "SmelEC1_Putative",
+    "SmelPLA5",                       # Patatin-like PLA candidates from Stage 01 PLA scan (anchor: ZmMATL/ZmPLA1 haploid-inducer family)
 ]
 
 # SRR Datasets
