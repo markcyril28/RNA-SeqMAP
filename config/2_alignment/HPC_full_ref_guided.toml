@@ -3,8 +3,8 @@
 # ==============================================================================
 
 # Runtime
-threads = 64
-jobs = 2
+threads = 32
+jobs = 1
 use_gnu_parallel = true
 keep_bam_global = "n"
 star_read_length = 89    # Actual read length for PRJNA328564 (89 bp)
@@ -19,12 +19,12 @@ pipeline_stages = [
     #"MAMBA_INSTALLATION",
     #"DOWNLOAD_SRR",
     #"TRIM_SRR",
-    #"DOWNLOAD_TRIM_and_DELETE_RAW_SRR",
+    "DOWNLOAD_TRIM_and_DELETE_RAW_SRR",
     #"GZIP_TRIMMED_FILES",
-    #"QUALITY_CONTROL",
+    "QUALITY_CONTROL",
     #"DELETE_RAW_SRR",
     #"DELETE_TRIMMED_FASTQ_FILES",
-    "METHOD_1_HISAT2_REF_GUIDED",
+    #"METHOD_1_HISAT2_REF_GUIDED",
     #"METHOD_2_HISAT2_DE_NOVO",
     "METHOD_3_STAR_ALIGNMENT",
     #"METHOD_4_SALMON_SAF",
