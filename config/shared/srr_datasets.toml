@@ -138,10 +138,10 @@ samples = [
 
 [combined]
 active_datasets = [
-    "PRJNA328564",      # Main Dataset for GEA.
-    "SAMN28540077",     # Chinese Dataset for replicability.
-    "SAMN28540068",     # Chinese Dataset for replicability.
+    #"PRJNA328564",      # Main Dataset for GEA.
+    #"SAMN28540077",     # Chinese Dataset for replicability.
+    #"SAMN28540068",     # Chinese Dataset for replicability.
     #"PRJNA865018",     # SET_1: Good Dataset for SmelDMP GEA.
     #"PRJNA941250",     # SET_2: Good Dataset for SmelDMP GEA.
-    #"PRJNA1417697",    # Anther dataset (Sanyueqie, 3 DBA, abcg WT/ko).
+    "PRJNA1417697",    # Anther dataset (Sanyueqie, 3 DBA, abcg WT/ko).
 ]
