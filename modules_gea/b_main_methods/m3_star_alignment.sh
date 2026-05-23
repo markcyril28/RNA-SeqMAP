@@ -875,8 +875,14 @@ star_alignment_pipeline() {
 		# Cap Salmon index threads at 12 — hash-table construction has diminishing returns beyond 12
 		local _salmon_idx_threads=$THREADS
 		(( _salmon_idx_threads > 12 )) && _salmon_idx_threads=12
+		# --keepDuplicates prevents Salmon from collapsing transcripts with
+		# identical sequences into a single entry. Without it, paralogs that
+		# share a CDS (e.g. SMEL4.1_10g003550.1.01 and SMEL4.1_10g003560.1.01)
+		# end up in duplicate_clusters.tsv and the collapsed paralog is absent
+		# from quant.sf, which breaks gene-group heatmaps that expect each
+		# paralog to be quantified independently.
 		run_with_space_time_log --input "$transcriptome_fasta" --output "$salmon_idx" \
-			salmon index -t "$transcriptome_fasta" -i "$salmon_idx" -k 31 --threads "$_salmon_idx_threads"
+			salmon index -t "$transcriptome_fasta" -i "$salmon_idx" -k 31 --keepDuplicates --threads "$_salmon_idx_threads"
 		[[ ! -f "$salmon_idx/versionInfo.json" ]] && { log_error "[SALMON INDEX] Index build failed - versionInfo.json not found in $salmon_idx"; return 1; }
 		log_info "[SALMON INDEX] Index built successfully: $salmon_idx"
 	fi

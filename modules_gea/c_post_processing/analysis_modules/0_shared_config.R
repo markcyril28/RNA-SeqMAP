@@ -217,9 +217,13 @@ MIN_SAMPLES <- 3       # Minimum samples for correlation/clustering
 MIN_GENES_DEA <- 10    # Minimum genes for differential expression
 MIN_GENES_WGCNA <- 10  # Reduced to allow smaller gene groups (minimum recommended: 10)
 
-# Sample labels (initialized later by load_sample_labels_from_csv())
-SAMPLE_LABELS <- c()
-SAMPLE_IDS <- c()
+# Sample labels (populated in SECTION 5 by load_sample_labels_from_csv()).
+# Guard against re-source: when an analysis module re-sources this file, the
+# SECTION 5 initialization is skipped by the double-source guard. Resetting these
+# to c() unconditionally here would wipe the already-loaded labels, causing
+# convert_to_organ_labels() to short-circuit and render SRR IDs instead of organs.
+if (!exists("SAMPLE_LABELS", inherits = FALSE)) SAMPLE_LABELS <- c()
+if (!exists("SAMPLE_IDS", inherits = FALSE)) SAMPLE_IDS <- c()
 
 # ===============================================
 # SECTION 4: FUNCTIONS

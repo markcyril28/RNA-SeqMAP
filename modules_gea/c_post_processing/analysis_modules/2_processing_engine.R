@@ -99,6 +99,12 @@ process_all_combinations <- function(
   # For StringTie, processing_level is not used in path, so use a placeholder
   active_processing_levels <- if (method_type == "stringtie") c("gene_level") else PROCESSING_LEVELS
   
+  # Avoid nesting an inner <gene_group>_in_<dataset> folder when the run has
+  # only one gene_group — the parent path already identifies it and the inner
+  # folder duplicates the gene-group token (and was inconsistently produced
+  # across analyses, e.g., I_Basic_Heatmap vs II_Heatmap_with_CV).
+  .single_gene_group <- length(config$gene_groups) == 1L
+
   for (gene_group in config$gene_groups) {
     # Get combined output folder name (GeneGroup_in_Dataset)
     output_folder_name <- get_output_folder_name(gene_group, CURRENT_DATASET)
@@ -106,8 +112,12 @@ process_all_combinations <- function(
     if (nzchar(CURRENT_DATASET)) {
       cat("  Dataset:", CURRENT_DATASET, "-> Output folder:", output_folder_name, "\n")
     }
-    
-    gene_group_output_dir <- file.path(output_base_dir, output_folder_name)
+
+    gene_group_output_dir <- if (.single_gene_group) {
+      output_base_dir
+    } else {
+      file.path(output_base_dir, output_folder_name)
+    }
     ensure_output_dir(gene_group_output_dir, clean = FALSE)
     
     for (processing_level in active_processing_levels) {

@@ -51,47 +51,55 @@ EXPORT_RAW_VALUES <- TRUE
 calculate_cv <- function(data_matrix, is_log_scale = FALSE, margin = 1) {
   # Vectorized CV: avoid apply() loop over rows/columns
   if (margin == 1) {
-    # Row-wise (per gene) — need at least 2 columns for meaningful SD
+    # Row-wise (per gene): need at least 2 columns for meaningful SD
     if (ncol(data_matrix) < 2) {
       warning("Cannot compute row-wise CV with < 2 samples")
       return(rep(NA_real_, nrow(data_matrix)))
     }
-    # Compute rowMeans and rowSds once — shared by both log-scale and linear-scale paths.
-    # O(G×S) for rowMeans + O(G×S) for rowSums = 2 passes over the matrix total.
     rm <- rowMeans(data_matrix, na.rm = TRUE)
-    n_c <- ncol(data_matrix)
-    .centered <- data_matrix - rm
-    row_sds <- sqrt(rowSums(.centered * .centered, na.rm = TRUE) / (n_c - 1))
+    # Use matrixStats when available; its NA-aware divisor (per-row non-NA count - 1)
+    # matches stats::sd(). The manual fallback must compute n_valid per row for the
+    # same reason: using ncol(x) - 1 biases SD low whenever any row has NAs.
+    row_sds <- if (.HAS_MATRIXSTATS) {
+      matrixStats::rowSds(data_matrix, na.rm = TRUE)
+    } else {
+      .centered <- data_matrix - rm
+      n_valid <- rowSums(!is.na(data_matrix))
+      sds <- sqrt(rowSums(.centered * .centered, na.rm = TRUE) / (n_valid - 1))
+      sds[n_valid < 2] <- NA
+      sds
+    }
+    # All-NA rows yield NaN mean and an artifactual 0 SD; propagate to NA.
+    row_sds[!is.finite(rm)] <- NA
     if (is_log_scale) {
       row_sds[!is.finite(row_sds)] <- NA
       return(row_sds)
     }
-    # Direct division + vectorized mask — avoids ifelse() allocation of O(G) logical + result vectors
     cv <- (row_sds / rm) * 100
     cv[rm <= 0 | !is.finite(cv)] <- NA
     return(cv)
   } else {
-    # Column-wise (per sample) — need at least 2 genes for meaningful SD
+    # Column-wise (per sample): need at least 2 genes for meaningful SD
     if (nrow(data_matrix) < 2) {
       warning("Cannot compute column-wise CV with < 2 genes")
       return(rep(NA_real_, ncol(data_matrix)))
     }
-    # Column-wise SD: use matrixStats::colSds when available (single C-level pass,
-    # zero R-level allocation). Fallback uses sweep() which allocates 1 O(G×S) temporary
-    # instead of t(t(x)-cm)^2 which would allocate 2 O(G×S) temporaries.
     cm <- colMeans(data_matrix, na.rm = TRUE)
+    # Same NA-divisor concern as the row path: fallback must use per-column n_valid - 1.
     col_sds <- if (.HAS_MATRIXSTATS) {
       matrixStats::colSds(data_matrix, na.rm = TRUE)
     } else {
-      # sweep() creates 1 O(G×S) centered matrix; colSums on it is O(G×S). Total: 1 temp.
       .col_centered <- sweep(data_matrix, 2, cm)
-      sqrt(colSums(.col_centered * .col_centered, na.rm = TRUE) / (nrow(data_matrix) - 1))
+      n_valid <- colSums(!is.na(data_matrix))
+      sds <- sqrt(colSums(.col_centered * .col_centered, na.rm = TRUE) / (n_valid - 1))
+      sds[n_valid < 2] <- NA
+      sds
     }
+    col_sds[!is.finite(cm)] <- NA
     if (is_log_scale) {
       col_sds[!is.finite(col_sds)] <- NA
       return(col_sds)
     }
-    # Direct division + vectorized mask — avoids ifelse() allocation overhead
     cv <- (col_sds / cm) * 100
     cv[cm <= 0 | !is.finite(cv)] <- NA
     return(cv)

@@ -628,7 +628,10 @@ convert_to_organ_labels <- function(counts_matrix) {
   colnames_organ <- SAMPLE_LABELS[current_cols]
   colnames_organ[is.na(colnames_organ)] <- current_cols[is.na(colnames_organ)]
   result <- counts_matrix
-  colnames(result) <- colnames_organ
+  # unname(): SAMPLE_LABELS[current_cols] carries the SRR IDs as a names attribute.
+  # A matrix's dimnames must be a plain character vector — a named vector leaks the
+  # SRR IDs into ComplexHeatmap, which then renders SRR accessions instead of organs.
+  colnames(result) <- unname(colnames_organ)
   result
 }
 
@@ -841,9 +844,11 @@ convert_to_shortened_names <- function(counts_matrix, gene_group) {
   # Keep original name if still no mapping found
   still_na <- is.na(new_rownames)
   new_rownames[still_na] <- current_rownames[still_na]
-  
+
   result <- counts_matrix
-  rownames(result) <- new_rownames
+  # unname(): mapping[current_rownames] carries the Gene_IDs as a names attribute.
+  # Matrix dimnames must be a plain character vector (see convert_to_organ_labels).
+  rownames(result) <- unname(new_rownames)
   result
 }
 
