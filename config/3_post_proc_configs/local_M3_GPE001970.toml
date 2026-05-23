@@ -17,9 +17,12 @@
 # Master Reference
 master_references = ["GPE001970_genome"]
 
-# Gene Groups — SmelDMP family only (manuscript scope)
+# Gene Groups — SmelDMP and EC1 families (manuscript scope)
 gene_groups = [
     "SmelDMPs_v5_with_18s_and_HAP2",
+    "SmelEC1",
+    "SmelEC1_AtEC1Similar",
+    "SmelEC1_Putative",
 ]
 
 # SRR Datasets — selected eggplant tissue atlas subset

@@ -22,6 +22,9 @@ gene_groups = [
     "SmelDMPs_v5_with_18s_and_HAP2",
     #"SmelGRF-GIF_with_Control",
     "Selected_SmelGRF-GIF_with_two_GIF",
+    "SmelEC1",
+    "SmelEC1_AtEC1Similar",
+    "SmelEC1_Putative",
 ]
 
 # SRR Datasets

@@ -97,6 +97,23 @@ samples = [
     "SRR23909865",  # Fully Develop (FD) 3
 ]
 
+[dataset.PRJNA1417697]
+# Source: https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA1417697&o=acc_s%3Aa
+# Solanum melongena cv. Sanyueqie, anther tissue, 3 days before anthesis,
+# 80 days after sowing, Illumina NovaSeq 6000, PAIRED, ZHENGZHOU UNIVERSITY.
+# Sample table: I_INPUTS/PRJNA1417697__SraRunTable.csv
+samples = [
+    "SRR37071455",   # abcg-WT-1     (anther, 3 DBA)  [MAIN INTEREST]
+    "SRR37071454",   # abcg-WT-2     (anther, 3 DBA)  [MAIN INTEREST]
+    "SRR37071453",   # abcg-WT-3     (anther, 3 DBA)  [MAIN INTEREST]
+    #"SRR37071461",  # abcg1-ko-1    (anther, 3 DBA)
+    #"SRR37071460",  # abcg1-ko-2    (anther, 3 DBA)
+    #"SRR37071459",  # abcg1-ko-3    (anther, 3 DBA)
+    #"SRR37071458",  # abcg2-ko-1    (anther, 3 DBA)
+    #"SRR37071457",  # abcg2-ko-2    (anther, 3 DBA)
+    #"SRR37071456",  # abcg2-ko-3    (anther, 3 DBA)
+]
+
 # ==============================================================================
 # COMBINED LIST — which datasets to include in the pipeline run
 # ==============================================================================
@@ -108,4 +125,5 @@ active_datasets = [
     "SAMN28540068",     # Chinese Dataset for replicability.
     #"PRJNA865018",     # SET_1: Good Dataset for SmelDMP GEA.
     #"PRJNA941250",     # SET_2: Good Dataset for SmelDMP GEA.
+    #"PRJNA1417697",    # Anther dataset (Sanyueqie, 3 DBA, abcg WT/ko).
 ]
