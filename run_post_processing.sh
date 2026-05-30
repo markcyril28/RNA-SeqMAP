@@ -104,7 +104,7 @@ GPU_VRAM_GB=8
 
 CLEAR_LOGS="${CLEAR_LOGS:-TRUE}"
 CLEAR_OUTPUT_FOLDER="${CLEAR_OUTPUT_FOLDER:-TRUE}"
-CLEAR_CACHE="${CLEAR_CACHE:-FALSE}"
+CLEAR_CACHE="${CLEAR_CACHE:-TRUE}"
 
 # Figure resolution in DPI (300–600)
 FIGURE_DPI="${FIGURE_DPI:-300}"
@@ -245,15 +245,32 @@ export LOG_DIR TIME_DIR SPACE_DIR SPACE_TIME_DIR ERROR_WARN_DIR SOFTWARE_CATALOG
 mkdir -p "$LOG_DIR" "$TIME_DIR" "$SPACE_DIR" "$SPACE_TIME_DIR" \
          "$ERROR_WARN_DIR" "$SOFTWARE_CATALOG_DIR" "$GPU_LOG_DIR" 2>/dev/null || true
 
+# Mirror the full pipeline log to a top-level RNA-SeqMAP/logs/ directory so the
+# canonical run log is reachable without descending into II_RESULTS/3_POST_PROC/.
+# MIRROR_LOG_FILE is honoured by _logging_setup_redirect in logging_utils.sh.
+MIRROR_LOG_DIR="$BASE_DIR/logs/log_files"
+MIRROR_LOG_FILE="$MIRROR_LOG_DIR/pipeline_${RUN_ID}_full_log.log"
+mkdir -p "$MIRROR_LOG_DIR" 2>/dev/null || true
+if [[ "${CLEAR_LOGS^^}" == "TRUE" ]]; then
+    # Clear root-level mirror logs too — setup_logging only clears under LOG_DIR
+    find "$MIRROR_LOG_DIR" -maxdepth 1 -type f -name '*.log' -delete 2>/dev/null || true
+fi
+export MIRROR_LOG_FILE
+
 setup_logging "$CLEAR_LOGS"
 export LOG_FILE TIME_FILE SPACE_FILE SPACE_TIME_FILE ERROR_WARN_FILE SOFTWARE_FILE GPU_LOG_FILE
 
-# Skip software catalog if already generated this session (saves ~2s)
-if [[ ! -f "${SOFTWARE_FILE:-}" ]] || [[ ! -s "${SOFTWARE_FILE:-}" ]]; then
+# Skip software catalog only if it already holds data rows. setup_logging() writes
+# the CSV header via _init_csv_headers, so a plain [[ -s ]] check would mis-skip
+# on first run and leave software_catalog.csv with header-only content.
+_sw_rows=0
+[[ -f "${SOFTWARE_FILE:-}" ]] && _sw_rows=$(wc -l < "${SOFTWARE_FILE}" 2>/dev/null || echo 0)
+if (( _sw_rows < 2 )); then
 	catalog_all_software
 else
-	log_info "Software catalog already exists, skipping: $SOFTWARE_FILE"
+	log_info "Software catalog already populated, skipping: $SOFTWARE_FILE"
 fi
+unset _sw_rows
 
 log_step "Starting Post-Processing Pipeline (${#PIPELINE_CONFIGS[@]} config(s), parallel=$PARALLEL_CONFIGS)"
 
