@@ -111,7 +111,7 @@ FIGURE_DPI="${FIGURE_DPI:-300}"
 
 # HTML viewer: auto-generate an interactive results viewer in II_RESULTS/3_POST_PROC/
 # Set to "TRUE" to generate alignment_results_viewer.html after all configs run.
-GENERATE_HTML_VIEWER="${GENERATE_HTML_VIEWER:-TRUE}"
+GENERATE_HTML_VIEWER="${GENERATE_HTML_VIEWER:-FALSE}"
 
 # Single-config child mode: when invoked by parallel dispatch, process only one config.
 # The parent sets __PP_SINGLE_CONFIG to the config path and re-invokes this script.
@@ -506,6 +506,21 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
     [[ ${#SRR_COMBINED_LIST[@]} -eq 0 ]]  && { log_error "No SRR samples loaded from $CONFIG_FILE"; continue; }
     [[ ${#ANALYSES[@]} -eq 0 ]]           && { log_error "No analyses in $CONFIG_FILE"; continue; }
 
+    # ── Per-gene-group dispatch ───────────────────────────────────────────────
+    # Each gene group becomes its own immediate child of 3_POST_PROC/ (its own
+    # CURRENT_GENE_GROUP top-level folder). Processing ONE gene group per pass
+    # keeps the deep heatmap folder collision-free as just {dataset} (the
+    # "{gene_group}_in_" prefix is dropped in 2_processing_engine.R). Snapshot the
+    # full list first: setup_method_env()->_rebuild_exported_arrays() rewrites
+    # GENE_GROUPS from GENE_GROUPS_STR (single) inside the loop body, but a bash
+    # for-loop already captured this expansion at entry — the copy just makes the
+    # intent explicit and robust.
+    _ALL_GENE_GROUPS=("${GENE_GROUPS[@]}")
+    for CURRENT_GENE_GROUP in "${_ALL_GENE_GROUPS[@]}"; do
+    export CURRENT_GENE_GROUP
+    export GENE_GROUPS_STR="$CURRENT_GENE_GROUP"   # single group → top-level folder
+    log_step "Gene group: $CURRENT_GENE_GROUP (top-level folder)"
+
     # Clear output folders if requested (rm -rf + mkdir is faster than find -delete on deep trees)
     if [[ "$CLEAR_OUTPUT_FOLDER" == "TRUE" ]]; then
         log_info "Clearing output folders for $MASTER_REFERENCE..."
@@ -536,7 +551,8 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
     # Export per-config variables for R scripts and subprocesses
     # (static vars like BASE_DIR, THREADS, etc. are exported once before the loop)
     export MASTER_REFERENCE
-    export GENE_GROUPS_STR="${GENE_GROUPS[*]}" ANALYSES_STR="${ANALYSES[*]}" SRR_DATASETS_STR="${SRR_DATASETS[*]}"
+    # GENE_GROUPS_STR is exported per gene group at the top of the dispatch loop above.
+    export ANALYSES_STR="${ANALYSES[*]}" SRR_DATASETS_STR="${SRR_DATASETS[*]}"
 
     # Run summary
     log_info "Threads: $THREADS | GPU: $ENABLE_GPU (${GPU_VRAM_GB}GB VRAM) | Parallel: $ENABLE_GNU_PARALLEL (Jobs: $JOBS)"
@@ -702,6 +718,8 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
             fi
         fi
     done
+
+    done  # ── end per-gene-group dispatch ──
 
     # Config summary
     log_step "Config Complete: ${CONFIG_FILE##*/}"
