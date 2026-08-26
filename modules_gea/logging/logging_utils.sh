@@ -161,10 +161,22 @@ _logging_setup_redirect() {
 		_logging_cleanup_bg
 	fi
 
-	if [[ "$log_choice" == "2" ]]; then
-		exec > >(strip_ansi_stream >> "$LOG_FILE") 2>&1
+	# Optional secondary mirror destination — when MIRROR_LOG_FILE is set,
+	# every line is written to both LOG_FILE (structured per-stage path) and
+	# MIRROR_LOG_FILE (e.g., a root-level convenience log).
+	if [[ -n "${MIRROR_LOG_FILE:-}" ]]; then
+		mkdir -p "${MIRROR_LOG_FILE%/*}" 2>/dev/null || true
+		if [[ "$log_choice" == "2" ]]; then
+			exec > >(tee >(strip_ansi_stream >> "$LOG_FILE") >(strip_ansi_stream >> "$MIRROR_LOG_FILE") >/dev/null) 2>&1
+		else
+			exec > >(tee >(strip_ansi_stream >> "$LOG_FILE") >(strip_ansi_stream >> "$MIRROR_LOG_FILE")) 2>&1
+		fi
 	else
-		exec > >(tee >(strip_ansi_stream >> "$LOG_FILE")) 2>&1
+		if [[ "$log_choice" == "2" ]]; then
+			exec > >(strip_ansi_stream >> "$LOG_FILE") 2>&1
+		else
+			exec > >(tee >(strip_ansi_stream >> "$LOG_FILE")) 2>&1
+		fi
 	fi
 	# Capture the PID of the outermost process substitution.
 	# $! is set by exec > >(...) in bash.
