@@ -99,24 +99,24 @@ process_all_combinations <- function(
   # For StringTie, processing_level is not used in path, so use a placeholder
   active_processing_levels <- if (method_type == "stringtie") c("gene_level") else PROCESSING_LEVELS
   
-  # Avoid nesting an inner <gene_group>_in_<dataset> folder when the run has
-  # only one gene_group — the parent path already identifies it and the inner
-  # folder duplicates the gene-group token (and was inconsistently produced
-  # across analyses, e.g., I_Basic_Heatmap vs II_Heatmap_with_CV).
-  .single_gene_group <- length(config$gene_groups) == 1L
-
+  # The gene group is the TOP-LEVEL output folder (3_POST_PROC/{gene_group}/...),
+  # set per-run via CURRENT_GENE_GROUP by run_post_processing.sh's per-gene-group
+  # dispatch. So the deep figure folder is just {dataset} — the legacy
+  # "{gene_group}_in_{dataset}" prefix is dropped because it would only duplicate
+  # the top-level gene-group token. When no dataset is configured, write straight
+  # to the analysis/reference base. (Figure FILE names still carry the gene group
+  # via build_title_base(), so multiple groups remain distinguishable even if they
+  # ever land in the same {dataset} folder.)
   for (gene_group in config$gene_groups) {
-    # Get combined output folder name (GeneGroup_in_Dataset)
-    output_folder_name <- get_output_folder_name(gene_group, CURRENT_DATASET)
     cat("Processing gene group:", gene_group, "\n")
     if (nzchar(CURRENT_DATASET)) {
-      cat("  Dataset:", CURRENT_DATASET, "-> Output folder:", output_folder_name, "\n")
+      cat("  Dataset:", CURRENT_DATASET, "-> Output folder:", CURRENT_DATASET, "\n")
     }
 
-    gene_group_output_dir <- if (.single_gene_group) {
-      output_base_dir
+    gene_group_output_dir <- if (nzchar(CURRENT_DATASET)) {
+      file.path(output_base_dir, CURRENT_DATASET)
     } else {
-      file.path(output_base_dir, output_folder_name)
+      output_base_dir
     }
     ensure_output_dir(gene_group_output_dir, clean = FALSE)
     
