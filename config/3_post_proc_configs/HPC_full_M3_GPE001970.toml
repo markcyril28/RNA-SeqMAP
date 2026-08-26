@@ -20,23 +20,26 @@ master_references = ["GPE001970_genome"]
 gene_groups = [
     #"SmelDMPs_v5",
     #"SmelDMPs_v5_with_18s_and_HAP2",
-    #"SmelGRF-GIF_with_Control",
+    #"SmelGRF-GIF_with_Control",            # No CSV exists for this label -> empty output; replaced by the V5 full set below
+    #"SmelGRF-GIF_v5_with_1_18s_rRNA",       # Full GRF/GIF family (11 GRF + 4 GIF) + 18S rRNA, GPE001970/SMEL5 orthologs
     #"Selected_SmelGRF-GIF_with_two_GIF",
     #"SmelEC1",
-    #"SmelEC1_AtEC1Similar",
-    #"SmelEC1_Putative",
+    #"SmelEC1_AtEC1Similar_and_GEX",
+    #"SmelEC1_Putative_and_GEX",
     "SmelPLA5",                       # Patatin-like PLA candidates from Stage 01 PLA scan (anchor: ZmMATL/ZmPLA1 haploid-inducer family)
 ]
 
 # SRR Datasets
 srr_datasets = [
     #"PRJNA328564",                    # Main Dataset — Eggplant tissue atlas (full)
-    "PRJNA328564_selected",
+    #"PRJNA328564_selected",
+    "PRJNA328564_selected_plus_PRJNA1417697_selected",  # Tissue atlas (12) + anther WT/ko (5); unique SRRs
     #"PRJNA865018",                    # SET_1: Good Dataset for SmelDMP GEA
     #"PRJNA941250",                    # SET_2: Good Dataset for SmelDMP GEA
     #"PRJNA865018_and_PRJNA941250",
     #"SAMN28540077",                   # Chinese Dataset 1 — replicability
     #"SAMN28540068",                   # Chinese Dataset 2 — replicability
+    #"PRJNA1417697",                   # Anther Dataset — Sanyueqie, 3 DBA, abcg WT/ko (MAIN INTEREST)
     #"OTHER_SRR_LIST",
 ]
 
