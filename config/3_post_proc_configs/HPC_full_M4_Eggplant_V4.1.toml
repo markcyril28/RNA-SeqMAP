@@ -34,11 +34,13 @@ gene_groups = [
 srr_datasets = [
     #"PRJNA328564",                    # Main Dataset — Eggplant tissue atlas (full)
     "PRJNA328564_selected",
+    #"PRJNA328564_selected_plus_PRJNA1417697_selected",  # Tissue atlas (12) + anther WT/ko (5); unique SRRs
     #"PRJNA865018",                    # SET_1: Good Dataset for SmelDMP GEA
     #"PRJNA941250",                    # SET_2: Good Dataset for SmelDMP GEA
     #"PRJNA865018_and_PRJNA941250",
     #"SAMN28540077",                   # Chinese Dataset 1 — replicability
     #"SAMN28540068",                   # Chinese Dataset 2 — replicability
+    #"PRJNA1417697",                   # Anther Dataset - Sanyueqie, 3 DBA, abcg WT/ko (MAIN INTEREST)
     #"OTHER_SRR_LIST",
 ]
 
