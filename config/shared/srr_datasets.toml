@@ -125,11 +125,38 @@ samples = [
     "SRR37071454",   # abcg-WT-2     (anther, 3 DBA)  [MAIN INTEREST]
     "SRR37071453",   # abcg-WT-3     (anther, 3 DBA)  [MAIN INTEREST]
     #"SRR37071461",  # abcg1-ko-1    (anther, 3 DBA)
-    #"SRR37071460",  # abcg1-ko-2    (anther, 3 DBA)
+    "SRR37071460",  # abcg1-ko-2    (anther, 3 DBA)
     #"SRR37071459",  # abcg1-ko-3    (anther, 3 DBA)
     #"SRR37071458",  # abcg2-ko-1    (anther, 3 DBA)
-    #"SRR37071457",  # abcg2-ko-2    (anther, 3 DBA)
+    "SRR37071457",  # abcg2-ko-2    (anther, 3 DBA)
     #"SRR37071456",  # abcg2-ko-3    (anther, 3 DBA)
+]
+
+[dataset.PRJNA328564_selected_plus_PRJNA1417697_selected]
+# Combined: PRJNA328564_selected (12 tissue-atlas samples) + PRJNA1417697 active anther samples (5).
+# All SRR IDs are unique — no overlaps between the two source datasets.
+# Intended for post-processing runs where a single unified output folder is required
+# rather than separate per-dataset subfolders.
+samples = [
+    # --- PRJNA328564_selected (tissue atlas) ---
+    "SRR3884678",   # Fruits_peduncle (fruit attachment)
+    "SRR3884631",   # Fruits_6cm (fruit enlargement)
+    "SRR3884608",   # Fruits_1cm (early fruit development)
+    "SRR3884679",   # Pistils (female reproductive parts)
+    "SRR3884597",   # Flowers (anthesis)                  [MAIN INTEREST]
+    "SRR3884687",   # Opened_Buds (flower development)   [MAIN INTEREST]
+    "SRR3884686",   # Buds_0.7cm (flower bud initiation) [MAIN INTEREST]
+    "SRR3884689",   # Leaves (vegetative growth)
+    "SRR3884690",   # Stems (vegetative growth)
+    "SRR3884675",   # Roots (root development)
+    "SRR3884677",   # Cotyledons (seed leaves)
+    "SRR3884685",   # Radicles (earliest - germination)
+    # --- PRJNA1417697 anther (Sanyueqie, 3 DBA) ---
+    "SRR37071455",  # abcg-WT-1     (anther, 3 DBA)  [MAIN INTEREST]
+    "SRR37071454",  # abcg-WT-2     (anther, 3 DBA)  [MAIN INTEREST]
+    "SRR37071453",  # abcg-WT-3     (anther, 3 DBA)  [MAIN INTEREST]
+    "SRR37071460",  # abcg1-ko-2    (anther, 3 DBA)
+    "SRR37071457",  # abcg2-ko-2    (anther, 3 DBA)
 ]
 
 # ==============================================================================
