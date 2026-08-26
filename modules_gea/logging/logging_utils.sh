@@ -449,7 +449,12 @@ run_with_space_time_log() {
 	fi
 
 	mkdir -p "$TIME_DIR" || { log_error "Failed to create TIME_DIR: $TIME_DIR"; return 1; }
-	
+
+	# Per-call TIME_TEMP — concurrent invocations under GNU Parallel would otherwise
+	# clobber each other's GNU-time stderr capture. BASHPID+RANDOM is unique across
+	# subshells without an extra mktemp fork.
+	local _time_tmp="${TIME_DIR}/.time_temp_${RUN_ID}_${BASHPID:-$$}_${RANDOM}.txt"
+
 	local exit_code=0
 
 	# Log abbreviated command before running (full command saved in CSV)
@@ -461,12 +466,14 @@ run_with_space_time_log() {
 	# Inline printf -v avoids $(timestamp) subshell forks — O(1) each, saves 2 forks per call
 	local _ts_begin; printf -v _ts_begin '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _ts_begin=$(date '+%Y-%m-%d %H:%M:%S')
 	printf '[%s] [INFO] --- BEGIN TOOL OUTPUT: %s ---\n' "$_ts_begin" "${1##*/}" >> "$LOG_FILE"
-	# Strip ANSI escape codes and carriage returns before writing to log (e.g. Salmon progress bars)
-	# Use detected GNU time (_GNU_TIME_CMD); fall back to running command without time wrapper
+	# Strip ANSI escape codes and carriage returns before writing to log (e.g. Salmon progress bars).
+	# capture_stderr_errors mirrors lines matching error/warn patterns into ERROR_WARN_FILE so
+	# stdout-side errors (common in R scripts) end up in the error log alongside stderr-side ones.
+	# Use detected GNU time (_GNU_TIME_CMD); fall back to running command without time wrapper.
 	if [[ -n "${_GNU_TIME_CMD:-}" ]]; then
-		"$_GNU_TIME_CMD" -v "$@" 2>"$TIME_TEMP" | strip_ansi_stream >> "$LOG_FILE"
+		"$_GNU_TIME_CMD" -v "$@" 2>"$_time_tmp" | capture_stderr_errors | strip_ansi_stream >> "$LOG_FILE"
 	else
-		"$@" 2>"$TIME_TEMP" | strip_ansi_stream >> "$LOG_FILE"
+		"$@" 2>"$_time_tmp" | capture_stderr_errors | strip_ansi_stream >> "$LOG_FILE"
 	fi
 	exit_code=${PIPESTATUS[0]}
 	local _ts_end; printf -v _ts_end '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _ts_end=$(date '+%Y-%m-%d %H:%M:%S')
@@ -492,7 +499,7 @@ run_with_space_time_log() {
 	/Maximum resident set size/ { printf "rss_raw=%s max_rss=%s ", $NF, $NF }
 	/User time/    { printf "user_time=%s ", $NF }
 	/System time/  { printf "system_time=%s ", $NF }
-	' "$TIME_TEMP" 2>/dev/null)"
+	' "$_time_tmp" 2>/dev/null)"
 
 	log_info "[RESOURCES] Elapsed: ${elapsed_raw:-N/A} | CPU: ${cpu_raw:-N/A} | MaxRSS: ${rss_raw:-0} KB | Exit: $exit_code"
 
@@ -500,12 +507,12 @@ run_with_space_time_log() {
 	if [[ $exit_code -ne 0 ]]; then
 		local _ts_dbg; printf -v _ts_dbg '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || _ts_dbg=$(date '+%Y-%m-%d %H:%M:%S')
 		printf '[%s] [DEBUG] --- TIME OUTPUT (failure details) ---\n' "$_ts_dbg" >> "$LOG_FILE"
-		cat "$TIME_TEMP" >> "$LOG_FILE" 2>&1
+		cat "$_time_tmp" >> "$LOG_FILE" 2>&1
 	fi
 
 	# Capture errors/exceptions to error log (single grep pass instead of two)
 	local _err_lines=""
-	_err_lines=$(grep -iE "$_ERROR_PATTERN" "$TIME_TEMP" 2>/dev/null) || true
+	_err_lines=$(grep -iE "$_ERROR_PATTERN" "$_time_tmp" 2>/dev/null) || true
 	if [[ $exit_code -ne 0 ]] || [[ -n "$_err_lines" ]]; then
 		{
 			printf '[%s] [ERROR] Command failed (exit=%d): %s\n' "$_ts_end" "$exit_code" "$cmd_string"
@@ -542,8 +549,8 @@ run_with_space_time_log() {
 	local _st_row="${start_ts},\"${csv_cmd}\",${elapsed_time:-0},${cpu_percent:-0},${max_rss:-0},${user_time:-0},${system_time:-0},${input_size_mb},${output_size_mb},${exit_code}"
 	printf '%s\n' "$_time_row" >> "$TIME_FILE"
 	printf '%s\n' "$_st_row" >> "$SPACE_TIME_FILE"
-	
-	rm -f "$TIME_TEMP"
+
+	rm -f "$_time_tmp"
 	return $exit_code
 }
 
