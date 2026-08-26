@@ -309,10 +309,7 @@ fi
 if [[ "${CLEAR_CACHE:-FALSE}" == "TRUE" ]]; then
     log_info "Clearing persistent pipeline caches..."
     _cache_count=0
-    _srr_dir="${BASE_DIR}/I_INPUTS/inputs/3_post_proc_inputs/SRR_csv"
     _gg_dir="${BASE_DIR}/I_INPUTS/inputs/3_post_proc_inputs/gene_groups_csv"
-    # Sample labels cache
-    [[ -f "$_srr_dir/.sample_labels_cache.rds" ]] && rm -f "$_srr_dir/.sample_labels_cache.rds" && _cache_count=$((_cache_count + 1))
     # Gene name mapping caches (*.namemap.rds beside gene group CSVs)
     while IFS= read -r -d '' _f; do
         rm -f "$_f" && _cache_count=$((_cache_count + 1))
@@ -325,7 +322,7 @@ if [[ "${CLEAR_CACHE:-FALSE}" == "TRUE" ]]; then
         done < <(find "$_tmp_root" -maxdepth 2 -name '.gpu_detect_cache.rds' -print0 2>/dev/null)
     done
     log_info "  Cleared $_cache_count cache file(s)"
-    unset _cache_count _f _srr_dir _gg_dir _tmp_root
+    unset _cache_count _f _gg_dir _tmp_root
 fi
 
 mkdir -p "${OUTPUT_DIR}" || {
