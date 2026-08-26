@@ -510,31 +510,13 @@ get_output_folder_name <- function(gene_group, dataset = CURRENT_DATASET) {
 # Load sample labels from all CSV files in SRR_csv directory
 # CSV format: SRR_ID,Organ,Notes
 # If SRR_COMBINED_LIST_STR env var is set, filter to only those samples AND preserve order
-#
-# Performance: uses .rds cache to skip CSV parsing after first load.
-# The cache key includes the directory mtime and SRR_COMBINED_LIST_STR so it
-# auto-invalidates when CSVs change or the sample list changes.
 load_sample_labels_from_csv <- function(srr_csv_dir = SRR_CSV_DIR) {
   labels <- c()
   if (!dir.exists(srr_csv_dir)) return(labels)
 
-  # RDS cache: each analysis module invokes a fresh Rscript that re-sources
-  # 0_shared_config.R → load_sample_labels_from_csv(). Caching to .rds avoids
-  # re-parsing the same CSV files 50+ times across analysis modules.
   srr_list_str <- Sys.getenv("SRR_COMBINED_LIST_STR", unset = "")
-  .cache_key <- paste0(srr_csv_dir, "|", srr_list_str)
-  .rds_path <- file.path(srr_csv_dir, ".sample_labels_cache.rds")
-  if (file.exists(.rds_path)) {
-    tryCatch({
-      .cached <- readRDS(.rds_path)
-      if (identical(.cached$key, .cache_key)) {
-        cat("[CONFIG] Sample labels loaded from RDS cache (", length(.cached$labels), " samples)\n", sep = "")
-        return(.cached$labels)
-      }
-    }, error = function(e) NULL)
-  }
 
-  # O(C × R) where C = CSV files, R = rows per file; results cached in .rds
+  # O(C × R) where C = CSV files, R = rows per file.
   # Collect labels into a pre-allocated list to avoid O(n²) c() concatenation.
   # Single c() at end is O(total_labels) instead of O(C × cumulative_labels).
   csv_files <- list.files(srr_csv_dir, pattern = "\\.csv$", full.names = TRUE)
@@ -584,10 +566,6 @@ load_sample_labels_from_csv <- function(srr_csv_dir = SRR_CSV_DIR) {
     cat("[CONFIG] Filtering samples: ", original_count, " -> ", length(labels),
         " (from SRR_COMBINED_LIST_STR)\n", sep = "")
   }
-
-  # Save RDS cache for subsequent R sessions
-  tryCatch(saveRDS(list(key = .cache_key, labels = labels), .rds_path),
-           error = function(e) NULL)
 
   return(labels)
 }
