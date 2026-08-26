@@ -221,9 +221,9 @@ run_method_preprocessing() {
     elif [[ -n "$preprocess_path" && -f "$preprocess_path" ]]; then
         log_info "Running preprocessing: ${preprocess_path##*/}"
         if [[ "$preprocess_path" == *.R ]]; then
-            run_with_error_capture Rscript "$preprocess_path" || { log_error "Failed: preprocessing ($method)"; popd > /dev/null; return 1; }
+            run_with_space_time_log Rscript "$preprocess_path" || { log_error "Failed: preprocessing ($method)"; popd > /dev/null; return 1; }
         else
-            run_with_error_capture bash "$preprocess_path" || { log_error "Failed: preprocessing ($method)"; popd > /dev/null; return 1; }
+            run_with_space_time_log bash "$preprocess_path" || { log_error "Failed: preprocessing ($method)"; popd > /dev/null; return 1; }
         fi
     elif [[ -n "$preprocess_path" ]]; then
         log_warn "Preprocessing script not found: $preprocess_path"
@@ -286,9 +286,9 @@ run_single_analysis() {
     if [[ -n "$script_path" && -f "$script_path" ]]; then
         log_info "Running: $analysis ($method)"
         if [[ "$script_path" == *.sh ]]; then
-            run_with_error_capture bash "$script_path" || _rc=$?
+            run_with_space_time_log bash "$script_path" || _rc=$?
         else
-            run_with_error_capture Rscript "$script_path" || _rc=$?
+            run_with_space_time_log Rscript "$script_path" || _rc=$?
         fi
         [[ $_rc -ne 0 ]] && log_error "Failed: $analysis ($method) (exit=$_rc)"
     else
@@ -348,7 +348,7 @@ run_batched_analyses() {
 
     log_info "Batching ${#r_tasks[@]} analyses for $method: ${r_tasks[*]}"
     local _rc=0
-    run_with_error_capture Rscript "$dispatcher" "${r_tasks[@]}" || _rc=$?
+    run_with_space_time_log Rscript "$dispatcher" "${r_tasks[@]}" || _rc=$?
     [[ $_rc -ne 0 ]] && log_error "Batch failed for $method (exit=$_rc)"
 
     popd > /dev/null || log_warn "popd failed in run_batched_analyses (was in $method_dir)"
@@ -386,10 +386,14 @@ export_utils_for_parallel() {
     [[ "${_PARALLEL_UTILS_EXPORTED:-}" == "true" ]] && return 0
     # Export logging functions (from logging_utils.sh)
     export -f _log_impl log log_info log_warn log_error log_step timestamp
-    # Export error capture (from logging_utils.sh)
-    export -f run_with_error_capture capture_stderr_errors strip_ansi_stream 2>/dev/null || true
+    # Export error capture + space/time logging (from logging_utils.sh) so GNU Parallel
+    # subshells can populate TIME_FILE / SPACE_TIME_FILE / ERROR_WARN_FILE.
+    export -f run_with_error_capture run_with_space_time_log capture_stderr_errors strip_ansi_stream 2>/dev/null || true
     # Export error/warning regex patterns used by capture_stderr_errors
     export _ERROR_PATTERN _WARN_PATTERN 2>/dev/null || true
+    # _GNU_TIME_CMD is already exported by logging_utils.sh at source time; re-export here
+    # in case this function runs in a process where the original export was lost.
+    export _GNU_TIME_CMD 2>/dev/null || true
     # Export pipeline functions
     export _PIPELINE_UTIL_DIR _PIPELINE_MODS_DIR
     export -f _rebuild_exported_arrays
