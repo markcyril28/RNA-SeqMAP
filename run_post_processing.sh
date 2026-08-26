@@ -400,8 +400,6 @@ fi
 if [[ "$CLEAR_CACHE" == "TRUE" ]]; then
     log_info "Clearing persistent pipeline caches..."
     _cache_count=0
-    # Sample labels cache
-    [[ -f "$SRR_CSV_DIR/.sample_labels_cache.rds" ]] && rm -f "$SRR_CSV_DIR/.sample_labels_cache.rds" && _cache_count=$((_cache_count + 1))
     # Gene name mapping caches (*.namemap.rds beside gene group CSVs)
     while IFS= read -r -d '' _f; do
         rm -f "$_f" && _cache_count=$((_cache_count + 1))
