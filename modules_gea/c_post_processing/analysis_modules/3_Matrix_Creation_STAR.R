@@ -94,6 +94,76 @@ if (sum(file.exists(.resolved_quant_files)) == 0 && dir.exists(quant_dir)) {
 # Materialize resolved existence once — avoids 3× redundant O(S) file.exists() below.
 .resolved_exists <- file.exists(.resolved_quant_files)
 
+# Harmonize Salmon quant.sf files across samples that may have been quantified
+# against slightly different Salmon indexes (e.g. an index rebuilt mid-project).
+# tximport requires `all(txId == raw[[txIdCol]])` across files; any reorder or
+# missing-transcript difference triggers the cryptic
+# `longer object length is not a multiple of shorter object length` error.
+#
+# Strategy: peek at the Name column of each quant.sf; if all identical and in
+# the same order, return paths unchanged. Otherwise compute the intersection of
+# transcript IDs, write subsetted quant.sf copies to tempdir (preserving Salmon
+# format), and return the rewritten paths. Caller passes harmonized paths to
+# tximport, which then sees a uniform transcript universe.
+.harmonize_quant_files <- function(quant_files) {
+  if (length(quant_files) < 2) return(list(files = quant_files, harmonized = FALSE,
+                                           shared = NULL, dropped = 0L))
+  read_names <- function(p) {
+    if (.HAS_DATATABLE) {
+      as.character(data.table::fread(p, select = 1, header = TRUE,
+                                     data.table = FALSE, showProgress = FALSE)[[1]])
+    } else {
+      as.character(read.delim(p, header = TRUE, stringsAsFactors = FALSE,
+                              colClasses = c("character", rep("NULL", 4)))[[1]])
+    }
+  }
+  name_lists <- lapply(quant_files, read_names)
+  ref <- name_lists[[1]]
+  consistent <- all(vapply(name_lists[-1],
+                           function(x) length(x) == length(ref) && all(x == ref),
+                           logical(1)))
+  if (consistent) return(list(files = quant_files, harmonized = FALSE,
+                              shared = ref, dropped = 0L))
+
+  shared <- Reduce(intersect, name_lists)
+  if (length(shared) == 0) {
+    stop("[STAR MATRIX] Quant files share zero transcripts; ",
+         "all samples must be quantified against compatible Salmon indexes.")
+  }
+  union_size <- length(Reduce(union, name_lists))
+  cat("  Harmonizing", length(quant_files), "quant.sf files: ", length(shared),
+      "shared transcripts (",
+      union_size - length(shared),
+      "dropped from union of", union_size, ").\n")
+  # Build sample-name-stable temp dir under R's session tempdir. Use tempfile()
+  # for a guaranteed-unique root so gene-level and isoform-level calls in the
+  # same R process don't collide.
+  harm_root <- tempfile(pattern = "harm_quant_")
+  dir.create(harm_root, recursive = TRUE, showWarnings = FALSE)
+  out_paths <- character(length(quant_files))
+  names(out_paths) <- names(quant_files)
+  shared_order <- shared  # stable order driven by first sample's intersection
+  for (i in seq_along(quant_files)) {
+    sid <- names(quant_files)[i]
+    if (is.null(sid) || !nzchar(sid)) sid <- paste0("sample", i)
+    sample_dir <- file.path(harm_root, sid)
+    dir.create(sample_dir, recursive = TRUE, showWarnings = FALSE)
+    out_path <- file.path(sample_dir, "quant.sf")
+    quant_df <- if (.HAS_DATATABLE) {
+      data.table::fread(quant_files[i], header = TRUE, data.table = FALSE,
+                        showProgress = FALSE)
+    } else {
+      read.delim(quant_files[i], header = TRUE, stringsAsFactors = FALSE)
+    }
+    quant_df <- quant_df[match(shared_order, quant_df$Name), , drop = FALSE]
+    write.table(quant_df, out_path, sep = "\t", quote = FALSE,
+                row.names = FALSE, col.names = TRUE)
+    out_paths[i] <- out_path
+  }
+  list(files = out_paths, harmonized = TRUE, shared = shared_order,
+       dropped = union_size - length(shared))
+}
+
 # ----- Gene-level (requires tx2gene mapping) --------------------------------
 if (GENERATE_GENE_LEVEL) {
   tx2gene_dir <- file.path(output_dir, MASTER_REFERENCE)
@@ -103,22 +173,37 @@ if (GENERATE_GENE_LEVEL) {
 
   # Generate tx2gene from GTF if missing (alignment step may not have been run)
   if (length(tx2gene_files) == 0) {
-    gtf_ref_dir <- if (nzchar(base_dir)) {
-      file.path(base_dir, "inputs", "gtf", "reference")
+    # GTF/mapping candidate directories. Order matters: STAR_GTF_FILE > legacy
+    # `inputs/gtf/reference/` > actual layout under `I_INPUTS/inputs/...`.
+    if (nzchar(base_dir)) {
+      gtf_ref_dirs     <- c(file.path(base_dir, "inputs", "gtf", "reference"),
+                            file.path(base_dir, "I_INPUTS", "inputs", "2_alignment_input", "reference"))
+      mapping_ref_dirs <- file.path(base_dir, "I_INPUTS", "inputs", "mapping")
     } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
       stop("[STAR MATRIX] BASE_DIR is required for GTF lookup under workflow manager.")
     } else {
-      file.path("..", "..", "inputs", "gtf", "reference")
+      gtf_ref_dirs     <- c(file.path("..", "..", "inputs", "gtf", "reference"),
+                            file.path("..", "..", "I_INPUTS", "inputs", "2_alignment_input", "reference"))
+      mapping_ref_dirs <- file.path("..", "..", "I_INPUTS", "inputs", "mapping")
     }
     gtf_candidates <- c(
       Sys.getenv("STAR_GTF_FILE", unset = ""),
       # Prefer the _stringtie.gtf variant: its transcript_id attributes are
       # formatted consistently with the Salmon index built during STAR alignment
-      file.path(gtf_ref_dir, paste0(MASTER_REFERENCE, "_function_IPR_final_stringtie.gtf")),
-      file.path(gtf_ref_dir, paste0(MASTER_REFERENCE, "_function_IPR_final.gtf")),
-      file.path(gtf_ref_dir, paste0(MASTER_REFERENCE, ".gtf"))
+      as.vector(outer(gtf_ref_dirs,
+                      c(paste0(MASTER_REFERENCE, "_function_IPR_final_stringtie.gtf"),
+                        paste0(MASTER_REFERENCE, "_function_IPR_final.gtf"),
+                        paste0(MASTER_REFERENCE, ".gtf")),
+                      file.path))
     )
+    # gene_trans_map fallback: gene_id<TAB>transcript_id; preferred when GTF is absent.
+    # Column order is handled later via the `grepl("gene_trans_map$", ...)` branch.
+    gene_trans_map_candidates <- file.path(
+      mapping_ref_dirs,
+      paste0(MASTER_REFERENCE, "_transcripts.fa.gene_trans_map"))
+
     gtf_file <- Filter(file.exists, gtf_candidates)[1]
+    gtm_file <- Filter(file.exists, gene_trans_map_candidates)[1]
     if (!is.na(gtf_file) && nzchar(gtf_file)) {
       cat("  Generating tx2gene from GTF:", gtf_file, "\n")
       dir.create(tx2gene_dir, recursive = TRUE, showWarnings = FALSE)
@@ -135,6 +220,19 @@ if (GENERATE_GENE_LEVEL) {
         cat("  Created tx2gene mapping:", tx2gene_out, "\n")
       } else {
         cat("  Error: Failed to generate tx2gene from GTF\n")
+      }
+    } else if (!is.na(gtm_file) && nzchar(gtm_file)) {
+      # Copy the pre-built gene_trans_map into the expected output location; the
+      # downstream loader detects the trailing ".gene_trans_map" name and
+      # swaps columns to (TXNAME, GENEID).
+      cat("  Using existing gene_trans_map:", gtm_file, "\n")
+      dir.create(tx2gene_dir, recursive = TRUE, showWarnings = FALSE)
+      tx2gene_out <- file.path(tx2gene_dir,
+                               paste0("tx2gene_", MASTER_REFERENCE, ".gene_trans_map"))
+      if (file.copy(gtm_file, tx2gene_out, overwrite = TRUE)) {
+        tx2gene_files <- tx2gene_out
+      } else {
+        cat("  Error: Failed to copy gene_trans_map fallback\n")
       }
     }
   }
@@ -204,8 +302,13 @@ if (GENERATE_GENE_LEVEL) {
           cat("    Re-run STAR+Salmon alignment to regenerate tx2gene.\n")
           cat("    Skipping gene-level import.\n\n")
         } else {
+          # Harmonize across samples first; quant_files may be drawn from
+          # different Salmon indexes (PRJNA-specific reruns) and tximport
+          # otherwise errors on the first txId mismatch.
+          .h <- .harmonize_quant_files(quant_files)
+          gene_quant_files <- .h$files
           txi_gene <- tryCatch(
-            tximport(quant_files, type = "salmon", tx2gene = tx2gene,
+            tximport(gene_quant_files, type = "salmon", tx2gene = tx2gene,
                      ignoreTxVersion = FALSE, ignoreAfterBar = FALSE),
             error = function(e) { cat("  Gene-level import error:", e$message, "\n"); NULL })
 
@@ -250,8 +353,12 @@ if (GENERATE_ISOFORM_LEVEL) {
   if (length(quant_files) < 2) {
     cat("  Error: Need >= 2 quant.sf files for isoform-level import\n")
   } else {
+    # Harmonize across samples (see helper docstring). Without this, mixed
+    # Salmon indexes trigger the tximport txId mismatch error.
+    .h <- .harmonize_quant_files(quant_files)
+    iso_quant_files <- .h$files
     txi_iso <- tryCatch(
-      tximport(quant_files, type = "salmon", txIn = TRUE, txOut = TRUE,
+      tximport(iso_quant_files, type = "salmon", txIn = TRUE, txOut = TRUE,
                ignoreTxVersion = FALSE, ignoreAfterBar = FALSE),
       error = function(e) { cat("  Isoform-level import error:", e$message, "\n"); NULL })
 
