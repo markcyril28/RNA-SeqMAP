@@ -781,27 +781,8 @@ if (!exists(".SHARED_CONFIG_INITIALIZED") || !isTRUE(.SHARED_CONFIG_INITIALIZED)
 
 # Initialize GPU detection — skip the (slow) nvidia-smi / nvcc probes when
 # the user has explicitly disabled GPU support, saving ~0.5-1s per script load.
-# Cross-session .rds cache eliminates redundant system() calls across the ~15+
-# Rscript invocations per post-processing run (nvidia-smi + nvcc = ~0.5s each).
-# Cache key: ENABLE_GPU setting; auto-expires after 1 hour (GPU state rarely changes mid-run).
 if (ENABLE_GPU) {
-  .gpu_cache_path <- file.path(tempdir(), ".gpu_detect_cache.rds")
-  .gpu_cache_valid <- FALSE
-  if (file.exists(.gpu_cache_path)) {
-    tryCatch({
-      .gpu_cached <- readRDS(.gpu_cache_path)
-      # Cache valid if < 1 hour old (3600 seconds)
-      if (difftime(Sys.time(), .gpu_cached$timestamp, units = "secs") < 3600) {
-        .gpu_info <- .gpu_cached$info
-        .gpu_cache_valid <- TRUE
-      }
-    }, error = function(e) NULL)
-  }
-  if (!.gpu_cache_valid) {
-    .gpu_info <- detect_gpu()
-    tryCatch(saveRDS(list(info = .gpu_info, timestamp = Sys.time()), .gpu_cache_path),
-             error = function(e) NULL)
-  }
+  .gpu_info <- detect_gpu()
   GPU_AVAILABLE <- .gpu_info$available
   GPU_BACKEND <- .gpu_info$backend
   if (GPU_AVAILABLE || interactive()) {
