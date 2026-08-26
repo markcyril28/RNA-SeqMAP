@@ -26,7 +26,7 @@ cd "$PROJECT_ROOT" || exit 1
 OVERWRITE_MODE="${OVERWRITE_MODE:-overwrite}"
 export OVERWRITE_MODE
 
-# Clear persistent R/.rds pipeline caches before running (sample labels, gene name maps, GPU detection)
+# Clear persistent R/.rds pipeline caches before running (gene name maps, GPU detection)
 CLEAR_CACHE="${CLEAR_CACHE:-TRUE}"
 
 # Active configuration file — uncomment as needed:
@@ -306,10 +306,7 @@ source "${PROJECT_ROOT}/config/shared/runtime_defaults.sh" || {
 if [[ "$CLEAR_CACHE" == "TRUE" ]]; then
 	log_info "Clearing persistent pipeline caches..."
 	_cache_count=0
-	_srr_dir="${PROJECT_ROOT}/I_INPUTS/inputs/3_post_proc_inputs/SRR_csv"
 	_gg_dir="${PROJECT_ROOT}/I_INPUTS/inputs/3_post_proc_inputs/gene_groups_csv"
-	# Sample labels cache
-	[[ -f "$_srr_dir/.sample_labels_cache.rds" ]] && rm -f "$_srr_dir/.sample_labels_cache.rds" && _cache_count=$((_cache_count + 1))
 	# Gene name mapping caches (*.namemap.rds beside gene group CSVs)
 	while IFS= read -r -d '' _f; do
 		rm -f "$_f" && _cache_count=$((_cache_count + 1))
@@ -322,7 +319,7 @@ if [[ "$CLEAR_CACHE" == "TRUE" ]]; then
 		done < <(find "$_tmp_root" -maxdepth 2 -name '.gpu_detect_cache.rds' -print0 2>/dev/null)
 	done
 	log_info "  Cleared $_cache_count cache file(s)"
-	unset _cache_count _f _srr_dir _gg_dir _tmp_root
+	unset _cache_count _f _gg_dir _tmp_root
 fi
 
 # Track whether STAR was used across ANY config (not just the last one).
