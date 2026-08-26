@@ -404,15 +404,8 @@ if [[ "$CLEAR_CACHE" == "TRUE" ]]; then
     while IFS= read -r -d '' _f; do
         rm -f "$_f" && _cache_count=$((_cache_count + 1))
     done < <(find "$GENE_GROUPS_DIR" -name '*.namemap.rds' -print0 2>/dev/null)
-    # GPU detection cache (R tempdir varies per session; search common temp roots)
-    for _tmp_root in "${TMPDIR:-/tmp}" "${TEMP:-}" "${TMP:-}"; do
-        [[ -z "$_tmp_root" || ! -d "$_tmp_root" ]] && continue
-        while IFS= read -r -d '' _f; do
-            rm -f "$_f" && _cache_count=$((_cache_count + 1))
-        done < <(find "$_tmp_root" -maxdepth 2 -name '.gpu_detect_cache.rds' -print0 2>/dev/null)
-    done
     log_info "  Cleared $_cache_count cache file(s)"
-    unset _cache_count _f _tmp_root
+    unset _cache_count _f
 fi
 
 #===============================================================================
