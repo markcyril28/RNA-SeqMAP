@@ -1,3 +1,16 @@
+#===============================================================================
+# CONDA ENVIRONMENT LOCKFILE — 'gea'
+#===============================================================================
+# GENERATED FILE — do not edit by hand; setup_conda_gea.sh overwrites it.
+#
+# Direct, pinned dependencies live in setup_conda_gea.sh (PACKAGE LISTS).
+# Everything below is the full resolved set, transitive deps included,
+# produced by 'conda env export --no-builds'. The machine-specific
+# 'prefix:' line is stripped so the file stays portable.
+#
+# Regenerate  : bash setup_conda_gea.sh
+# Recreate env: conda env create -f setup_conda_gea.yml
+#===============================================================================
 name: gea
 channels:
   - conda-forge
@@ -889,4 +902,3 @@ dependencies:
   - zlib-ng=2.3.3
   - zstandard=0.25.0
   - zstd=1.5.7
-prefix: /home/ubuntu/miniconda3/envs/gea
