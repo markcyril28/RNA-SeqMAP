@@ -10,18 +10,18 @@ set -o pipefail   # -e/-u omitted intentionally (sourced functions use boolean r
 # ==============================================================================
 PIPELINE_CONFIGS=(
     # ── Full — Eggplant_V4.1 ──
-    #"config/3_post_proc_configs/HPC_full_M1_Eggplant_V4.1.toml"    # M1 HISAT2 RefGuided   Eggplant_V4.1 genome
-    #"config/3_post_proc_configs/HPC_full_M2_Eggplant_V4.1.toml"    # M2 HISAT2 DeNovo      Eggplant_V4.1 transcript
-    #"config/3_post_proc_configs/HPC_full_M3_Eggplant_V4.1.toml"    # M3 STAR Align         Eggplant_V4.1 genome
-    #"config/3_post_proc_configs/HPC_full_M4_Eggplant_V4.1.toml"    # M4 Salmon SAF         Eggplant_V4.1 transcript
-    #"config/3_post_proc_configs/HPC_full_M5_Eggplant_V4.1.toml"    # M5 RSEM Bowtie2       Eggplant_V4.1 transcript
+    #"I_INPUTS/config/eggplant/3_post_proc_configs/HPC_full_M1_Eggplant_V4.1.toml"    # M1 HISAT2 RefGuided   Eggplant_V4.1 genome
+    #"I_INPUTS/config/eggplant/3_post_proc_configs/HPC_full_M2_Eggplant_V4.1.toml"    # M2 HISAT2 DeNovo      Eggplant_V4.1 transcript
+    #"I_INPUTS/config/eggplant/3_post_proc_configs/HPC_full_M3_Eggplant_V4.1.toml"    # M3 STAR Align         Eggplant_V4.1 genome
+    #"I_INPUTS/config/eggplant/3_post_proc_configs/HPC_full_M4_Eggplant_V4.1.toml"    # M4 Salmon SAF         Eggplant_V4.1 transcript
+    #"I_INPUTS/config/eggplant/3_post_proc_configs/HPC_full_M5_Eggplant_V4.1.toml"    # M5 RSEM Bowtie2       Eggplant_V4.1 transcript
 
     # ── Full — GPE001970 ──
-    #"config/3_post_proc_configs/HPC_full_M1_GPE001970.toml"         # M1 HISAT2 RefGuided   GPE001970 genome
-    #"config/3_post_proc_configs/HPC_full_M2_GPE001970.toml"         # M2 HISAT2 DeNovo      GPE001970 transcript
-    "config/3_post_proc_configs/HPC_full_M3_GPE001970.toml"         # M3 STAR Align         GPE001970 genome
-    #"config/3_post_proc_configs/HPC_full_M4_GPE001970.toml"         # M4 Salmon SAF         GPE001970 transcript
-    #"config/3_post_proc_configs/HPC_full_M5_GPE001970.toml"         # M5 RSEM Bowtie2       GPE001970 transcript
+    #"I_INPUTS/config/eggplant/3_post_proc_configs/HPC_full_M1_GPE001970.toml"         # M1 HISAT2 RefGuided   GPE001970 genome
+    #"I_INPUTS/config/eggplant/3_post_proc_configs/HPC_full_M2_GPE001970.toml"         # M2 HISAT2 DeNovo      GPE001970 transcript
+    "I_INPUTS/config/eggplant/3_post_proc_configs/HPC_full_M3_GPE001970.toml"         # M3 STAR Align         GPE001970 genome
+    #"I_INPUTS/config/eggplant/3_post_proc_configs/HPC_full_M4_GPE001970.toml"         # M4 Salmon SAF         GPE001970 transcript
+    #"I_INPUTS/config/eggplant/3_post_proc_configs/HPC_full_M5_GPE001970.toml"         # M5 RSEM Bowtie2       GPE001970 transcript
 )
 
 # Script-level child PID array — must be declared before traps so cleanup can reap
@@ -133,18 +133,18 @@ else
 
 PIPELINE_CONFIGS=(
     # ── Full — Eggplant_V4.1 ──
-    #"config/3_post_proc_configs/HPC_full_M1_Eggplant_V4.1.toml"    # M1 HISAT2 RefGuided   Eggplant_V4.1 genome
-    #"config/3_post_proc_configs/HPC_full_M2_Eggplant_V4.1.toml"    # M2 HISAT2 DeNovo      Eggplant_V4.1 transcript
-    #"config/3_post_proc_configs/HPC_full_M3_Eggplant_V4.1.toml"    # M3 STAR Align         Eggplant_V4.1 genome
-    #"config/3_post_proc_configs/HPC_full_M4_Eggplant_V4.1.toml"    # M4 Salmon SAF         Eggplant_V4.1 transcript
-    #"config/3_post_proc_configs/HPC_full_M5_Eggplant_V4.1.toml"    # M5 RSEM Bowtie2       Eggplant_V4.1 transcript
+    #"I_INPUTS/config/eggplant/3_post_proc_configs/HPC_full_M1_Eggplant_V4.1.toml"    # M1 HISAT2 RefGuided   Eggplant_V4.1 genome
+    #"I_INPUTS/config/eggplant/3_post_proc_configs/HPC_full_M2_Eggplant_V4.1.toml"    # M2 HISAT2 DeNovo      Eggplant_V4.1 transcript
+    #"I_INPUTS/config/eggplant/3_post_proc_configs/HPC_full_M3_Eggplant_V4.1.toml"    # M3 STAR Align         Eggplant_V4.1 genome
+    #"I_INPUTS/config/eggplant/3_post_proc_configs/HPC_full_M4_Eggplant_V4.1.toml"    # M4 Salmon SAF         Eggplant_V4.1 transcript
+    #"I_INPUTS/config/eggplant/3_post_proc_configs/HPC_full_M5_Eggplant_V4.1.toml"    # M5 RSEM Bowtie2       Eggplant_V4.1 transcript
 
     # ── Full — GPE001970 ──
-    #"config/3_post_proc_configs/HPC_full_M1_GPE001970.toml"         # M1 HISAT2 RefGuided   GPE001970 genome
-    #"config/3_post_proc_configs/HPC_full_M2_GPE001970.toml"         # M2 HISAT2 DeNovo      GPE001970 transcript
-    "config/3_post_proc_configs/HPC_full_M3_GPE001970.toml"         # M3 STAR Align         GPE001970 genome
-    #"config/3_post_proc_configs/HPC_full_M4_GPE001970.toml"         # M4 Salmon SAF         GPE001970 transcript
-    #"config/3_post_proc_configs/HPC_full_M5_GPE001970.toml"         # M5 RSEM Bowtie2       GPE001970 transcript
+    #"I_INPUTS/config/eggplant/3_post_proc_configs/HPC_full_M1_GPE001970.toml"         # M1 HISAT2 RefGuided   GPE001970 genome
+    #"I_INPUTS/config/eggplant/3_post_proc_configs/HPC_full_M2_GPE001970.toml"         # M2 HISAT2 DeNovo      GPE001970 transcript
+    "I_INPUTS/config/eggplant/3_post_proc_configs/HPC_full_M3_GPE001970.toml"         # M3 STAR Align         GPE001970 genome
+    #"I_INPUTS/config/eggplant/3_post_proc_configs/HPC_full_M4_GPE001970.toml"         # M4 Salmon SAF         GPE001970 transcript
+    #"I_INPUTS/config/eggplant/3_post_proc_configs/HPC_full_M5_GPE001970.toml"         # M5 RSEM Bowtie2       GPE001970 transcript
 )
 
 fi  # end of single-config child mode check
@@ -180,8 +180,8 @@ source "$UTILITIES_DIR/pipeline_utils.sh" || {
     echo "[ERROR] Failed to source pipeline_utils.sh: $UTILITIES_DIR/pipeline_utils.sh" >&2
     exit 1
 }
-source "$BASE_DIR/config/shared/toml_parser.sh" || {
-    echo "[ERROR] Failed to source TOML parser: $BASE_DIR/config/shared/toml_parser.sh" >&2
+source "$BASE_DIR/I_INPUTS/config/eggplant/shared/toml_parser.sh" || {
+    echo "[ERROR] Failed to source TOML parser: $BASE_DIR/I_INPUTS/config/eggplant/shared/toml_parser.sh" >&2
     exit 1
 }
 
