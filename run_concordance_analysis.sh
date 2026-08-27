@@ -16,7 +16,7 @@
 #
 #   If no config_file is provided, uses internal defaults for GPE001970.
 #
-#   Config crosses can be stored in: config/4_concordance_combination/
+#   Config crosses can be stored in: I_INPUTS/config/eggplant/4_concordance_combination/
 #   and selected via:
 #     - positional arg: cross filename or cross basename
 #     - env var: CONCORDANCE_CONFIG_CROSSES="cross1,cross2,..."
@@ -114,8 +114,8 @@ source "${SCRIPT_DIR}/modules_gea/logging/logging_utils.sh" 2>/dev/null || {
 }
 
 # Source TOML parser
-source "${SCRIPT_DIR}/config/shared/toml_parser.sh" || {
-    log_error "Failed to source TOML parser at ${SCRIPT_DIR}/config/shared/toml_parser.sh"
+source "${SCRIPT_DIR}/I_INPUTS/config/eggplant/shared/toml_parser.sh" || {
+    log_error "Failed to source TOML parser at ${SCRIPT_DIR}/I_INPUTS/config/eggplant/shared/toml_parser.sh"
     exit 1
 }
 
@@ -127,7 +127,7 @@ CONFIG_INPUT="${1:-}"
 # Absolutize relative config path against BASE_DIR so the pipeline works when
 # CWD differs from project root (e.g., Nextflow scratch workDir, Snakemake shadow).
 [[ -n "$CONFIG_INPUT" && "$CONFIG_INPUT" != /* ]] && CONFIG_INPUT="${BASE_DIR}/${CONFIG_INPUT}"
-CONFIG_CROSS_DIR="${CONCORDANCE_CONFIG_CROSS_DIR:-${BASE_DIR}/config/4_concordance_combination}"
+CONFIG_CROSS_DIR="${CONCORDANCE_CONFIG_CROSS_DIR:-${BASE_DIR}/I_INPUTS/config/eggplant/4_concordance_combination}"
 if [[ ! -d "$CONFIG_CROSS_DIR" ]]; then
     log_error "Concordance config directory not found: $CONFIG_CROSS_DIR"
     log_error "Ensure BASE_DIR is correct or set CONCORDANCE_CONFIG_CROSS_DIR explicitly."
@@ -157,7 +157,7 @@ CLEAR_CACHE="${CLEAR_CACHE:-FALSE}"
 # Optional curated config list (comment in/out as needed).
 # Entries can be:
 #   - absolute/relative file paths
-#   - cross basenames from config/4_concordance_combination (with or without .sh)
+#   - cross basenames from I_INPUTS/config/eggplant/4_concordance_combination (with or without .sh)
 # Load order matters: later entries override earlier ones.
 CONCORDANCE_CONFIGS=(
     #"defaults.toml"
@@ -243,7 +243,7 @@ if [[ -n "$CONFIG_INPUT" ]]; then
     fi
 fi
 
-# Optionally source additional config crosses from config/4_concordance_combination
+# Optionally source additional config crosses from I_INPUTS/config/eggplant/4_concordance_combination
 # Example: CONCORDANCE_CONFIG_CROSSES="defaults,cross_methods_vs_methods"
 if [[ -n "${CONCORDANCE_CONFIG_CROSSES:-}" ]]; then
     IFS=',' read -r -a _cfg_crosses <<< "$CONCORDANCE_CONFIG_CROSSES"
