@@ -32,19 +32,19 @@ CLEAR_CACHE="${CLEAR_CACHE:-TRUE}"
 # Active configuration file — uncomment as needed:
 CONFIG_FILES=(
 	# --- Download & Trim ---
-	#"config/1_download_and_trim/HPC_download_and_trim.toml"	# Download + trim all SRRs
+	#"I_INPUTS/config/eggplant/1_download_and_trim/HPC_download_and_trim.toml"	# Download + trim all SRRs
 
 	# --- Test runs (all M1-M5, 3 SRRs) ---
-	#"config/2_alignment/HPC_test_genome_M1_M3.toml"			# M1 + M3 (genome FASTA)
-	#"config/2_alignment/HPC_test_transcript_M2_M4_M5.toml"	# M2 + M4 + M5 (transcript FASTA)
+	#"I_INPUTS/config/eggplant/2_alignment/HPC_test_genome_M1_M3.toml"			# M1 + M3 (genome FASTA)
+	#"I_INPUTS/config/eggplant/2_alignment/HPC_test_transcript_M2_M4_M5.toml"	# M2 + M4 + M5 (transcript FASTA)
 
 	# --- Full runs ---
-	"config/2_alignment/HPC_full_ref_guided.toml"				# Reference-guided (M1 + M3)
-	#"config/2_alignment/HPC_full_non_ref_guided.toml"			# Non-reference-guided (M2 + M4 + M5)
+	"I_INPUTS/config/eggplant/2_alignment/HPC_full_ref_guided.toml"				# Reference-guided (M1 + M3)
+	#"I_INPUTS/config/eggplant/2_alignment/HPC_full_non_ref_guided.toml"			# Non-reference-guided (M2 + M4 + M5)
 
 	# --- Local ---
-	#"config/2_alignment/local_full_ref_guided.toml"			# Local ref-guided (M1 + M3)
-	#"config/2_alignment/local_full_non_ref_guided.toml"		# Local non-ref-guided (M2 + M4 + M5)
+	#"I_INPUTS/config/eggplant/2_alignment/local_full_ref_guided.toml"			# Local ref-guided (M1 + M3)
+	#"I_INPUTS/config/eggplant/2_alignment/local_full_non_ref_guided.toml"		# Local non-ref-guided (M2 + M4 + M5)
 )
 
 # ==============================================================================
@@ -293,12 +293,12 @@ source "${PROJECT_ROOT}/modules_gea/logging/logging_utils.sh" 2>/dev/null || {
 }
 
 # Source TOML parser and shared runtime defaults
-source "${PROJECT_ROOT}/config/shared/toml_parser.sh" || {
-	log_error "Failed to source TOML parser: ${PROJECT_ROOT}/config/shared/toml_parser.sh"
+source "${PROJECT_ROOT}/I_INPUTS/config/eggplant/shared/toml_parser.sh" || {
+	log_error "Failed to source TOML parser: ${PROJECT_ROOT}/I_INPUTS/config/eggplant/shared/toml_parser.sh"
 	exit 1
 }
-source "${PROJECT_ROOT}/config/shared/runtime_defaults.sh" || {
-	log_error "Failed to source runtime defaults: ${PROJECT_ROOT}/config/shared/runtime_defaults.sh"
+source "${PROJECT_ROOT}/I_INPUTS/config/eggplant/shared/runtime_defaults.sh" || {
+	log_error "Failed to source runtime defaults: ${PROJECT_ROOT}/I_INPUTS/config/eggplant/shared/runtime_defaults.sh"
 	exit 1
 }
 
@@ -377,11 +377,11 @@ for config_file in "${CONFIG_FILES[@]}"; do
 	# O(L) TOML parse on first call; O(1) array copy on subsequent calls.
 	if [[ ${#SRR_COMBINED_LIST[@]} -eq 0 ]]; then
 		_srr_basename="${SRR_DATASETS:-srr_datasets.toml}"
-		# Resolve: absolute path used as-is, relative resolved under config/shared/
+		# Resolve: absolute path used as-is, relative resolved under I_INPUTS/config/eggplant/shared/
 		if [[ "$_srr_basename" == /* ]]; then
 			_srr_toml="$_srr_basename"
 		else
-			_srr_toml="${PROJECT_ROOT}/config/shared/${_srr_basename}"
+			_srr_toml="${PROJECT_ROOT}/I_INPUTS/config/eggplant/shared/${_srr_basename}"
 		fi
 		if [[ "${_SRR_DATASETS_CACHED_FILE:-}" == "$_srr_toml" && ${#_SRR_DATASETS_CACHED[@]} -gt 0 ]]; then
 			SRR_COMBINED_LIST=("${_SRR_DATASETS_CACHED[@]}")
