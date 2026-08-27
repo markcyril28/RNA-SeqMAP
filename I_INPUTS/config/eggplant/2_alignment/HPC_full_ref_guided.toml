@@ -1,0 +1,44 @@
+# ==============================================================================
+# FULL CONFIG: REFERENCE-GUIDED METHODS (M1 + M3)
+# ==============================================================================
+
+# Runtime
+threads = 32
+jobs = 1
+use_gnu_parallel = true
+keep_bam_global = "n"
+star_read_length = 89    # Actual read length for PRJNA328564 (89 bp)
+
+# Strandness for HISAT2/StringTie (M1/M2)
+# Options: "FR" (ligation/forward), "RF" (dUTP/TruSeq/reverse), "" (unstranded/auto-detect)
+# Leave empty to enable auto-detection via infer_experiment.py on the first aligned sample.
+hisat2_strandness = ""
+
+# Pipeline Stages
+pipeline_stages = [
+    #"DELETE_RAW_SRR",
+    #"DELETE_TRIMMED_FASTQ_FILES",
+    
+    "METHOD_1_HISAT2_REF_GUIDED",
+    #"METHOD_2_HISAT2_DE_NOVO",
+    "METHOD_3_STAR_ALIGNMENT",
+    #"METHOD_4_SALMON_SAF",
+    #"METHOD_5_BOWTIE2_RSEM",
+]
+
+# Input
+# Format: "GTF_FILE|FASTA_FILE|STAR_TRANSCRIPTOME_FASTA"
+# Field 3 is optional — leave empty ("GTF|FASTA|") to use auto-detect.
+genome_ref_pairs = [
+    "I_INPUTS/inputs/2_alignment_input/reference/GPE001970_genome.gtf|I_INPUTS/inputs/2_alignment_input/reference_genome/GPE001970.fa|I_INPUTS/inputs/2_alignment_input/reference_genome/GPE001970_transcripts.fa",
+    "I_INPUTS/inputs/2_alignment_input/reference/Eggplant_V4.1_function_IPR_final_stringtie.gtf|I_INPUTS/inputs/2_alignment_input/reference_genome/Eggplant_V4.1.fa|I_INPUTS/inputs/2_alignment_input/reference_genome/Eggplant_V4.1_transcripts.function.fa",
+]
+
+# SRR dataset file — relative to I_INPUTS/config/eggplant/shared/ or absolute path
+srr_datasets = "srr_datasets.toml"
+
+# Output
+post_processing_root = "II_RESULTS/3_POST_PROC"
+
+# Cleanup
+activate_rm = false

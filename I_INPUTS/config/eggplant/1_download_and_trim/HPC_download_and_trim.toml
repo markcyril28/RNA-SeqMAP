@@ -1,0 +1,52 @@
+# ==============================================================================
+# DOWNLOAD & TRIM CONFIG — Full SRR List
+# ==============================================================================
+# Purpose: Download and quality-trim all RNA-seq SRR files before alignment.
+# Run this config BEFORE any alignment config (2_alignment/).
+#
+# Two download options (enable only one):
+#   Option A — Keep raw files:  enable DOWNLOAD_SRR + TRIM_SRR
+#   Option B — Auto-cleanup:    enable DOWNLOAD_TRIM_and_DELETE_RAW_SRR
+# ==============================================================================
+
+# Runtime
+threads = 12
+jobs = 1
+optimal_threads_per_job = 12
+use_gnu_parallel = true
+keep_bam_global = "n"
+
+# Pipeline Stages
+pipeline_stages = [
+    #"MAMBA_INSTALLATION",
+
+    # Option A: Separate download and trim (keeps raw files)
+    #"DOWNLOAD_SRR",
+    #"TRIM_SRR",
+
+    # Option B: Combined download+trim+cleanup (auto-deletes raw after trim)
+    "DOWNLOAD_TRIM_and_DELETE_RAW_SRR",
+
+    "GZIP_TRIMMED_FILES",
+    "QUALITY_CONTROL",
+
+    #"DELETE_RAW_SRR",
+    #"DELETE_TRIMMED_FASTQ_FILES",
+]
+
+# Input
+# NOTE: FASTA is not used by the download/trim stages.
+# A single placeholder entry is required for the pipeline loop to execute.
+all_fasta_files = [
+    "I_INPUTS/inputs/fasta/reference_genome/GPE001970_transcripts.fa",
+]
+
+# SRR dataset file — relative to I_INPUTS/config/eggplant/shared/ or absolute path
+# Available files: srr_datasets.toml (full), srr_datasets_download.toml (download subset)
+srr_datasets = "srr_datasets_download.toml"
+
+# Output
+post_processing_root = "II_RESULTS/3_POST_PROC"
+
+# Cleanup
+activate_rm = false

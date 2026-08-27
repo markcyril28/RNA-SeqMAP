@@ -1,0 +1,32 @@
+# ==============================================================================
+# CROSS: EQUIVALENT GENE BETWEEN GENOMES
+# ==============================================================================
+# Per-gene concordance: for a fixed method, compare expression of positionally-
+# equivalent genes across two reference genomes. For each gene, correlates its
+# expression vector across samples between genomes.
+#
+# Produces:
+#   - Per-gene Spearman correlation table (how consistently each gene is
+#     quantified across assemblies)
+#   - Expression heatmap showing genes x samples side-by-side for both genomes
+#   - Per-gene scatter plots of expression values
+
+concordance_mode = "cross_equivalent_gene"
+
+# Method to use for the cross-genome gene-level comparison
+fixed_method = "M2_HISAT2_DeNovo"
+
+# Genomes to compare
+concordance_genomes = [
+    "GPE001970_genome",
+    "Eggplant_V4.1",
+]
+
+# Gene groups for per-gene analysis
+gene_groups = "SmelDMPs_v5_with_18s_and_HAP2,Selected_SmelGRF-GIF_with_two_GIF"
+
+# Per-genome gene group CSV names for positional orthology mapping.
+# Gene group CSVs listed in the same comma-position correspond to each other
+# across genomes (row N in genome A's CSV = row N in genome B's CSV).
+# Format: "genome1=csv1,csv2;genome2=csv3,csv4"
+genome_gene_groups_map = "GPE001970_genome=SmelDMPs_v5_with_18s_and_HAP2,Selected_SmelGRF-GIF_with_two_GIF;Eggplant_V4.1=SmelDMPs_with_1_18s_rRNA,Selected_GRF_GIF_Genes_vTwo_GIF"
