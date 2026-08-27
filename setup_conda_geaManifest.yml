@@ -1,0 +1,152 @@
+#===============================================================================
+# CONDA ENVIRONMENT SPEC — 'gea_test'
+#===============================================================================
+# HAND-AUTHORED — nothing regenerates this file. It is the single source of
+# truth for the environment's identity and its DIRECT dependencies:
+#
+#   name:          -> which environment to build (gea / gea_test). Comment one
+#                     line in and the other out to switch. Trailing comments are
+#                     fine; setup_conda_gea.sh reads this back as ENV_NAME.
+#   channels:      -> used by 'conda env create -f' only. setup_conda_gea.sh
+#                     passes --override-channels -c conda-forge -c bioconda
+#                     itself; see the channel note in that script for why
+#                     'defaults' must stay out of every solve.
+#   dependencies:  -> the direct, pinned package set. setup_conda_gea.sh parses
+#                     this list and hands it to the solver in ONE transaction.
+#
+# Versions are pinned to TESTED versions for reproducibility. Update one only
+# after validating it on a test dataset.
+#
+# Transitive dependencies are NOT listed here. The full resolved set — every
+# package the solver pulled in, with versions — is written to the generated
+# companion file after each successful run:
+#
+#   setup_conda_gea.lock.yml
+#
+# Build the environment : bash setup_conda_gea.sh              (solves this file)
+# Rebuild same versions : conda env create -f setup_conda_gea.lock.yml
+#                         (--no-builds pins name=version, not the build string)
+# Re-solve from spec    : conda env create -f setup_conda_gea.yml
+#
+# Parser notes (setup_conda_gea.sh :: read_direct_specs):
+#   - only entries under 'dependencies:' are read; 'channels:' is ignored
+#   - '#' opens a comment anywhere on a line, so a spec may not contain one
+#   - a nested sub-list (e.g. '- pip:') is a hard error, not a silent skip
+#===============================================================================
+#name: gea
+name: gea_test # For testing
+
+channels:
+  - conda-forge
+  - bioconda
+
+dependencies:
+  # --- Interpreter -----------------------------------------------------------
+  # Read back by setup_conda_gea.sh as PYTHON_SPEC, and solved together with
+  # everything below rather than ahead of it. Loosen by hand (e.g. python=3.12)
+  # and the next run applies it.
+  - python=3.11.16
+
+  # --- Preprocessing & data acquisition (GEA pipeline) ------------------------
+  # a_preprocessing/download.sh calls sra-tools ONLY (prefetch + fasterq-dump).
+  # aria2 / parallel-fastq-dump / entrez-direct / kingfisher / wget / curl have
+  # no call site in modules_gea or in I_INPUTS/config/**/*.toml (audited
+  # 2026-08-27). Kept as available alternates; drop them if you want a leaner
+  # env, but nothing in the pipeline breaks either way.
+  - aria2=1.37.0
+  - parallel-fastq-dump=0.6.7
+  - sra-tools=3.2.1
+  - entrez-direct=24.0
+  - kingfisher=0.4.1
+  - trim-galore=0.6.11
+  - trimmomatic=0.40
+  - cutadapt=5.2
+  - fastqc=0.12.1
+  - multiqc=1.33
+  - parallel=20260122
+  - wget=1.25.0      # Generic fetch utility; see download-tool note above
+  - curl=8.18.0      # Generic fetch utility; see download-tool note above
+  - dos2unix=7.5.4   # Line-ending normalization
+  - pigz=2.8         # Multi-threaded gzip; preprocessing silently falls back to gzip if absent
+
+  # --- Core alignment / quantification ----------------------------------------
+  - hisat2=2.2.2
+  - stringtie=3.0.3
+  - samtools=1.22.1
+  - salmon=1.10.3
+  - bowtie2=2.5.5
+  - rsem=1.3.3
+  - star=2.7.11b
+  - trinity=2.15.2               # Assembler never invoked; kept for the bundled
+                                 # abundance_estimates_to_matrix.pl used by M5
+  - gffread=0.12.7               # Transcript FASTA generation from genome+GTF
+  - rseqc=5.0.4                  # infer_experiment.py for strandness auto-detection
+  - ucsc-gtftogenepred=482       # GTF -> genePred conversion for BED12
+  - ucsc-genepredtobed=482       # genePred -> BED12 conversion for infer_experiment.py
+
+  # --- R base and essentials --------------------------------------------------
+  - r-base=4.3.3
+  - r-essentials=4.3
+  - r-biocmanager=1.30.26
+
+  # --- Bioconductor (pinned to Bioconductor 3.18 / R 4.3) ---------------------
+  - bioconductor-deseq2=1.42.0
+  - bioconductor-complexheatmap=2.18.0
+  - bioconductor-tximport=1.30.0
+  - bioconductor-tximeta=1.20.1
+  - bioconductor-annotationdbi=1.64.1
+  - bioconductor-ballgown=2.34.0
+  - bioconductor-clusterprofiler=4.10.0
+  - bioconductor-enrichplot=1.22.0
+  - bioconductor-dose=3.28.1
+  - bioconductor-fgsea=1.28.0
+
+  # --- CRAN / WGCNA -----------------------------------------------------------
+  - r-wgcna=1.73
+  - r-dynamictreecut=1.63_1
+  - r-fastcluster=1.3.0
+
+  # Fast-path helpers. The modules probe both with requireNamespace() and fall
+  # back to base R when they are missing, so an absent pin costs speed silently
+  # instead of failing loudly. Pinned because both are load-bearing in practice
+  # (data.table: 20 files / 61 call sites, matrixStats: 4 files / 14 call sites)
+  # and until now arrived only as transitive deps of r-essentials, fgsea, DESeq2
+  # and WGCNA — installed by luck, not by declaration.
+  - r-data.table=1.17.8
+  - r-matrixstats=1.5.0
+
+  - r-tidyverse=2.0.0
+  - r-dplyr=1.1.4
+  - r-tibble=3.3.0
+  - r-readr=2.1.5
+  - r-tidyr=1.3.1    # Listed in install_R_packages.R required_cran; was unpinned
+  - r-ggplot2=3.5.2
+  - r-ggrepel=0.9.6
+  - r-rcolorbrewer=1.1_3
+  - r-circlize=0.4.16
+  - r-pheatmap=1.0.13
+  - r-rtsne=0.17
+  - r-umap=0.2.10.0
+  - r-factoextra=1.0.7
+  - r-igraph=2.1.4
+  - r-reshape2=1.4.4
+  - r-getopt=1.20.4
+  - r-visnetwork=2.1.4
+  - r-networkd3=0.4.1
+  - r-htmlwidgets=1.6.4
+  - r-heatmaply=1.6.0
+  - r-corrplot=0.95
+  - r-dendextend=1.19.1
+  - r-gridextra=2.3
+  - r-scales=1.4.0
+
+  # --- GPU acceleration: intentionally NOT conda-managed -----------------------
+  # torch (27 call sites) and gpuR (5) are used by 0_shared_config.R, but both
+  # are installed from CRAN by:
+  #
+  #   Rscript modules_gea/c_post_processing/utilities/install_R_packages.R --with-gpu
+  #
+  # because torch has to fetch a CUDA runtime matching the local driver, which a
+  # conda pin cannot express. Both are requireNamespace()-guarded, so the
+  # pipeline runs CPU-only without them. Do NOT "fix" this by adding r-torch /
+  # r-gpur here — that installs a build unaware of the host CUDA version.
