@@ -166,7 +166,7 @@ setup_method_env() {
         export RSEM_QUANT_ROOT="$BASE_DIR/II_RESULTS/2_ALIGNMENT_RESULTs/M5_RSEM_Bowtie2/RSEM_Quant_WD/$master_ref"
     fi
 
-    export GENE_GROUPS_DIR="$BASE_DIR/I_INPUTS/inputs/3_post_proc_inputs/gene_groups_csv"
+    export GENE_GROUPS_DIR="$BASE_DIR/I_INPUTS/inputs/eggplant/3_post_proc_inputs/gene_groups_csv"
 
     # Rebuild arrays from exported strings (bash arrays are not exported to subshells)
     _rebuild_exported_arrays
