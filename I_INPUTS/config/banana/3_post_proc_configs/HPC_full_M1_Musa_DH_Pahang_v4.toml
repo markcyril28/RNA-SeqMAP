@@ -1,0 +1,63 @@
+# ==============================================================================
+# HPC FULL CONFIG: M1 — HISAT2 Reference-Guided (BANANA, Musa_acuminata_DH_Pahang_v4_genome)
+# ==============================================================================
+# TEMPLATE — see I_INPUTS/config/banana/README.md for the fill-in checklist.
+#
+# Purpose: Production post-processing for M1 (HISAT2 ref-guided genome
+#          alignment) on the banana reference.
+#
+# Method:
+#   M1 — HISAT2 Reference-Guided  ->  uses <accession>_genome
+#
+# Preprocessing:  prepde_matrix_linker.sh runs automatically (integer counts).
+# DE support:     YES — prepDE.py integer counts feed directly into DESeq2.
+# NOT applicable: Tximport_*, Matrix_Creation, Stringtie_Matrix
+#
+# NAMING CONTRACT: `master_references` must equal the reference folder name
+# created by stage 2 under II_RESULTS/2_ALIGNMENT_RESULTs/M1_HISAT2_RefGuided/,
+# which is the basename of the genome FASTA in 2_alignment/*_ref_guided.toml.
+#
+# Eggplant keeps one file per method PER GENOME.  To add a second banana
+# assembly, clone all five M1-M5 files and change `master_references` only.
+# ==============================================================================
+
+# Master Reference
+master_references = ["Musa_acuminata_DH_Pahang_v4_genome"]
+
+# Gene Groups
+# TODO: each active entry needs a matching CSV named <entry>.csv under
+#       I_INPUTS/inputs/banana/3_post_proc_inputs/gene_groups_csv/{gene_sets,experimental,
+#       control_genes,reference_genomes}/.  A name with no CSV yields empty output.
+#       Gene IDs inside the CSV must use the SAME ID space as the reference above
+#       (e.g. Macma4_* for DH-Pahang v4) or every row drops out silently.
+gene_groups = [
+    "TODO_MaDMPs",                    # TODO: banana DMP / DUF679 orthologs
+    #"TODO_MaGRF-GIF",                # TODO: banana GRF + GIF family
+    #"TODO_MaEC1",                    # TODO: banana EC1 egg-cell candidates
+    #"TODO_MaPLA",                    # TODO: patatin-like PLA (ZmMATL/ZmPLA1 anchor)
+    #"TODO_Control_Genes",            # TODO: housekeeping / normalization set
+]
+
+# SRR Datasets
+# Each active entry has a matching CSV named <entry>.csv under
+#       I_INPUTS/inputs/banana/3_post_proc_inputs/SRR_csv/.
+#       NOTE: stage 3 reads those CSVs — NOT the shared/srr_datasets*.toml files
+#       used by stages 1-2.  Keep the two lists in sync by hand.
+srr_datasets = [
+    "PRJNA1237608_selected",          # 12-tissue representative subset (one deepest rep/tissue)
+    #"PRJNA1237608",                  # full 34-run Grand Naine tissue atlas
+    #"PRJNA606623_and_PRJNA935075",   # CROSS-SPECIES M. itinerans male flower bud + pollen
+    #"PRJNA1237608_selected_plus_PRJNA606623_PRJNA935075",  # 12 tissues + floral supplement
+]
+
+# Methods
+methods = ["M1_HISAT2_RefGuided"]
+
+# Analyses
+# M1 uses prepde_matrix_linker.sh (runs automatically) for integer count matrices.
+# Tximport_* and Matrix_Creation are NOT applicable to M1.
+# Differential_Expression IS supported (prepDE integer counts -> DESeq2).
+analyses = [
+    "Basic_Heatmap",
+    "Heatmap_with_CV",
+]

@@ -1,0 +1,39 @@
+# ==============================================================================
+# CROSS: EQUIVALENT GENE BETWEEN GENOMES — BANANA (Musa acuminata)
+# ==============================================================================
+# TEMPLATE — see I_INPUTS/config/banana/README.md for the fill-in checklist.
+#
+# Per-gene concordance: for a fixed method, compare expression of positionally-
+# equivalent genes across two reference genomes. For each gene, correlates its
+# expression vector across samples between genomes.
+#
+# Produces:
+#   - Per-gene Spearman correlation table (how consistently each gene is
+#     quantified across assemblies)
+#   - Expression heatmap showing genes x samples side-by-side for both genomes
+#   - Per-gene scatter plots of expression values
+#
+# REQUIRES A SECOND BANANA ASSEMBLY (see cross_genomes_vs_genomes.toml).
+
+concordance_mode = "cross_equivalent_gene"
+
+# Method to use for the cross-genome gene-level comparison
+fixed_method = "M2_HISAT2_DeNovo"
+
+# Genomes to compare
+# TODO: replace the second entry with your real second banana assembly.
+concordance_genomes = [
+    "Musa_acuminata_DH_Pahang_v4_genome",
+    "Musa_TODO_v2",
+]
+
+# Gene groups for per-gene analysis
+gene_groups = "TODO_MaDMPs,TODO_MaGRF-GIF"
+
+# Per-genome gene group CSV names for positional orthology mapping.
+# Gene group CSVs listed in the same comma-position correspond to each other
+# across genomes (row N in genome A's CSV = row N in genome B's CSV).
+# Format: "genome1=csv1,csv2;genome2=csv3,csv4"
+# TODO: row alignment is the orthology contract here — a mismatch silently
+#       correlates unrelated genes.  Verify row counts match before running.
+genome_gene_groups_map = "Musa_acuminata_DH_Pahang_v4_genome=TODO_MaDMPs,TODO_MaGRF-GIF;Musa_TODO_v2=TODO_MaDMPs_v2,TODO_MaGRF-GIF_v2"

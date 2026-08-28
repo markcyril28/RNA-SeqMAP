@@ -1,0 +1,54 @@
+# ==============================================================================
+# FULL CONFIG: REFERENCE-GUIDED METHODS (M1 + M3) — BANANA (Musa acuminata)
+# ==============================================================================
+# TEMPLATE — see I_INPUTS/config/banana/README.md for the fill-in checklist.
+# ==============================================================================
+
+# Runtime
+threads = 32
+jobs = 1
+use_gnu_parallel = true
+keep_bam_global = "n"
+star_read_length = 107   # PRJNA1237608 actual read length (SINGLE-end 107 bp)
+                         # STAR's --sjdbOverhang is derived from this; a wrong
+                         # value silently degrades splice-junction sensitivity.
+
+# Strandness for HISAT2/StringTie (M1/M2)
+# Options: "FR" (ligation/forward), "RF" (dUTP/TruSeq/reverse), "" (unstranded/auto-detect)
+# Leave empty to enable auto-detection via infer_experiment.py on the first aligned sample.
+hisat2_strandness = ""
+
+# Pipeline Stages
+pipeline_stages = [
+    #"DELETE_RAW_SRR",
+    #"DELETE_TRIMMED_FASTQ_FILES",
+
+    "METHOD_1_HISAT2_REF_GUIDED",
+    #"METHOD_2_HISAT2_DE_NOVO",
+    "METHOD_3_STAR_ALIGNMENT",
+    #"METHOD_4_SALMON_SAF",
+    #"METHOD_5_BOWTIE2_RSEM",
+]
+
+# Input
+# Format: "GTF_FILE|FASTA_FILE|STAR_TRANSCRIPTOME_FASTA"
+# Field 3 is optional — leave empty ("GTF|FASTA|") to use auto-detect.
+#
+# TODO: stage the banana assembly first.  The FASTA basename becomes the
+#       reference folder name under II_RESULTS/2_ALIGNMENT_RESULTs/<METHOD>/ and
+#       must match `master_references` in 3_post_proc_configs/.
+#       Suggested source: Banana Genome Hub / NCBI — Musa acuminata DH-Pahang v4.
+genome_ref_pairs = [
+    "I_INPUTS/inputs/banana/2_alignment_input/reference/Musa_acuminata_DH_Pahang_v4_genome.gtf|I_INPUTS/inputs/banana/2_alignment_input/reference_genome/Musa_acuminata_DH_Pahang_v4_genome.fa|I_INPUTS/inputs/banana/2_alignment_input/reference_genome/Musa_acuminata_DH_Pahang_v4_transcripts.fa",
+    # Add a second assembly here to enable cross-genome concordance (stage 4):
+    #"I_INPUTS/inputs/banana/2_alignment_input/reference/Musa_TODO_v2_genome.gtf|I_INPUTS/inputs/banana/2_alignment_input/reference_genome/Musa_TODO_v2.fa|I_INPUTS/inputs/banana/2_alignment_input/reference_genome/Musa_TODO_v2_transcripts.fa",
+]
+
+# SRR dataset file — see note in 1_download_and_trim/HPC_download_and_trim.toml
+srr_datasets = "../../banana/shared/srr_datasets.toml"
+
+# Output
+post_processing_root = "II_RESULTS/3_POST_PROC"
+
+# Cleanup
+activate_rm = false

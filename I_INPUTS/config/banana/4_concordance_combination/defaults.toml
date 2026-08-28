@@ -1,0 +1,31 @@
+# ==============================================================================
+# CONCORDANCE DEFAULTS — BANANA (Musa acuminata)
+# ==============================================================================
+# TEMPLATE — see I_INPUTS/config/banana/README.md for the fill-in checklist.
+#
+# Baseline single-run defaults for run_concordance_analysis.sh.
+# Any values here can be overridden by env vars or other crosses loaded later.
+# Bare accession (no _genome/_transcripts suffix): each method auto-resolves
+# to its appropriate reference type.
+#
+# HOW THIS DIRECTORY IS FOUND
+#   run_concordance_analysis.sh defaults CONFIG_CROSS_DIR to
+#   I_INPUTS/config/eggplant/4_concordance_combination.  To use the banana
+#   crosses, point it at this directory:
+#       CONCORDANCE_CONFIG_CROSS_DIR=I_INPUTS/config/banana/4_concordance_combination \
+#           bash run_concordance_analysis.sh <cross_name>
+# ==============================================================================
+
+# TODO: bare accession — the shared stem of the banana genome and transcript
+#       references (i.e. "<accession>_genome" / "<accession>_transcripts").
+master_reference = "Musa_acuminata_DH_Pahang_v4"
+
+methods = "M1_HISAT2_RefGuided M2_HISAT2_DeNovo M3_STAR_Align M4_Salmon_Saf M5_RSEM_Bowtie2"
+
+# TODO: comma-separated gene group CSV stems (same names as 3_post_proc_configs).
+gene_groups = "TODO_MaDMPs,TODO_MaGRF-GIF"
+
+# Keep combination loops disabled by default
+run_all_master_references = false
+run_all_method_combinations = false
+run_all_gene_group_combinations = false

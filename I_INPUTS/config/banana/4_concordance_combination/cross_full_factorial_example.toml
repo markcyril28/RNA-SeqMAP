@@ -1,0 +1,29 @@
+# ==============================================================================
+# CROSS: FULL FACTORIAL EXAMPLE — BANANA (Musa acuminata)
+# ==============================================================================
+# TEMPLATE — see I_INPUTS/config/banana/README.md for the fill-in checklist.
+#
+# Demonstrates nested combination runs:
+#   references x method_combinations x gene_group_combinations
+#
+# Keep list sizes small at first; total runs = R x M x G.
+
+# TODO: drop the second entry until a second banana assembly exists.
+master_references = [
+    "Musa_acuminata_DH_Pahang_v4_genome",
+    #"Musa_TODO_v2",
+]
+
+method_combinations = [
+    "M1_HISAT2_RefGuided,M3_STAR_Align",
+    "M4_Salmon_Saf,M5_RSEM_Bowtie2",
+]
+
+gene_group_combinations = [
+    "TODO_MaDMPs",
+    "TODO_MaGRF-GIF",
+]
+
+run_all_master_references = true
+run_all_method_combinations = true
+run_all_gene_group_combinations = true

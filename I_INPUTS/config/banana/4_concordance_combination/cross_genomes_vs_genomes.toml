@@ -1,0 +1,34 @@
+# ==============================================================================
+# CROSS: GENOMES VS GENOMES — BANANA (Musa acuminata)
+# ==============================================================================
+# TEMPLATE — see I_INPUTS/config/banana/README.md for the fill-in checklist.
+#
+# Cross-genome concordance: for a fixed method, compare TPM across different
+# reference genomes. Produces a genome-vs-genome correlation heatmap showing
+# how expression estimates agree across references.
+#
+# REQUIRES A SECOND BANANA ASSEMBLY.  Stage 2 must have been run against both
+# entries of `concordance_genomes` before this cross will produce anything.
+
+concordance_mode = "cross_genome"
+
+# Method to use for the cross-genome comparison
+fixed_method = "M1_HISAT2_RefGuided"
+
+# Genomes to compare (the comparison axis)
+# TODO: replace the second entry with your real second banana assembly.
+concordance_genomes = [
+    "Musa_acuminata_DH_Pahang_v4_genome",
+    "Musa_TODO_v2",
+]
+
+# Keep default target gene groups unless overridden
+gene_groups = "TODO_MaDMPs,TODO_MaGRF-GIF"
+
+# Per-genome gene group CSV names for positional orthology mapping.
+# Gene group CSVs listed in the same comma-position correspond to each other
+# across genomes (row N in genome A's CSV = row N in genome B's CSV).
+# Format: "genome1=csv1,csv2;genome2=csv3,csv4"
+# TODO: the two CSVs paired here MUST be row-aligned orthologs — position, not
+#       gene ID, is what links them.  Verify row counts match before running.
+genome_gene_groups_map = "Musa_acuminata_DH_Pahang_v4_genome=TODO_MaDMPs,TODO_MaGRF-GIF;Musa_TODO_v2=TODO_MaDMPs_v2,TODO_MaGRF-GIF_v2"

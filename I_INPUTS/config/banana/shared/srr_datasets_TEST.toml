@@ -1,0 +1,58 @@
+# ==============================================================================
+# SHARED SRR DATASET DEFINITIONS — BANANA (Musa acuminata) — SMOKE TEST
+# ==============================================================================
+# Real NCBI SRA accessions, retrieved 2026-08-28 via E-utilities.
+#
+# Single source of truth for all SRR sample lists used across pipeline stages.
+# Referenced by: I_INPUTS/config/banana/1_download_and_trim/,
+#                I_INPUTS/config/banana/2_alignment/ configs.
+#
+# HOW THIS FILE IS FOUND
+#   run_alignment_script.sh resolves a *relative* `srr_datasets` value under
+#   I_INPUTS/config/eggplant/shared/ (hardcoded resolution root).  Banana configs
+#   therefore reference this file as:
+#       srr_datasets = "../../banana/shared/srr_datasets_TEST.toml"
+#   Do not "simplify" that to a bare basename — it would silently load the
+#   eggplant list instead.
+#
+# DATASETS
+#   PRJNA1237608  M. acuminata AAA Group cv. Grand Naine — 12-tissue atlas,
+#                 34 runs, SINGLE-end 107 bp, Illumina HiSeq 2000.
+#                 This is the banana analogue of eggplant's PRJNA328564.
+#   PRJNA606623   M. itinerans male flower bud (wild-type reps only), PAIRED 150 bp.
+#   PRJNA935075   M. itinerans pollen, PAIRED 150 bp.  NOTE: a cold-stress
+#                 RECOVERY experiment - the CK arm used here is pollen that LOST
+#                 germination ability under low temperature; the T arm recovered
+#                 it.  Neither arm is untreated pollen.  See SOURCES.md.
+#
+# !! CROSS-SPECIES WARNING !!
+#   PRJNA606623 and PRJNA935075 are *Musa itinerans*, NOT M. acuminata.  They are
+#   included because NO organ-resolved flower / anther / ovule mRNA-seq exists for
+#   M. acuminata anywhere in SRA — every floral M. acuminata sample is a POOLED
+#   multi-tissue library (PRJNA326055, PRJNA210663, PRJNA962682, PRJNA957115), and
+#   the only M. acuminata anther data (PRJNA625703) is ncRNA-Seq, not mRNA.
+#   Expect reduced mapping rates against the DH-Pahang v4 (M. acuminata) reference.
+#   Keep them in a separate batch; do not pool with PRJNA1237608 uncritically.
+#
+# NOT AVAILABLE FOR BANANA AT ALL: pistil/ovule, opened flower, cotyledon, radicle,
+#   seed/embryo — cultivated banana is parthenocarpic and vegetatively propagated.
+# ==============================================================================
+#
+# Minimal 3-run list for validating the pipeline end-to-end before committing
+# to the full atlas.  Distinct tissues so the matrix has real variance.
+
+[dataset.PRJNA1237608_test]
+samples = [
+    "SRR32845317",   # Unripe_fruit_pulp
+    "SRR32845330",   # Leaf_blade       
+    "SRR32845335",   # Tip_meristem        [MAIN INTEREST]
+]
+
+# ==============================================================================
+# COMBINED LIST — which datasets to include in the pipeline run
+# ==============================================================================
+
+[combined]
+active_datasets = [
+    "PRJNA1237608_test",                        # 3-run smoke test
+]

@@ -1,0 +1,128 @@
+# ==============================================================================
+# SHARED SRR DATASET DEFINITIONS — BANANA (Musa acuminata)
+# ==============================================================================
+# Real NCBI SRA accessions, retrieved 2026-08-28 via E-utilities.
+#
+# Single source of truth for all SRR sample lists used across pipeline stages.
+# Referenced by: I_INPUTS/config/banana/1_download_and_trim/,
+#                I_INPUTS/config/banana/2_alignment/ configs.
+#
+# HOW THIS FILE IS FOUND
+#   run_alignment_script.sh resolves a *relative* `srr_datasets` value under
+#   I_INPUTS/config/eggplant/shared/ (hardcoded resolution root).  Banana configs
+#   therefore reference this file as:
+#       srr_datasets = "../../banana/shared/srr_datasets.toml"
+#   Do not "simplify" that to a bare basename — it would silently load the
+#   eggplant list instead.
+#
+# DATASETS
+#   PRJNA1237608  M. acuminata AAA Group cv. Grand Naine — 12-tissue atlas,
+#                 34 runs, SINGLE-end 107 bp, Illumina HiSeq 2000.
+#                 This is the banana analogue of eggplant's PRJNA328564.
+#   PRJNA606623   M. itinerans male flower bud (wild-type reps only), PAIRED 150 bp.
+#   PRJNA935075   M. itinerans pollen, PAIRED 150 bp.  NOTE: a cold-stress
+#                 RECOVERY experiment - the CK arm used here is pollen that LOST
+#                 germination ability under low temperature; the T arm recovered
+#                 it.  Neither arm is untreated pollen.  See SOURCES.md.
+#
+# !! CROSS-SPECIES WARNING !!
+#   PRJNA606623 and PRJNA935075 are *Musa itinerans*, NOT M. acuminata.  They are
+#   included because NO organ-resolved flower / anther / ovule mRNA-seq exists for
+#   M. acuminata anywhere in SRA — every floral M. acuminata sample is a POOLED
+#   multi-tissue library (PRJNA326055, PRJNA210663, PRJNA962682, PRJNA957115), and
+#   the only M. acuminata anther data (PRJNA625703) is ncRNA-Seq, not mRNA.
+#   Expect reduced mapping rates against the DH-Pahang v4 (M. acuminata) reference.
+#   Keep them in a separate batch; do not pool with PRJNA1237608 uncritically.
+#
+# NOT AVAILABLE FOR BANANA AT ALL: pistil/ovule, opened flower, cotyledon, radicle,
+#   seed/embryo — cultivated banana is parthenocarpic and vegetatively propagated.
+# ==============================================================================
+
+# SRA Run Selector: https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA1237608&o=acc_s%3Aa
+
+[dataset.PRJNA1237608]
+# Full 12-tissue atlas, all 34 runs.  M. acuminata AAA cv. Grand Naine.
+samples = [
+    "SRR32845305",   # Tip_meristem             [MAIN INTEREST]
+    "SRR32845304",   # Tip_meristem             [MAIN INTEREST]
+    "SRR32845335",   # Tip_meristem             [MAIN INTEREST]
+    "SRR32845325",   # Primary_root          
+    "SRR32845337",   # Primary_root          
+    "SRR32845336",   # Primary_root          
+    "SRR32845308",   # Secondary_root        
+    "SRR32845314",   # Secondary_root        
+    "SRR32845309",   # Secondary_root        
+    "SRR32845307",   # Corm_rhizome          
+    "SRR32845306",   # Corm_rhizome          
+    "SRR32845334",   # Leaf_sheath_pseudostem
+    "SRR32845332",   # Leaf_sheath_pseudostem
+    "SRR32845333",   # Leaf_sheath_pseudostem
+    "SRR32845331",   # Leaf_blade            
+    "SRR32845329",   # Leaf_blade            
+    "SRR32845330",   # Leaf_blade            
+    "SRR32845328",   # Leaf_midrib           
+    "SRR32845326",   # Leaf_midrib           
+    "SRR32845327",   # Leaf_midrib           
+    "SRR32845323",   # Peduncle              
+    "SRR32845324",   # Peduncle              
+    "SRR32845322",   # Peduncle              
+    "SRR32845318",   # Unripe_fruit_pulp     
+    "SRR32845316",   # Unripe_fruit_pulp     
+    "SRR32845317",   # Unripe_fruit_pulp     
+    "SRR32845321",   # Unripe_fruit_peel     
+    "SRR32845319",   # Unripe_fruit_peel     
+    "SRR32845320",   # Unripe_fruit_peel     
+    "SRR32845311",   # Ripe_fruit_pulp       
+    "SRR32845310",   # Ripe_fruit_pulp       
+    "SRR32845312",   # Ripe_fruit_pulp       
+    "SRR32845315",   # Ripe_fruit_peel       
+    "SRR32845313",   # Ripe_fruit_peel       
+]
+
+[dataset.PRJNA1237608_selected]
+# One deepest replicate per tissue (12 runs) — the tissue-representative subset
+# used by the 3_post_proc_configs.  Matches PRJNA1237608_selected.csv.
+samples = [
+    "SRR32845305",   # Tip_meristem             [MAIN INTEREST]
+    "SRR32845325",   # Primary_root          
+    "SRR32845308",   # Secondary_root        
+    "SRR32845307",   # Corm_rhizome          
+    "SRR32845334",   # Leaf_sheath_pseudostem
+    "SRR32845331",   # Leaf_blade            
+    "SRR32845328",   # Leaf_midrib           
+    "SRR32845323",   # Peduncle              
+    "SRR32845318",   # Unripe_fruit_pulp     
+    "SRR32845321",   # Unripe_fruit_peel     
+    "SRR32845311",   # Ripe_fruit_pulp       
+    "SRR32845315",   # Ripe_fruit_peel       
+]
+
+[dataset.PRJNA1237608_test]
+# 3 smallest runs, distinct tissues — smoke test.
+samples = [
+    "SRR32845317",   # Unripe_fruit_pulp
+    "SRR32845330",   # Leaf_blade       
+    "SRR32845335",   # Tip_meristem        [MAIN INTEREST]
+]
+
+[dataset.PRJNA606623_and_PRJNA935075]
+# CROSS-SPECIES (M. itinerans): male flower bud + pollen.  See warning above.
+samples = [
+    "SRR11085729",   # Male_flower_bud   [MAIN INTEREST]
+    "SRR11085728",   # Male_flower_bud   [MAIN INTEREST]
+    "SRR11085727",   # Male_flower_bud   [MAIN INTEREST]
+    "SRR23491617",   # Pollen            [MAIN INTEREST]
+    "SRR23491616",   # Pollen            [MAIN INTEREST]
+    "SRR23491615",   # Pollen            [MAIN INTEREST]
+]
+
+# ==============================================================================
+# COMBINED LIST — which datasets to include in the pipeline run
+# ==============================================================================
+
+[combined]
+active_datasets = [
+    "PRJNA1237608_selected",                    # 12-tissue representative subset (recommended default)
+    #"PRJNA1237608",                            # full 34-run atlas
+    #"PRJNA606623_and_PRJNA935075",             # CROSS-SPECIES floral supplement
+]

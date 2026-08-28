@@ -1,0 +1,49 @@
+# ==============================================================================
+# LOCAL FULL CONFIG: REFERENCE-GUIDED METHODS (M1 + M3) — BANANA
+# ==============================================================================
+# TEMPLATE — see I_INPUTS/config/banana/README.md for the fill-in checklist.
+# ==============================================================================
+
+# Runtime
+threads = 64
+jobs = 2
+use_gnu_parallel = true
+keep_bam_global = "n"
+star_read_length = 107   # PRJNA1237608 actual read length (SINGLE-end 107 bp)
+hisat2_strandness = ""
+
+# Pipeline Stages
+pipeline_stages = [
+    #"MAMBA_INSTALLATION",
+    #"DOWNLOAD_SRR",
+    #"TRIM_SRR",
+    #"DOWNLOAD_TRIM_and_DELETE_RAW_SRR",
+    #"GZIP_TRIMMED_FILES",
+    #"QUALITY_CONTROL",
+    #"DELETE_RAW_SRR",
+    #"DELETE_TRIMMED_FASTQ_FILES",
+    "METHOD_1_HISAT2_REF_GUIDED",
+    #"METHOD_2_HISAT2_DE_NOVO",
+    "METHOD_3_STAR_ALIGNMENT",
+    #"METHOD_4_SALMON_SAF",
+    #"METHOD_5_BOWTIE2_RSEM",
+]
+
+# Input
+# Format: "GTF_FILE|FASTA_FILE|STAR_TRANSCRIPTOME_FASTA"
+genome_ref_pairs = [
+    "I_INPUTS/inputs/banana/2_alignment_input/reference/Musa_acuminata_DH_Pahang_v4_genome.gtf|I_INPUTS/inputs/banana/2_alignment_input/reference_genome/Musa_acuminata_DH_Pahang_v4_genome.fa|I_INPUTS/inputs/banana/2_alignment_input/reference_genome/Musa_acuminata_DH_Pahang_v4_transcripts.fa",
+    #"I_INPUTS/inputs/banana/2_alignment_input/reference/Musa_TODO_v2_genome.gtf|I_INPUTS/inputs/banana/2_alignment_input/reference_genome/Musa_TODO_v2.fa|I_INPUTS/inputs/banana/2_alignment_input/reference_genome/Musa_TODO_v2_transcripts.fa",
+]
+
+# SRR dataset file
+# REQUIRED for banana: omitting this key falls back to the default basename
+# "srr_datasets.toml", which resolves under I_INPUTS/config/eggplant/shared/ and
+# would silently run banana references against the EGGPLANT sample list.
+srr_datasets = "../../banana/shared/srr_datasets.toml"
+
+# Output
+post_processing_root = "II_RESULTS/3_POST_PROC"
+
+# Cleanup
+activate_rm = false

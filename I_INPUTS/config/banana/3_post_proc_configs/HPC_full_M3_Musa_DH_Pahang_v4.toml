@@ -1,0 +1,62 @@
+# ==============================================================================
+# HPC FULL CONFIG: M3 — STAR Splice-Aware Alignment (BANANA, Musa_acuminata_DH_Pahang_v4_genome)
+# ==============================================================================
+# TEMPLATE — see I_INPUTS/config/banana/README.md for the fill-in checklist.
+#
+# Purpose: Production post-processing for M3 (STAR genome alignment) on the
+#          banana reference.
+#
+# Method:
+#   M3 — STAR Splice-Aware Alignment  ->  uses <accession>_genome
+#
+# Preprocessing:  Tximport_STAR -> Matrix_Creation (Tximport is a no-op when
+#                 Matrix_Creation is active; keep both for flexibility).
+# DE support:     YES — tximport counts feed into DESeq2.
+# NOT applicable: Stringtie_Matrix, Tximport_Salmon, Tximport_RSEM
+#
+# NAMING CONTRACT: `master_references` must equal the reference folder name
+# created by stage 2 under II_RESULTS/2_ALIGNMENT_RESULTs/M3_STAR_Align/.
+# ==============================================================================
+
+# Master Reference
+master_references = ["Musa_acuminata_DH_Pahang_v4_genome"]
+
+# Gene Groups
+# TODO: each active entry needs a matching CSV named <entry>.csv under
+#       I_INPUTS/inputs/banana/3_post_proc_inputs/gene_groups_csv/{gene_sets,experimental,
+#       control_genes,reference_genomes}/.  A name with no CSV yields empty output.
+#       Gene IDs inside the CSV must use the SAME ID space as the reference above
+#       (e.g. Macma4_* for DH-Pahang v4) or every row drops out silently.
+gene_groups = [
+    "TODO_MaDMPs",                    # TODO: banana DMP / DUF679 orthologs
+    #"TODO_MaGRF-GIF",                # TODO: banana GRF + GIF family
+    #"TODO_MaEC1",                    # TODO: banana EC1 egg-cell candidates
+    #"TODO_MaPLA",                    # TODO: patatin-like PLA (ZmMATL/ZmPLA1 anchor)
+    #"TODO_Control_Genes",            # TODO: housekeeping / normalization set
+]
+
+# SRR Datasets
+# Each active entry has a matching CSV named <entry>.csv under
+#       I_INPUTS/inputs/banana/3_post_proc_inputs/SRR_csv/.
+#       NOTE: stage 3 reads those CSVs — NOT the shared/srr_datasets*.toml files
+#       used by stages 1-2.  Keep the two lists in sync by hand.
+srr_datasets = [
+    "PRJNA1237608_selected",          # 12-tissue representative subset (one deepest rep/tissue)
+    #"PRJNA1237608",                  # full 34-run Grand Naine tissue atlas
+    #"PRJNA606623_and_PRJNA935075",   # CROSS-SPECIES M. itinerans male flower bud + pollen
+    #"PRJNA1237608_selected_plus_PRJNA606623_PRJNA935075",  # 12 tissues + floral supplement
+]
+
+# Methods
+methods = ["M3_STAR_Align"]
+
+# Analyses
+# Tximport_STAR is a no-op when Matrix_Creation is also active (keep for
+# standalone use).  Stringtie_Matrix is NOT applicable to M3.
+# Differential_Expression IS supported (tximport counts -> DESeq2).
+analyses = [
+    "Tximport_STAR",
+    "Matrix_Creation",
+    "Basic_Heatmap",
+    "Heatmap_with_CV",
+]

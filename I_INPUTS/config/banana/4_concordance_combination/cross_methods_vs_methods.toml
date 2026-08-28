@@ -1,0 +1,20 @@
+# ==============================================================================
+# CROSS: METHODS VS METHODS — BANANA (Musa acuminata)
+# ==============================================================================
+# TEMPLATE — see I_INPUTS/config/banana/README.md for the fill-in checklist.
+#
+# Cross-method concordance: compare TPM across all alignment/quantification
+# methods for a single accession. Reference-agnostic: each method auto-resolves
+# to its appropriate reference type (genome for M1/M3, transcripts for M2/M4/M5).
+#
+# Requires: stage 3 post-processing already run for EVERY method listed below.
+
+concordance_mode = "cross_method"
+
+# TODO: bare accession (no _genome / _transcripts suffix).
+master_reference = "Musa_acuminata_DH_Pahang_v4"
+
+methods = "M1_HISAT2_RefGuided M2_HISAT2_DeNovo M3_STAR_Align M4_Salmon_Saf M5_RSEM_Bowtie2"
+
+# TODO: gene group CSV stems.
+gene_groups = "TODO_MaDMPs,TODO_MaGRF-GIF"

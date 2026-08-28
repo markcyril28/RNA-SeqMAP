@@ -1,0 +1,24 @@
+# ==============================================================================
+# CROSS: WITHIN GENE GROUP VS WITHIN GENE GROUP — BANANA (Musa acuminata)
+# ==============================================================================
+# TEMPLATE — see I_INPUTS/config/banana/README.md for the fill-in checklist.
+#
+# Cross-gene-group concordance: for a fixed method+genome, compare expression
+# profiles across different gene groups. Produces a gene-group-vs-gene-group
+# correlation heatmap showing how sample expression patterns co-vary.
+#
+# This is the only cross that works with a SINGLE assembly — the natural first
+# concordance run for a new species.
+
+concordance_mode = "cross_gene_group"
+
+# Fixed method and reference for the comparison
+fixed_method = "M1_HISAT2_RefGuided"
+master_reference = "Musa_acuminata_DH_Pahang_v4_genome"
+
+# Gene groups to compare (each gets a gene-vs-gene correlation heatmap)
+# TODO: gene group CSV stems — same names used in 3_post_proc_configs/.
+gene_groups = [
+    "TODO_MaDMPs",
+    "TODO_MaGRF-GIF",
+]
