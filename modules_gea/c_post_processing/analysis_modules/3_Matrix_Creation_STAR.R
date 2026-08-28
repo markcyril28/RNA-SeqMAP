@@ -174,17 +174,17 @@ if (GENERATE_GENE_LEVEL) {
   # Generate tx2gene from GTF if missing (alignment step may not have been run)
   if (length(tx2gene_files) == 0) {
     # GTF/mapping candidate directories. Order matters: STAR_GTF_FILE > legacy
-    # `inputs/gtf/reference/` > actual layout under `I_INPUTS/inputs/...`.
+    # `inputs/gtf/reference/` > actual layout under `I_INPUTS/inputs/eggplant/...`.
     if (nzchar(base_dir)) {
       gtf_ref_dirs     <- c(file.path(base_dir, "inputs", "gtf", "reference"),
-                            file.path(base_dir, "I_INPUTS", "inputs", "2_alignment_input", "reference"))
-      mapping_ref_dirs <- file.path(base_dir, "I_INPUTS", "inputs", "mapping")
+                            file.path(base_dir, "I_INPUTS", "inputs", "eggplant", "2_alignment_input", "reference"))
+      mapping_ref_dirs <- file.path(base_dir, "I_INPUTS", "inputs", "eggplant", "mapping")
     } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
       stop("[STAR MATRIX] BASE_DIR is required for GTF lookup under workflow manager.")
     } else {
       gtf_ref_dirs     <- c(file.path("..", "..", "inputs", "gtf", "reference"),
-                            file.path("..", "..", "I_INPUTS", "inputs", "2_alignment_input", "reference"))
-      mapping_ref_dirs <- file.path("..", "..", "I_INPUTS", "inputs", "mapping")
+                            file.path("..", "..", "I_INPUTS", "inputs", "eggplant", "2_alignment_input", "reference"))
+      mapping_ref_dirs <- file.path("..", "..", "I_INPUTS", "inputs", "eggplant", "mapping")
     }
     gtf_candidates <- c(
       Sys.getenv("STAR_GTF_FILE", unset = ""),

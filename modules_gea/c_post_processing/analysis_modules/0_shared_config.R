@@ -95,7 +95,7 @@ GENE_GROUPS_DIR <- Sys.getenv("GENE_GROUPS_DIR", unset = "")
 if (GENE_GROUPS_DIR == "") {
   base_dir_fallback <- Sys.getenv("BASE_DIR", unset = "")
   if (nzchar(base_dir_fallback)) {
-    GENE_GROUPS_DIR <- file.path(base_dir_fallback, "inputs", "3_post_proc_inputs", "gene_groups_csv")
+    GENE_GROUPS_DIR <- file.path(base_dir_fallback, "I_INPUTS", "inputs", "eggplant", "3_post_proc_inputs", "gene_groups_csv")
   } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
     stop("[SHARED CONFIG] BASE_DIR or GENE_GROUPS_DIR is required when running under a workflow manager ",
          "(WF_MANAGED_ENV is set). Export BASE_DIR pointing to the project root.")
@@ -108,7 +108,7 @@ if (GENE_GROUPS_DIR == "") {
     }
     # Cache project root — avoids redundant triple-dirname traversal (reused for SRR_CSV_DIR below)
     .project_root <- dirname(dirname(dirname(ANALYSIS_MODULES_DIR)))
-    GENE_GROUPS_DIR <- file.path(.project_root, "inputs", "3_post_proc_inputs", "gene_groups_csv")
+    GENE_GROUPS_DIR <- file.path(.project_root, "I_INPUTS", "inputs", "eggplant", "3_post_proc_inputs", "gene_groups_csv")
   }
 }
 
@@ -117,7 +117,7 @@ SRR_CSV_DIR <- Sys.getenv("SRR_CSV_DIR", unset = "")
 if (SRR_CSV_DIR == "") {
   base_dir_fallback <- Sys.getenv("BASE_DIR", unset = "")
   if (nzchar(base_dir_fallback)) {
-    SRR_CSV_DIR <- file.path(base_dir_fallback, "inputs", "3_post_proc_inputs", "SRR_csv")
+    SRR_CSV_DIR <- file.path(base_dir_fallback, "I_INPUTS", "inputs", "eggplant", "3_post_proc_inputs", "SRR_csv")
   } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
     stop("[SHARED CONFIG] BASE_DIR or SRR_CSV_DIR is required when running under a workflow manager ",
          "(WF_MANAGED_ENV is set). Export BASE_DIR pointing to the project root.")
@@ -129,7 +129,7 @@ if (SRR_CSV_DIR == "") {
       }
       .project_root <- dirname(dirname(dirname(ANALYSIS_MODULES_DIR)))
     }
-    SRR_CSV_DIR <- file.path(.project_root, "inputs", "3_post_proc_inputs", "SRR_csv")
+    SRR_CSV_DIR <- file.path(.project_root, "I_INPUTS", "inputs", "eggplant", "3_post_proc_inputs", "SRR_csv")
   }
 }
 
@@ -519,7 +519,11 @@ load_sample_labels_from_csv <- function(srr_csv_dir = SRR_CSV_DIR) {
   # O(C × R) where C = CSV files, R = rows per file.
   # Collect labels into a pre-allocated list to avoid O(n²) c() concatenation.
   # Single c() at end is O(total_labels) instead of O(C × cumulative_labels).
-  csv_files <- list.files(srr_csv_dir, pattern = "\\.csv$", full.names = TRUE)
+  # recursive = TRUE so CSVs may be grouped in subdirectories
+  # (e.g. single_project/ and combined_projects/), matching the behaviour of
+  # .find_gene_group_csv() for gene_groups_csv. Flat layouts still work.
+  csv_files <- list.files(srr_csv_dir, pattern = "\\.csv$",
+                          recursive = TRUE, full.names = TRUE)
   .label_parts <- vector("list", length(csv_files))
   for (.ci in seq_along(csv_files)) {
     tryCatch({

@@ -83,7 +83,7 @@ if (!exists("GENE_GROUPS_DIR") || !nzchar(GENE_GROUPS_DIR)) {
   if (!nzchar(GENE_GROUPS_DIR)) {
     if (!.base_set && nzchar(Sys.getenv("WF_MANAGED_ENV", "")))
       stop("[CONCORDANCE CONFIG] GENE_GROUPS_DIR or BASE_DIR is required under workflow manager.")
-    GENE_GROUPS_DIR <- file.path(BASE_DIR, "inputs", "3_post_proc_inputs", "gene_groups_csv")
+    GENE_GROUPS_DIR <- file.path(BASE_DIR, "I_INPUTS", "inputs", "eggplant", "3_post_proc_inputs", "gene_groups_csv")
   }
 }
 

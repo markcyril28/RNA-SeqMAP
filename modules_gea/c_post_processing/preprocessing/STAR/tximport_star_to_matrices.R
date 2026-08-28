@@ -116,9 +116,9 @@ find_tx2gene <- function(matrices_dir, master_ref) {
   input_dir <- if (nzchar(.input_env)) .input_env else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
     stop("[STAR TXIMPORT] INPUT_FASTAS_DIR is required under workflow manager.")
   } else {
-    message("[STAR TXIMPORT] WARN: INPUT_FASTAS_DIR not set; using relative '../inputs'. ",
+    message("[STAR TXIMPORT] WARN: INPUT_FASTAS_DIR not set; using relative '../../I_INPUTS/inputs/eggplant'. ",
             "Set INPUT_FASTAS_DIR or BASE_DIR for orchestrated execution.")
-    file.path("..", "..", "inputs")
+    file.path("..", "..", "I_INPUTS", "inputs", "eggplant")
   }
   # Vectorized batch stat: O(1) syscall batch instead of sequential checks
   .alts <- file.path(input_dir, "mapping",

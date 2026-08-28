@@ -139,7 +139,7 @@ if (length(GENOME_GENE_GROUPS_MAP) >= 2) {
     .n_groups <- length(GENOME_GENE_GROUPS_MAP[[.ref_genome]])
 
     # Resolve gene groups directory per genome
-    .gg_base <- file.path(BASE_DIR, "inputs", "3_post_proc_inputs", "gene_groups_csv")
+    .gg_base <- file.path(BASE_DIR, "I_INPUTS", "inputs", "eggplant", "3_post_proc_inputs", "gene_groups_csv")
 
     .resolve_gg_dir <- function(genome) {
       tag <- sub("_genome$", "", sub("_transcripts.*$", "", genome))

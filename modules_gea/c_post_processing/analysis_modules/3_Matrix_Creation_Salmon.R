@@ -65,7 +65,7 @@ GENERATE_ISOFORM_LEVEL <- isTRUE(as.logical(Sys.getenv("SALMON_GENERATE_ISOFORM_
 .base_dir         <- Sys.getenv("BASE_DIR", "")
 .input_fastas_dir <- Sys.getenv("INPUT_FASTAS_DIR", unset = "")
 if (!nzchar(.input_fastas_dir) && nzchar(.base_dir))
-  .input_fastas_dir <- file.path(.base_dir, "inputs")
+  .input_fastas_dir <- file.path(.base_dir, "I_INPUTS", "inputs", "eggplant")
 
 # Lazy tx2gene search: check known paths first, only recurse as fallback
 .candidates <- c(

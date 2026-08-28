@@ -117,9 +117,9 @@ TPM_COL=9
 # LOAD SAMPLE IDS FROM CSV
 # ===============================================
 # SRR_CSV_DIR is exported by run_post_processing.sh
-# Fallback to I_INPUTS/inputs/3_post_proc_inputs/SRR_csv relative to the project root
+# Fallback to I_INPUTS/inputs/eggplant/3_post_proc_inputs/SRR_csv relative to the project root
 
-SRR_CSV_DIR="${SRR_CSV_DIR:-${BASE_DIR}/I_INPUTS/inputs/3_post_proc_inputs/SRR_csv}"
+SRR_CSV_DIR="${SRR_CSV_DIR:-${BASE_DIR}/I_INPUTS/inputs/eggplant/3_post_proc_inputs/SRR_csv}"
 
 load_samples_from_csv() {
     local csv_dir="$1"
@@ -150,7 +150,9 @@ load_samples_from_csv() {
                 srr_to_organ_ref["$srr_id"]="$organ"
             fi
         done < "$csv_file"
-    done < <(find "$csv_dir" -maxdepth 1 -name "*.csv" -type f | sort)
+    # No -maxdepth: CSVs may be grouped in subdirectories (single_project/,
+    # combined_projects/). Flat layouts are unaffected.
+    done < <(find "$csv_dir" -name "*.csv" -type f | sort)
 }
 
 # Initialize arrays
@@ -474,7 +476,7 @@ build_full_transcriptome_matrix() {
 # ===============================================
 
 # Centralized gene groups CSV directory
-GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-${BASE_DIR}/I_INPUTS/inputs/3_post_proc_inputs/gene_groups_csv}}"
+GENE_GROUPS_CSV_DIR="${GENE_GROUPS_DIR:-${GENE_GROUPS_CSV_DIR:-${BASE_DIR}/I_INPUTS/inputs/eggplant/3_post_proc_inputs/gene_groups_csv}}"
 
 log_info "Gene groups CSV directory: $GENE_GROUPS_CSV_DIR"
 log_step "Starting count matrix generation for ${#GENE_GROUPS[@]} gene groups"

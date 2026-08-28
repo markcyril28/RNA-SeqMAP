@@ -696,10 +696,13 @@ load_gene_name_mapping <- function(gene_group, gene_groups_dir = GENE_GROUPS_DIR
         stop("[LOAD_GENE_NAME_MAPPING] INPUT_FASTAS_DIR or BASE_DIR is required ",
              "when running under a workflow manager (WF_MANAGED_ENV is set).")
       }
+      # gene_groups_dir is <species_inputs_root>/3_post_proc_inputs/gene_groups_csv,
+      # so the species inputs root is two dirname() hops up - depth-independent,
+      # unlike a fixed "inputs" suffix which breaks whenever the tree is relocated.
       potential_paths <- c(
-        if (nzchar(.base_env)) file.path(.base_env, "inputs"),
-        file.path(dirname(dirname(dirname(gene_groups_dir))), "inputs"),
-        file.path(dirname(dirname(gene_groups_dir)), "inputs")
+        if (nzchar(.base_env)) file.path(.base_env, "I_INPUTS", "inputs", "eggplant"),
+        dirname(dirname(gene_groups_dir)),
+        dirname(dirname(dirname(gene_groups_dir)))
       )
       # O(P) where P = candidate paths (≤3); breaks on first valid directory
       for (path in potential_paths) {

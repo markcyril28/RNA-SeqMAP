@@ -202,13 +202,13 @@ for (level_name in names(processing_levels)) {
   INPUT_FASTAS_DIR <- Sys.getenv("INPUT_FASTAS_DIR", unset = "")
   if (!nzchar(INPUT_FASTAS_DIR)) {
     INPUT_FASTAS_DIR <- if (nzchar(BASE_DIR)) {
-      file.path(BASE_DIR, "inputs")
+      file.path(BASE_DIR, "I_INPUTS", "inputs", "eggplant")
     } else if (nzchar(Sys.getenv("WF_MANAGED_ENV", ""))) {
       stop("[SALMON TXIMPORT] INPUT_FASTAS_DIR or BASE_DIR is required under workflow manager.")
     } else {
-      message("[SALMON TXIMPORT] WARN: INPUT_FASTAS_DIR and BASE_DIR not set; using relative '../../inputs'. ",
+      message("[SALMON TXIMPORT] WARN: INPUT_FASTAS_DIR and BASE_DIR not set; using relative '../../I_INPUTS/inputs/eggplant'. ",
               "Set INPUT_FASTAS_DIR or BASE_DIR for orchestrated execution.")
-      "../../inputs"
+      "../../I_INPUTS/inputs/eggplant"
     }
   }
 

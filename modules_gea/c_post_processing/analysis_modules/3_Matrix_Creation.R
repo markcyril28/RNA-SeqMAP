@@ -305,7 +305,7 @@ run_matrix_creation <- function(method, quant_dir, output_dir, master_ref,
       .input_fastas_dir <- Sys.getenv("INPUT_FASTAS_DIR", unset = "")
       if (!nzchar(.input_fastas_dir)) {
         .base_dir_fb <- Sys.getenv("BASE_DIR", "")
-        if (nzchar(.base_dir_fb)) .input_fastas_dir <- file.path(.base_dir_fb, "inputs")
+        if (nzchar(.base_dir_fb)) .input_fastas_dir <- file.path(.base_dir_fb, "I_INPUTS", "inputs", "eggplant")
       }
       .tx2gene_m4 <- NULL
       if (nzchar(.input_fastas_dir)) {
