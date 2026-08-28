@@ -41,7 +41,7 @@ samples = [
 
 [dataset.PRJNA328564_selected]
 # Subset of PRJNA328564: 12 tissue-representative samples used by post-processing configs.
-# Matches I_INPUTS/inputs/3_post_proc_inputs/SRR_csv/PRJNA328564_selected.csv
+# Matches I_INPUTS/inputs/eggplant/3_post_proc_inputs/SRR_csv/single_project/PRJNA328564_selected.csv
 samples = [
     "SRR3884678",   # Fruits_peduncle (fruit attachment)
     "SRR3884631",   # Fruits_6cm (fruit enlargement)
@@ -119,7 +119,7 @@ samples = [
 # Source: https://www.ncbi.nlm.nih.gov/Traces/study/?acc=PRJNA1417697&o=acc_s%3Aa
 # Solanum melongena cv. Sanyueqie, anther tissue, 3 days before anthesis,
 # 80 days after sowing, Illumina NovaSeq 6000, PAIRED, ZHENGZHOU UNIVERSITY.
-# Sample table: I_INPUTS/PRJNA1417697__SraRunTable.csv
+# Sample table: I_INPUTS/inputs/eggplant/PRJNA1417697__SraRunTable.csv
 samples = [
     "SRR37071455",   # abcg-WT-1     (anther, 3 DBA)  [MAIN INTEREST]
     "SRR37071454",   # abcg-WT-2     (anther, 3 DBA)  [MAIN INTEREST]

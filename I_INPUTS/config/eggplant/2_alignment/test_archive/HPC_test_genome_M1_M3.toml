@@ -37,8 +37,8 @@ pipeline_stages = [
 # Format: "GTF_FILE|FASTA_FILE|STAR_TRANSCRIPTOME_FASTA"
 # Field 3 is optional — leave empty ("GTF|FASTA|") to use auto-detect.
 genome_ref_pairs = [
-    "I_INPUTS/inputs/2_alignment_input/reference/GPE001970_genome.gtf|I_INPUTS/inputs/2_alignment_input/reference_genome/GPE001970.fa|I_INPUTS/inputs/2_alignment_input/reference_genome/GPE001970_transcripts.fa",
-    "I_INPUTS/inputs/2_alignment_input/reference/Eggplant_V4.1_function_IPR_final_stringtie.gtf|I_INPUTS/inputs/2_alignment_input/reference_genome/Eggplant_V4.1.fa|I_INPUTS/inputs/2_alignment_input/reference_genome/Eggplant_V4.1_transcripts.function.fa",
+    "I_INPUTS/inputs/eggplant/2_alignment_input/reference/GPE001970_genome.gtf|I_INPUTS/inputs/eggplant/2_alignment_input/reference_genome/GPE001970.fa|I_INPUTS/inputs/eggplant/2_alignment_input/reference_genome/GPE001970_transcripts.fa",
+    "I_INPUTS/inputs/eggplant/2_alignment_input/reference/Eggplant_V4.1_function_IPR_final_stringtie.gtf|I_INPUTS/inputs/eggplant/2_alignment_input/reference_genome/Eggplant_V4.1.fa|I_INPUTS/inputs/eggplant/2_alignment_input/reference_genome/Eggplant_V4.1_transcripts.function.fa",
 ]
 
 # SRR Test
