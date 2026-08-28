@@ -103,7 +103,7 @@ export ALIGNMENT_RESULTS_ROOT
 # SAMPLE METADATA CONFIGURATION
 # ==============================================================================
 # Path to the sample conditions file (tab-separated: SRR_ID condition batch)
-SAMPLE_CONDITIONS_FILE="$(_make_absolute_path "${SAMPLE_CONDITIONS_FILE:-I_INPUTS/inputs/sample_conditions.txt}")"
+SAMPLE_CONDITIONS_FILE="$(_make_absolute_path "${SAMPLE_CONDITIONS_FILE:-I_INPUTS/inputs/eggplant/sample_conditions.txt}")"
 
 # ==============================================================================
 # METHOD 1: HISAT2 REFERENCE GUIDED DIRECTORIES

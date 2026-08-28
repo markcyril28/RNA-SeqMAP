@@ -76,7 +76,7 @@ _star_sort_ram() {
 
 # Transcriptome FASTA for Salmon quantification step (auto-detected if not set)
 # When using a genome FASTA for STAR, point this to the transcript-level FASTA.
-# e.g. STAR_TRANSCRIPTOME_FASTA="inputs/fasta/reference_genomes/GPE001970_transcripts.fa"
+# e.g. STAR_TRANSCRIPTOME_FASTA="I_INPUTS/inputs/eggplant/2_alignment_input/reference_genome/GPE001970_transcripts.fa"
 # Auto-detect: looks for <genome_basename>_transcripts.fa; falls back to --FASTA if absent.
 
 # STAR temp directory: always uses the output directory per sample
