@@ -16,14 +16,25 @@
 #   eggplant list instead.
 #
 # DATASETS
+#   Full provenance, run tables and paper links for each accession live in
+#   I_INPUTS/inputs/banana/3_post_proc_inputs/SRR_csv/single_project/<ACC>.md
+#
 #   PRJNA1237608  M. acuminata AAA Group cv. Grand Naine — 12-tissue atlas,
 #                 34 runs, SINGLE-end 107 bp, Illumina HiSeq 2000.
 #                 This is the banana analogue of eggplant's PRJNA328564.
+#                 Paper: Kumaravel et al. 2025, Physiol Plant 177(3):e70339
+#                        doi:10.1111/ppl.70339  (PMID 40539547)
 #   PRJNA606623   M. itinerans male flower bud (wild-type reps only), PAIRED 150 bp.
+#                 The excluded arm is a MaTPD1A-overexpression line that is
+#                 male-sterile and produces no pollen grains at all.
+#                 Paper: Hu et al. 2020, BMC Plant Biol 20(1):402
+#                        doi:10.1186/s12870-020-02623-w  (PMID 32867686)
 #   PRJNA935075   M. itinerans pollen, PAIRED 150 bp.  NOTE: a cold-stress
-#                 RECOVERY experiment - the CK arm used here is pollen that LOST
-#                 germination ability under low temperature; the T arm recovered
-#                 it.  Neither arm is untreated pollen.  See SOURCES.md.
+#                 RECOVERY experiment - the CK arm used here is fresh-bud pollen
+#                 that LOST germination ability at 23 C; the T arm recovered it
+#                 after 28 C for 2 d.  Neither arm is untreated pollen.
+#                 Paper: Zhang et al. 2023, Front Plant Sci 14:1255418
+#                        doi:10.3389/fpls.2023.1255418  (PMID 37822335)
 #
 # !! CROSS-SPECIES WARNING !!
 #   PRJNA606623 and PRJNA935075 are *Musa itinerans*, NOT M. acuminata.  They are
