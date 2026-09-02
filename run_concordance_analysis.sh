@@ -309,7 +309,7 @@ fi
 if [[ "${CLEAR_CACHE:-FALSE}" == "TRUE" ]]; then
     log_info "Clearing persistent pipeline caches..."
     _cache_count=0
-    _gg_dir="${BASE_DIR}/I_INPUTS/inputs/3_post_proc_inputs/gene_groups_csv"
+    _gg_dir="${GENE_GROUPS_DIR:-${BASE_DIR}/I_INPUTS/inputs/eggplant/3_post_proc_inputs/gene_groups_csv}"
     # Gene name mapping caches (*.namemap.rds beside gene group CSVs)
     while IFS= read -r -d '' _f; do
         rm -f "$_f" && _cache_count=$((_cache_count + 1))
@@ -725,17 +725,17 @@ analysis_enabled() { [[ -n "${_ANALYSES_SET[$1]:-}" ]]; }
 # Gene groups directory (reference-specific — strip _genome/_transcripts suffix to match dir name)
 _GG_REF_TAG="${MASTER_REFERENCE%%_genome*}"
 _GG_REF_TAG="${_GG_REF_TAG%%_transcripts*}"
-_GG_REF_DIR="${BASE_DIR}/I_INPUTS/inputs/3_post_proc_inputs/gene_groups_csv/experimental/${_GG_REF_TAG}"
+_GG_REF_DIR="${BASE_DIR}/I_INPUTS/inputs/eggplant/3_post_proc_inputs/gene_groups_csv/experimental/${_GG_REF_TAG}"
 if [[ ! -d "$_GG_REF_DIR" ]]; then
     log_warn "Reference-specific gene groups dir not found: $_GG_REF_DIR"
-    _GG_REF_DIR="${BASE_DIR}/I_INPUTS/inputs/3_post_proc_inputs/gene_groups_csv"
+    _GG_REF_DIR="${BASE_DIR}/I_INPUTS/inputs/eggplant/3_post_proc_inputs/gene_groups_csv"
     log_warn "Falling back to generic gene groups dir: $_GG_REF_DIR"
 fi
 GENE_GROUPS_DIR="${GENE_GROUPS_DIR:-$_GG_REF_DIR}"
 unset _GG_REF_TAG _GG_REF_DIR
 
 # SRR CSV directory for sample labels
-SRR_CSV_DIR="${SRR_CSV_DIR:-${BASE_DIR}/I_INPUTS/inputs/3_post_proc_inputs/SRR_csv}"
+SRR_CSV_DIR="${SRR_CSV_DIR:-${BASE_DIR}/I_INPUTS/inputs/eggplant/3_post_proc_inputs/SRR_csv}"
 
 # System resources (auto-detect with sane fallbacks)
 THREADS="${THREADS:-${SLURM_CPUS_PER_TASK:-${PBS_NCPUS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 12)}}}"

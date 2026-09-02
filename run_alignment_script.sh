@@ -306,7 +306,7 @@ source "${PROJECT_ROOT}/I_INPUTS/config/eggplant/shared/runtime_defaults.sh" || 
 if [[ "$CLEAR_CACHE" == "TRUE" ]]; then
 	log_info "Clearing persistent pipeline caches..."
 	_cache_count=0
-	_gg_dir="${PROJECT_ROOT}/I_INPUTS/inputs/3_post_proc_inputs/gene_groups_csv"
+	_gg_dir="${GENE_GROUPS_DIR:-${PROJECT_ROOT}/I_INPUTS/inputs/eggplant/3_post_proc_inputs/gene_groups_csv}"
 	# Gene name mapping caches (*.namemap.rds beside gene group CSVs)
 	while IFS= read -r -d '' _f; do
 		rm -f "$_f" && _cache_count=$((_cache_count + 1))

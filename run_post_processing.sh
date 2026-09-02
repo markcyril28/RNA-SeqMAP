@@ -168,8 +168,8 @@ else
 fi
 _SELF_SCRIPT="$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"
 ANALYSIS_MODULES_DIR="${ANALYSIS_MODULES_DIR:-$BASE_DIR/modules_gea/c_post_processing/analysis_modules}"
-GENE_GROUPS_DIR="${GENE_GROUPS_DIR:-$BASE_DIR/I_INPUTS/inputs/3_post_proc_inputs/gene_groups_csv}"
-SRR_CSV_DIR="${SRR_CSV_DIR:-$BASE_DIR/I_INPUTS/inputs/3_post_proc_inputs/SRR_csv}"
+GENE_GROUPS_DIR="${GENE_GROUPS_DIR:-$BASE_DIR/I_INPUTS/inputs/eggplant/3_post_proc_inputs/gene_groups_csv}"
+SRR_CSV_DIR="${SRR_CSV_DIR:-$BASE_DIR/I_INPUTS/inputs/eggplant/3_post_proc_inputs/SRR_csv}"
 UTILITIES_DIR="${UTILITIES_DIR:-$BASE_DIR/modules_gea/c_post_processing/utilities}"
 
 source "$BASE_DIR/modules_gea/logging/logging_utils.sh" || {
@@ -474,6 +474,17 @@ for CONFIG_FILE in "${PIPELINE_CONFIGS[@]}"; do
             _cached="${_GLOBAL_SRR_CACHE[$dataset]}"
         else
             csv_file="$SRR_CSV_DIR/${dataset}.csv"
+            # Fall back to a recursive basename search so SRR CSVs may be grouped
+            # in subdirectories (single_project/, combined_projects/). Mirrors the
+            # gene_groups_csv resolver: first match wins, warn if ambiguous.
+            if [[ ! -f "$csv_file" ]]; then
+                mapfile -t _srr_hits < <(find "$SRR_CSV_DIR" -name "${dataset}.csv" -type f | sort)
+                if (( ${#_srr_hits[@]} > 1 )); then
+                    log_warn "Ambiguous SRR CSV basename '${dataset}.csv' (${#_srr_hits[@]} matches); using ${_srr_hits[0]}"
+                fi
+                (( ${#_srr_hits[@]} > 0 )) && csv_file="${_srr_hits[0]}"
+                unset _srr_hits
+            fi
             if [[ -f "$csv_file" ]]; then
                 _cached=$(parse_srr_csv "$csv_file")
                 [[ -n "$_cached" ]] && _GLOBAL_SRR_CACHE["$dataset"]="$_cached"
