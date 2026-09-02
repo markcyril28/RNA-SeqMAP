@@ -1,0 +1,19 @@
+SRR_ID,Organ,Tissue_Class,Notes
+SRR32845305,Tip_meristem,Meristematic,shoot apical meristem; no eggplant counterpart
+SRR32845325,Primary_root,Meristematic,~ eggplant Roots
+SRR32845308,Secondary_root,Meristematic,~ eggplant Roots (lateral)
+SRR32845307,Corm_rhizome,Meristematic,underground stem; ~ eggplant Stems
+SRR32845334,Leaf_sheath_pseudostem,Non_meristematic,~ eggplant Stems
+SRR32845331,Leaf_blade,Non_meristematic,~ eggplant Leaves
+SRR32845328,Leaf_midrib,Non_meristematic,~ eggplant Leaves (vascular)
+SRR32845323,Peduncle,Non_meristematic,~ eggplant Fruits_peduncle
+SRR32845318,Unripe_fruit_pulp,Non_meristematic,~ eggplant Fruits_1cm (early fruit)
+SRR32845321,Unripe_fruit_peel,Non_meristematic,~ eggplant Fruits_Skin_Stage2
+SRR32845311,Ripe_fruit_pulp,Non_meristematic,~ eggplant Fruits_6cm (mature fruit)
+SRR32845315,Ripe_fruit_peel,Non_meristematic,~ eggplant Fruits_Skin_Stage3
+SRR11085729,Male_flower_bud,Meristematic,CROSS-SPECIES M. itinerans wild-type rep 1; ~ eggplant Buds_0.7cm
+SRR11085728,Male_flower_bud,Meristematic,CROSS-SPECIES M. itinerans wild-type rep 2; ~ eggplant Buds_0.7cm
+SRR11085727,Male_flower_bud,Meristematic,CROSS-SPECIES M. itinerans wild-type rep 3; ~ eggplant Buds_0.7cm
+SRR23491617,Pollen,Non_meristematic,CROSS-SPECIES M. itinerans cold-stressed pollen (study control grp) rep 1; closest to eggplant Anther
+SRR23491616,Pollen,Non_meristematic,CROSS-SPECIES M. itinerans cold-stressed pollen (study control grp) rep 2; closest to eggplant Anther
+SRR23491615,Pollen,Non_meristematic,CROSS-SPECIES M. itinerans cold-stressed pollen (study control grp) rep 3; closest to eggplant Anther

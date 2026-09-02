@@ -1,0 +1,35 @@
+SRR_ID,Organ,Tissue_Class,Notes
+SRR32845305,Tip_meristem,Meristematic,shoot apical meristem; no eggplant counterpart
+SRR32845304,Tip_meristem,Meristematic,shoot apical meristem; no eggplant counterpart
+SRR32845335,Tip_meristem,Meristematic,shoot apical meristem; no eggplant counterpart
+SRR32845325,Primary_root,Meristematic,~ eggplant Roots
+SRR32845337,Primary_root,Meristematic,~ eggplant Roots
+SRR32845336,Primary_root,Meristematic,~ eggplant Roots
+SRR32845308,Secondary_root,Meristematic,~ eggplant Roots (lateral)
+SRR32845314,Secondary_root,Meristematic,~ eggplant Roots (lateral)
+SRR32845309,Secondary_root,Meristematic,~ eggplant Roots (lateral)
+SRR32845307,Corm_rhizome,Meristematic,underground stem; ~ eggplant Stems
+SRR32845306,Corm_rhizome,Meristematic,underground stem; ~ eggplant Stems
+SRR32845334,Leaf_sheath_pseudostem,Non_meristematic,~ eggplant Stems
+SRR32845332,Leaf_sheath_pseudostem,Non_meristematic,~ eggplant Stems
+SRR32845333,Leaf_sheath_pseudostem,Non_meristematic,~ eggplant Stems
+SRR32845331,Leaf_blade,Non_meristematic,~ eggplant Leaves
+SRR32845329,Leaf_blade,Non_meristematic,~ eggplant Leaves
+SRR32845330,Leaf_blade,Non_meristematic,~ eggplant Leaves
+SRR32845328,Leaf_midrib,Non_meristematic,~ eggplant Leaves (vascular)
+SRR32845326,Leaf_midrib,Non_meristematic,~ eggplant Leaves (vascular)
+SRR32845327,Leaf_midrib,Non_meristematic,~ eggplant Leaves (vascular)
+SRR32845323,Peduncle,Non_meristematic,~ eggplant Fruits_peduncle
+SRR32845324,Peduncle,Non_meristematic,~ eggplant Fruits_peduncle
+SRR32845322,Peduncle,Non_meristematic,~ eggplant Fruits_peduncle
+SRR32845318,Unripe_fruit_pulp,Non_meristematic,~ eggplant Fruits_1cm (early fruit)
+SRR32845316,Unripe_fruit_pulp,Non_meristematic,~ eggplant Fruits_1cm (early fruit)
+SRR32845317,Unripe_fruit_pulp,Non_meristematic,~ eggplant Fruits_1cm (early fruit)
+SRR32845321,Unripe_fruit_peel,Non_meristematic,~ eggplant Fruits_Skin_Stage2
+SRR32845319,Unripe_fruit_peel,Non_meristematic,~ eggplant Fruits_Skin_Stage2
+SRR32845320,Unripe_fruit_peel,Non_meristematic,~ eggplant Fruits_Skin_Stage2
+SRR32845311,Ripe_fruit_pulp,Non_meristematic,~ eggplant Fruits_6cm (mature fruit)
+SRR32845310,Ripe_fruit_pulp,Non_meristematic,~ eggplant Fruits_6cm (mature fruit)
+SRR32845312,Ripe_fruit_pulp,Non_meristematic,~ eggplant Fruits_6cm (mature fruit)
+SRR32845315,Ripe_fruit_peel,Non_meristematic,~ eggplant Fruits_Skin_Stage3
+SRR32845313,Ripe_fruit_peel,Non_meristematic,~ eggplant Fruits_Skin_Stage3
