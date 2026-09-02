@@ -3,18 +3,30 @@
 #===============================================================================
 # COMBINED CONDA/MAMBA ENVIRONMENT SETUP SCRIPT
 #===============================================================================
-# Creates/updates conda environment 'gea' with all dependencies for:
+# Creates/updates the conda environment named by setup_conda_geaManifest.yml, with all
+# dependencies for:
 #   - RNA-seq alignment & preprocessing       (GEA pipeline)
 #   - Post-processing & statistical analysis  (R / Bioconductor)
 #
-# Environment name : gea
-# Lockfile         : setup_conda_gea.yml  (generated — do not edit by hand)
-# Logs             : logs/installation/setup_conda_gea_<RUN_ID>_*.log
+# Spec     : setup_conda_geaManifest.yml       (hand-authored — edit packages HERE)
+#            A real conda environment file, and the single source of truth for
+#            everything this script needs to build the environment:
+#              name:                    -> which environment to build
+#              dependencies: - python=  -> which interpreter to solve for
+#              dependencies: - <pkg>=   -> the direct, pinned package set
+#            This script keeps no copy of any of it.
+# Lockfile : setup_conda_gea.lock.yml  (generated — never edit)
+#            The full resolved set the spec above solved to, transitive deps
+#            included. Rewritten after every successful run.
+# Logs     : logs/installation/setup_conda_gea_<RUN_ID>_*.log
 #
 # Quick start:
 #   1. Ensure Conda/Miniconda is installed
 #   2. Run     : bash setup_conda_gea.sh
-#   3. Activate: conda activate gea
+#   3. Activate: conda activate "$(sed -n 's/^name:[[:space:]]*//p' setup_conda_geaManifest.yml | cut -d'#' -f1 | tr -d ' ')"
+#
+# To add, drop or repin a package: edit the 'dependencies:' list in
+# setup_conda_geaManifest.yml and re-run this script. Nothing here needs changing.
 #
 # Run 'bash setup_conda_gea.sh --help' for the full flag list.
 #
@@ -71,19 +83,133 @@ set -euo pipefail
 # CONFIGURATION
 #===============================================================================
 
-#ENV_NAME="gea"
-ENV_NAME="gea_test"
-PYTHON_VERSION="3.11"
-
 # Parameter expansion avoids nested $(dirname) subshell fork
 SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
 SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)" || { echo "[ERROR] setup_conda_gea.sh: Failed to resolve script directory" >&2; exit 1; }
 
-# Single source of truth for generated/consumed paths
-LOCKFILE="$SCRIPT_DIR/setup_conda_gea.yml"
+# Single source of truth for consumed/generated paths.
+# ENV_SPEC is read and never written; LOCKFILE is written and never read.
+ENV_SPEC="$SCRIPT_DIR/setup_conda_geaManifest.yml"
+LOCKFILE="$SCRIPT_DIR/setup_conda_gea.lock.yml"
 R_INSTALLER="$SCRIPT_DIR/modules_gea/c_post_processing/utilities/install_R_packages.R"
 LOG_DIR="$SCRIPT_DIR/logs/installation"
+
+#-------------------------------------------------------------------------------
+# ENVIRONMENT SPEC — declared once, in setup_conda_geaManifest.yml
+#-------------------------------------------------------------------------------
+# Everything needed to build the environment used to be split across two files
+# that each drifted from the other: a hardcoded name/python at the top of this
+# script, and the package set in bash arrays below it, while the .yml carried a
+# rival copy of the first two. All three now have exactly one home — the
+# authored spec, which is a real conda environment file:
+#
+#   name: gea_test           -> ENV_NAME      (which environment to build)
+#   dependencies: - python=  -> PYTHON_SPEC   (which interpreter to solve for)
+#   dependencies: - <pkg>=   -> ALL_PACKAGES  (the direct, pinned package set)
+#
+# Nothing here writes to that file, so hand-authored grouping, per-package
+# rationale comments and the commented-out `#name: gea` alternative simply stay
+# put. The generated companion, setup_conda_gea.lock.yml, is the one this script
+# overwrites (see EXPORT LOCKFILE).
+
+read_env_name() {
+    [[ -f "$ENV_SPEC" ]] || return 1
+    local line
+    line="$(grep -m1 -E '^name:[[:space:]]*[^[:space:]#]' "$ENV_SPEC" 2>/dev/null)" || return 1
+    line="${line#name:}"                    # drop the key
+    line="${line%%#*}"                      # drop any trailing comment
+    line="${line//[[:space:]]/}"            # drop spaces/tabs/CR
+    line="${line#\"}"; line="${line%\"}"    # drop optional quoting
+    line="${line#\'}"; line="${line%\'}"
+    [[ -n "$line" ]] || return 1
+    printf '%s' "$line"
+}
+
+# Parse the `dependencies:` list into ALL_PACKAGES — the direct dependencies,
+# and the only package source this script has.
+#
+# Deliberately plain bash: this script bootstraps a bare machine, so it cannot
+# depend on python, yq or an activated environment to read its own input. The
+# grammar it accepts is the subset the spec file actually uses, and it is strict
+# about the rest rather than silently dropping packages:
+#
+#   * only entries under a column-0 `dependencies:` key are read, so the
+#     `channels:` list cannot leak in as a package spec;
+#   * `#` opens a comment anywhere, so a commented-out `#   - foo=1.0` line
+#     stays commented out and per-package rationale comments are ignored;
+#   * a nested sub-list (`- pip:`) is a hard error, not a warning — pip specs
+#     silently vanishing from an environment build is not an acceptable
+#     failure mode;
+#   * trailing CR is stripped per line. The repo has a documented history of
+#     CRLF contamination from Windows editors, and a spec carrying `\r` would
+#     otherwise reach the solver as the package name `pigz=2.8<CR>`.
+read_direct_specs() {
+    ALL_PACKAGES=()
+    _SPEC_PARSE_ERR=""
+    [[ -f "$ENV_SPEC" ]] || { _SPEC_PARSE_ERR="file not found"; return 1; }
+
+    local line spec in_deps=false lineno=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        (( ++lineno ))
+        line="${line%$'\r'}"
+
+        # A key at column 0 opens or closes the dependencies block. Comment
+        # lines and indented content start with '#' or whitespace and fall
+        # through, leaving the current block state alone.
+        if [[ "$line" =~ ^[^[:space:]#-] ]]; then
+            if [[ "$line" =~ ^dependencies:[[:space:]]*(#.*)?$ ]]; then
+                in_deps=true
+            else
+                in_deps=false
+            fi
+            continue
+        fi
+        [[ "$in_deps" == true ]] || continue
+
+        [[ "$line" =~ ^[[:space:]]*-[[:space:]]+(.*)$ ]] || continue
+        spec="${BASH_REMATCH[1]}"
+        spec="${spec%%#*}"                                # drop trailing comment
+        spec="${spec#"${spec%%[![:space:]]*}"}"           # ltrim
+        spec="${spec%"${spec##*[![:space:]]}"}"           # rtrim
+        spec="${spec#\"}"; spec="${spec%\"}"              # drop optional quoting
+        spec="${spec#\'}"; spec="${spec%\'}"
+        [[ -n "$spec" ]] || continue
+
+        if [[ "$spec" == *: ]]; then
+            # Cleared, not left half-filled: the caller's only failure test is
+            # an empty ALL_PACKAGES, and a partial list would sail past it and
+            # build an environment missing whatever followed this line.
+            ALL_PACKAGES=()
+            _SPEC_PARSE_ERR="line ${lineno}: nested sub-lists are unsupported ('- ${spec}')"
+            return 1
+        fi
+        ALL_PACKAGES+=("$spec")
+    done < "$ENV_SPEC"
+
+    (( ${#ALL_PACKAGES[@]} > 0 )) || { _SPEC_PARSE_ERR="no entries under 'dependencies:'"; return 1; }
+    return 0
+}
+
+# Picked out of the parsed list rather than re-read from the file, so the spec
+# handed to the solver and the one reported by --help cannot disagree.
+# The anchored alternation is what keeps python-dateutil, python_abi,
+# python-gil and cpython out of the result.
+read_python_spec() {
+    local spec re='^python([=<>!~].*)?$'
+    for spec in "${ALL_PACKAGES[@]}"; do
+        if [[ "$spec" =~ $re ]]; then printf '%s' "$spec"; return 0; fi
+    done
+    return 1
+}
+
+# Resolved before usage()/argument parsing so --help can name the environment.
+# A failure here is not fatal yet: --help still works, and the hard check runs
+# once arguments are parsed.
+ALL_PACKAGES=()
+ENV_NAME="$(read_env_name || true)"
+read_direct_specs || true
+PYTHON_SPEC="$(read_python_spec || true)"
 
 # Array form so every call site expands identically without word-splitting.
 #
@@ -122,7 +248,16 @@ usage() {
     cat << EOF
 Usage: bash setup_conda_gea.sh [OPTIONS]
 
-Creates or updates the '${ENV_NAME}' conda environment for the GEA pipeline.
+Creates or updates the '${ENV_NAME:-<unset>}' conda environment for the GEA pipeline.
+
+Environment name, python version and the whole direct package set come from
+setup_conda_geaManifest.yml ('name:' and the 'dependencies:' list). Edit them there;
+this script keeps no copy of any of them.
+  spec     : $ENV_SPEC
+  name     : ${ENV_NAME:-<unreadable — see setup_conda_geaManifest.yml>}
+  python   : ${PYTHON_SPEC:-<unreadable — see setup_conda_geaManifest.yml>}
+  packages : ${#ALL_PACKAGES[@]} direct (transitive deps resolved by the solver)
+  lockfile : $LOCKFILE  (generated)
 
 Options:
   --update              Update an existing environment
@@ -160,108 +295,37 @@ for arg in "$@"; do
     esac
 done
 
+# Deferred from the CONFIGURATION block so --help and a bad flag still behave.
+#
+# Handing an empty or half-parsed list to the solver is the one failure this
+# script must never have: `conda create -n gea` with no specs succeeds, leaving
+# a plausible-looking but empty environment behind. So a spec that does not
+# parse is fatal here, before anything is created.
+if [[ -z "$ENV_NAME" || -z "$PYTHON_SPEC" || ${#ALL_PACKAGES[@]} -eq 0 ]]; then
+    echo "ERROR: setup_conda_geaManifest.yml is the single source of truth for the" >&2
+    echo "       environment spec, and this script could not read it:" >&2
+    echo "         $ENV_SPEC" >&2
+    [[ -z "$ENV_NAME"    ]] && echo "       missing/unreadable: 'name: <env>'" >&2
+    [[ ${#ALL_PACKAGES[@]} -eq 0 ]] && \
+        echo "       missing/unreadable: 'dependencies:' list${_SPEC_PARSE_ERR:+ — $_SPEC_PARSE_ERR}" >&2
+    [[ -z "$PYTHON_SPEC" ]] && echo "       missing/unreadable: 'dependencies:' entry '- python=<version>'" >&2
+    echo "       Restore it with: git checkout -- setup_conda_geaManifest.yml" >&2
+    exit 1
+fi
+
 #===============================================================================
 # PACKAGE LISTS
 #===============================================================================
-# These arrays are the source of truth for the environment's DIRECT dependencies.
-# setup_conda_gea.yml is generated from the resolved environment — edit here, not there.
-
-# Preprocessing & data acquisition tools  (GEA pipeline)
-# IMPORTANT: Versions are pinned to tested versions for reproducibility.
-# Update only after validation on a test dataset.
-PREPROCESSING_TOOLS=(
-    "aria2=1.37.0"
-    "parallel-fastq-dump=0.6.7"
-    "sra-tools=3.2.1"
-    "entrez-direct=24.0"
-    "kingfisher=0.4.1"
-    "trim-galore=0.6.11"
-    "trimmomatic=0.40"
-    "cutadapt=5.2"
-    "fastqc=0.12.1"
-    "multiqc=1.33"
-    "parallel=20260122"
-    "wget=1.25.0"      # ENA FTP fallback downloader
-    "curl=8.18.0"      # ENA portal API queries
-    "dos2unix=7.5.4"   # Line-ending normalization
-    "pigz=2.8"         # Multi-threaded gzip; preprocessing silently falls back to gzip if absent
-)
-
-# Core alignment / quantification tools
-ALIGNMENT_TOOLS=(
-    "hisat2=2.2.2"
-    "stringtie=3.0.3"
-    "samtools=1.22.1"
-    "salmon=1.10.3"
-    "bowtie2=2.5.5"
-    "rsem=1.3.3"
-    "star=2.7.11b"
-    "trinity=2.15.2"
-    "gffread=0.12.7"               # Transcript FASTA generation from genome+GTF
-    "rseqc=5.0.4"                  # infer_experiment.py for strandness auto-detection
-    "ucsc-gtftogenepred=482"       # GTF -> genePred conversion for BED12
-    "ucsc-genepredtobed=482"       # genePred -> BED12 conversion for infer_experiment.py
-)
-
-# R base and essentials
-R_BASE=(
-    "r-base=4.3.3"
-    "r-essentials=4.3"
-    "r-biocmanager=1.30.26"
-)
-
-# Bioconductor packages (pinned to Bioconductor 3.18 / R 4.3)
-BIOCONDUCTOR=(
-    "bioconductor-deseq2=1.42.0"
-    "bioconductor-complexheatmap=2.18.0"
-    "bioconductor-tximport=1.30.0"
-    "bioconductor-tximeta=1.20.1"
-    "bioconductor-annotationdbi=1.64.1"
-    "bioconductor-ballgown=2.34.0"
-    "bioconductor-clusterprofiler=4.10.0"
-    "bioconductor-enrichplot=1.22.0"
-    "bioconductor-dose=3.28.1"
-    "bioconductor-fgsea=1.28.0"
-)
-
-# CRAN / WGCNA packages
-CRAN_PACKAGES=(
-    "r-wgcna=1.73"
-    "r-dynamictreecut=1.63_1"
-    "r-fastcluster=1.3.0"
-    "r-tidyverse=2.0.0"
-    "r-dplyr=1.1.4"
-    "r-tibble=3.3.0"
-    "r-readr=2.1.5"
-    "r-ggplot2=3.5.2"
-    "r-ggrepel=0.9.6"
-    "r-rcolorbrewer=1.1_3"
-    "r-circlize=0.4.16"
-    "r-pheatmap=1.0.13"
-    "r-rtsne=0.17"
-    "r-umap=0.2.10.0"
-    "r-factoextra=1.0.7"
-    "r-igraph=2.1.4"
-    "r-reshape2=1.4.4"
-    "r-getopt=1.20.4"
-    "r-visnetwork=2.1.4"
-    "r-networkd3=0.4.1"
-    "r-htmlwidgets=1.6.4"
-    "r-heatmaply=1.6.0"
-    "r-corrplot=0.95"
-    "r-dendextend=1.19.1"
-    "r-gridextra=2.3"
-    "r-scales=1.4.0"
-)
-
-# Combined package list — what actually gets installed
-ALL_PACKAGES=(
-    "${PREPROCESSING_TOOLS[@]}"
-    "${ALIGNMENT_TOOLS[@]}"
-    "${R_BASE[@]}"
-    "${BIOCONDUCTOR[@]}"
-    "${CRAN_PACKAGES[@]}"
-)
+# There are none here any more. The direct, pinned package set lives in the
+# authored spec and is parsed into ALL_PACKAGES by read_direct_specs() above:
+#
+#     setup_conda_geaManifest.yml  ->  dependencies:
+#
+# Five bash arrays (PREPROCESSING_TOOLS, ALIGNMENT_TOOLS, R_BASE, BIOCONDUCTOR,
+# CRAN_PACKAGES) used to sit here, which meant the one file a reader opens to
+# see what the environment contains — the .yml — was the one file that did not
+# declare it. Add or repin a package in the spec; nothing in this script needs
+# to change.
 
 #===============================================================================
 # VERIFICATION LISTS
@@ -405,8 +469,8 @@ _BENIGN_PATTERN+='|WARNING conda\.conda_pypi'
 # r-base package cache and four ClobberErrors. Every one of them was invisible in
 # the file the usage text tells you to read.
 #
-# Must run *after* the tee is reaped, or the tail of the transcript is not on
-# disk yet. Output is `grep -n`, so each entry doubles as a jump target into the
+# Must run *after* the log pipeline is reaped, or the tail of the transcript is
+# not on disk yet and the trailing errors are the ones that go missing. Output is `grep -n`, so each entry doubles as a jump target into the
 # full log, and the captured set is then split into ACTIONABLE / KNOWN-BENIGN.
 # Echoes "<actionable> <benign>" for the caller.
 _write_issue_log() {
@@ -452,10 +516,11 @@ _write_issue_log() {
 _teardown_logging() {
     local _rc=$?
 
-    # Restore the original stdout/stderr so the tee process substitution sees EOF,
-    # then reap it — without this the tail of the log can be lost at exit, and the
-    # issue log distilled below would be missing the very lines that explain the
-    # failure.
+    # Restore the original stdout/stderr so the log process substitution sees EOF,
+    # then reap it. That subshell waits for its own ANSI stripper before exiting
+    # (see the redirect below), so this one wait means the whole chain has drained:
+    # every line is on disk before _write_issue_log greps the transcript, and
+    # before the summary block appends to it. Without it the tail is lost at exit.
     exec 1>&3 2>&4
     if [[ -n "${_LOG_TEE_PID:-}" ]]; then
         wait "$_LOG_TEE_PID" 2>/dev/null || true
@@ -522,7 +587,20 @@ fi
 
 if mkdir -p "$LOG_DIR" 2>/dev/null; then
     exec 3>&1 4>&2
-    exec > >(tee >(_strip_ansi_stream >> "$LOG_FILE")) 2>&1
+    # The trailing `wait` is load-bearing. _strip_ansi_stream sits in an *inner*
+    # process substitution, so its PID never reaches this shell — $! yields the
+    # outer subshell only. The teardown therefore reaped tee while sed still held
+    # the tail of the run in its buffers: on a 20k-line burst ~400 lines were
+    # still in flight when _write_issue_log ran, which is precisely where a failed
+    # run puts the errors that explain it, and the summary block then appended to
+    # a file sed was concurrently writing. `wait` makes the subshell outlive its
+    # own child, so waiting on $! below transitively means "chain fully drained".
+    #
+    # tee keeps the *inherited* stdout rather than reopening /dev/fd/3: fd 3 is a
+    # dup, sharing one file offset with fd 1, and a reopen leaves that offset at 0
+    # — the teardown's restored fd 1 would then overwrite the head of the console
+    # transcript whenever this script is run with stdout redirected to a file.
+    exec > >(tee >(_strip_ansi_stream >> "$LOG_FILE"); wait) 2>&1
     _LOG_TEE_PID=$!
     trap _teardown_logging EXIT
 else
@@ -699,7 +777,10 @@ log_info "Total packages: ${#ALL_PACKAGES[@]}"
 # failure; --override-channels above is. The two-step shape solves fine once
 # `defaults` is out of the channel list. This change is about not doing work
 # twice, and about a clean transaction log.
-SOLVE_SPECS=("python=${PYTHON_VERSION}" "${ALL_PACKAGES[@]}")
+# ALL_PACKAGES already carries the python spec — it is just another entry in the
+# spec file's dependency list — so it is NOT prepended here. Doing both would
+# hand the solver the same spec twice.
+SOLVE_SPECS=("${ALL_PACKAGES[@]}")
 
 NEEDS_CREATE=true
 
@@ -822,32 +903,49 @@ else
     # Sibling temp file + atomic move: a failed export must not destroy the
     # previous, known-good lockfile by truncating it to the header.
     LOCKFILE_TMP="${LOCKFILE}.tmp"
+
+    # No name-block preservation any more. That machinery existed only because
+    # hand-authored content (the `name:` line and its commented-out `#name: gea`
+    # alternative) lived inside a file this step overwrites. It now lives in
+    # setup_conda_geaManifest.yml, which nothing here writes to, so the lockfile can be
+    # generated end to end.
     {
         echo "#==============================================================================="
         echo "# CONDA ENVIRONMENT LOCKFILE — '${ENV_NAME}'"
         echo "#==============================================================================="
-        echo "# GENERATED FILE — do not edit by hand; setup_conda_gea.sh overwrites it."
+        echo "# GENERATED FILE — do not edit by hand; setup_conda_gea.sh overwrites it after"
+        echo "# every successful run."
         echo "#"
-        echo "# Direct, pinned dependencies live in setup_conda_gea.sh (PACKAGE LISTS)."
-        echo "# Everything below is the full resolved set, transitive deps included,"
-        echo "# produced by 'conda env export --no-builds'. Two lines are stripped:"
+        echo "# This is the full resolved set: every package the solver pulled in, transitive"
+        echo "# dependencies included, produced by 'conda env export --no-builds'. Two lines"
+        echo "# are stripped:"
         echo "#   'prefix:'     — machine-specific, keeps the file portable"
         echo "#   '- defaults'  — see the channel note in setup_conda_gea.sh"
         echo "#"
-        echo "# Regenerate  : bash setup_conda_gea.sh"
-        echo "# Recreate env: conda env create -f setup_conda_gea.yml"
+        echo "# The DIRECT, hand-pinned dependencies — the packages this project actually"
+        echo "# asks for — live in the authored spec beside this file:"
+        echo "#"
+        echo "#   setup_conda_geaManifest.yml"
+        echo "#"
+        echo "# Edit packages there. This file only records what that spec resolved to."
+        echo "#"
+        echo "# Regenerate            : bash setup_conda_gea.sh"
+        echo "# Rebuild same versions : conda env create -f setup_conda_gea.lock.yml"
+        echo "#                         (--no-builds pins name=version, not the build string)"
+        echo "# Re-solve from spec    : conda env create -f setup_conda_geaManifest.yml"
         echo "#==============================================================================="
     } > "$LOCKFILE_TMP"
 
     # `conda env export` takes no --override-channels: it reports the channels
     # recorded against the prefix, so `defaults` survives into the export even
     # when nothing in the environment came from it. Left in, the documented
-    # "conda env create -f setup_conda_gea.yml" recreate path would put
+    # "conda env create -f setup_conda_gea.lock.yml" recreate path would put
     # repo.anaconda.com straight back into the channel list and reproduce the
     # unsolvable environment this script exists to avoid. Strip it here, the
     # same way the machine-specific `prefix:` line is stripped.
     if conda env export -n "$ENV_NAME" --no-builds \
-        | grep -vE '^prefix:|^[[:space:]]*-[[:space:]]*defaults[[:space:]]*$' >> "$LOCKFILE_TMP"; then
+        | grep -vE '^prefix:|^[[:space:]]*-[[:space:]]*defaults[[:space:]]*$' \
+          >> "$LOCKFILE_TMP"; then
         mv -f "$LOCKFILE_TMP" "$LOCKFILE"
         log_info "Lockfile saved to: $LOCKFILE"
     else
@@ -863,7 +961,8 @@ fi
 log_section "Setup complete!"
 log_info ""
 log_info "Environment : $ENV_NAME"
-log_info "Lockfile    : $LOCKFILE"
+log_info "Spec        : $ENV_SPEC  (edit packages here)"
+log_info "Lockfile    : $LOCKFILE  (generated)"
 log_info "Log dir     : $LOG_DIR"
 log_info "Activate    : conda activate $ENV_NAME"
 log_info "Deactivate  : conda deactivate"

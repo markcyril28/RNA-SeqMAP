@@ -26,7 +26,7 @@
 # Build the environment : bash setup_conda_gea.sh              (solves this file)
 # Rebuild same versions : conda env create -f setup_conda_gea.lock.yml
 #                         (--no-builds pins name=version, not the build string)
-# Re-solve from spec    : conda env create -f setup_conda_gea.yml
+# Re-solve from spec    : conda env create -f setup_conda_geaManifest.yml
 #
 # Parser notes (setup_conda_gea.sh :: read_direct_specs):
 #   - only entries under 'dependencies:' are read; 'channels:' is ignored
